@@ -37,9 +37,9 @@ class ScatterPlotter:
 
         plotter = (
             ScatterPlotter()
-            .set_source(ad, embedding="umap", cell_type_column="leiden")
+            .set_source(ad, embedding="umap")
             .dot_size(5)
-            .with_borders()
+            .with_borders(cell_type_column="leiden")
             .with_grid(labels=True)
         )
         plotter.plot("S100A8")
@@ -88,8 +88,6 @@ class ScatterPlotter:
         self,
         ad_or_data,
         embedding: str = "umap",
-        *,
-        cell_type_column: Optional[str] = None,
     ) -> "ScatterPlotter":
         """Attach data source. Accepts AnnData or an existing EmbeddingData."""
         new = copy.copy(self)
@@ -111,7 +109,6 @@ class ScatterPlotter:
                 grid_size=grid_size,
                 grid_letters_on_vertical=glv,
             )
-        new._cell_type_column = cell_type_column
         new._boundary_cache = {"df": None}
         return new
 
@@ -203,6 +200,7 @@ class ScatterPlotter:
     def with_borders(
         self,
         *,
+        cell_type_column: Optional[str] = None,
         size: float = 15,
         resolution: int = 200,
         blur: float = 1.1,
@@ -212,6 +210,8 @@ class ScatterPlotter:
         new._border_config = BorderConfig(
             size=size, resolution=resolution, blur=blur, threshold=threshold
         )
+        if cell_type_column is not None:
+            new._cell_type_column = cell_type_column
         # Reset cache only if image-processing params changed
         old = self._border_config
         if (
@@ -219,6 +219,7 @@ class ScatterPlotter:
             or old.resolution != resolution
             or old.blur != blur
             or old.threshold != threshold
+            or cell_type_column != self._cell_type_column
         ):
             new._boundary_cache = {"df": None}
         # else: share the same cache dict (shallow copy) — only size changed
@@ -360,13 +361,13 @@ class ScatterPlotter:
 
         # Build plot
         if is_numerical:
-            p = self._build_numerical(df, expr_name, x_min, x_max, y_min, y_max)
+            p = self._build_numerical(df, expr_name)
         else:
-            p = self._build_categorical(df, expr_name, x_min, x_max, y_min, y_max)
+            p = self._build_categorical(df, expr_name)
 
         # Grid overlay
         if self._grid_config is not None:
-            p = self._add_grid_layers(p, x_min, x_max, y_min, y_max)
+            p = self._add_grid_layers(p)
 
         # Focus viewport
         if data.has_focus:
@@ -384,7 +385,7 @@ class ScatterPlotter:
 
         # Grid axis tick labels
         if self._grid_config is not None and self._grid_config.coords:
-            p = self._add_grid_axis_ticks(p, x_min, x_max, y_min, y_max)
+            p = self._add_grid_axis_ticks(p)
 
         # Theme
         p = p + embedding_theme(
@@ -570,10 +571,6 @@ class ScatterPlotter:
         self,
         df: pd.DataFrame,
         expr_name: str,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
     ) -> p9.ggplot:
         zero_val = self._zero_value
         df_zeros = df[df["expression"] == zero_val]
@@ -639,10 +636,6 @@ class ScatterPlotter:
         self,
         df: pd.DataFrame,
         expr_name: str,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
     ) -> p9.ggplot:
         if df["expression"].dtype == "category":
             cats = list(df["expression"].cat.categories)
@@ -693,15 +686,9 @@ class ScatterPlotter:
         p = p + p9.scale_color_manual(values=color_values, name=expr_name)
         return p
 
-    def _add_grid_layers(
-        self,
-        p: p9.ggplot,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
-    ) -> p9.ggplot:
+    def _add_grid_layers(self, p: p9.ggplot) -> p9.ggplot:
         gc = self._grid_config
+        x_min, x_max, y_min, y_max = self._data.bounds()
         x_grid = np.linspace(x_min, x_max, gc.grid_size + 1)
         y_grid = np.linspace(y_min, y_max, gc.grid_size + 1)
 
@@ -745,14 +732,7 @@ class ScatterPlotter:
             )
         return p
 
-    def _add_grid_axis_ticks(
-        self,
-        p: p9.ggplot,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
-    ) -> p9.ggplot:
+    def _add_grid_axis_ticks(self, p: p9.ggplot) -> p9.ggplot:
         gc = self._grid_config
         x_positions, y_positions, x_labels, y_labels = self._data.grid_labels()
         p = (

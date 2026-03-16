@@ -49,6 +49,6 @@ def plotter(data):
     from mbf_singlecell_plotter import ScatterPlotter
     return (
         ScatterPlotter()
-        .set_source(data, cell_type_column=CELL_TYPE_COLUMN)
-        .with_borders()
+        .set_source(data)
+        .with_borders(cell_type_column=CELL_TYPE_COLUMN)
     )
