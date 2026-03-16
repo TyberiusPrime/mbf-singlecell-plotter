@@ -12,6 +12,7 @@ dependencies = [
  "pandas>=3.0.1",
  "pillow>=12.1.1",
  "plotnine>=0.15.3",
+ "scikit-image>=0.26.0",
 ]
 
 # [project.scripts]

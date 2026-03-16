@@ -45,6 +45,14 @@ def _fig_to_array(fig, dpi=150) -> np.ndarray:
     return np.array(img)
 
 
+def _plotnine_to_array(p, dpi=100) -> np.ndarray:
+    """Render a plotnine ggplot to an RGB uint8 numpy array."""
+    buf = io.BytesIO()
+    p.save(buf, format="png", dpi=dpi, verbose=False)
+    buf.seek(0)
+    return np.array(Image.open(buf).convert("RGB"))
+
+
 def _save_png(array: np.ndarray, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(array).save(path)

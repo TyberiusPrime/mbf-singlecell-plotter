@@ -41,6 +41,15 @@
         sourcePreference = "wheel";
       };
 
+      my_fixes = final: prev: {
+        dppd-plotnine = prev.dppd-plotnine.overrideAttrs (old: {
+          nativeBuildInputs = old.nativeBuildInputs ++ (final.resolveBuildSystem { setuptools = [ ]; });
+        });
+        dppd = prev.dppd.overrideAttrs (old: {
+          nativeBuildInputs = old.nativeBuildInputs ++ (final.resolveBuildSystem { setuptools = [ ]; });
+        });
+      };
+
       editableOverlay = workspace.mkEditablePyprojectOverlay {
         root = "$REPO_ROOT";
       };
@@ -58,6 +67,7 @@
             lib.composeManyExtensions [
               pyproject-build-systems.overlays.wheel
               overlay
+              my_fixes
             ]
           )
       );
@@ -93,18 +103,19 @@
       packages = forAllSystems (system: {
         default =
           let
-            venv = pythonSets.${system}.mkVirtualEnv "mbf-singlecell-plotter-env" workspace.deps.default;
+            venv = pythonSets.${system}.mkVirtualEnv "mbf-singlecell-plotter-env" workspace.deps.all;
             pkgs = nixpkgs.legacyPackages.${system};
           in
-          pkgs.stdenv.mkDerivation {
-            name = "mbf-singlecell-plotter-${system}";
-            buildInputs = [ venv ];
-            unpackPhase = ":";
-            installPhase = ''
-              mkdir -p $out/bin
-              ln -s ${pythonSets.${system}.python.interpreter} $out/bin/mbf-singlecell-plotter
-            '';
-          };
+            venv;
+          # pkgs.stdenv.mkDerivation {
+          #   name = "mbf-singlecell-plotter-${system}";
+          #   buildInputs = [ venv ];
+          #   unpackPhase = ":";
+          #   installPhase = ''
+          #     mkdir -p $out/bin
+          #     ln -s ${pythonSets.${system}.python.interpreter} $out/bin/mbf-singlecell-plotter
+          #   '';
+          # };
       });
     };
 }
