@@ -78,7 +78,6 @@ class ScatterPlotter:
         self._border_config: Optional[BorderConfig] = None
         self._boundary_cache: dict = {"df": None}
         self._grid_config: Optional[GridConfig] = None
-        self._focus: Optional[tuple] = None  # (x_min, x_max, y_min, y_max)
         self._facet_variable: Optional[str] = None
         self._n_col: int = 2
         self._title_override = _UNSET
@@ -289,13 +288,17 @@ class ScatterPlotter:
         y_min: float,
         y_max: float,
     ) -> "ScatterPlotter":
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .focus_on()")
         new = copy.copy(self)
-        new._focus = (x_min, x_max, y_min, y_max)
+        new._data = self._data.focus_on(x_min, x_max, y_min, y_max)
         return new
 
     def unfocus(self) -> "ScatterPlotter":
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .unfocus()")
         new = copy.copy(self)
-        new._focus = None
+        new._data = self._data.unfocus()
         return new
 
     # ── faceting ─────────────────────────────────────────────────────────────
@@ -327,13 +330,7 @@ class ScatterPlotter:
 
         data = self._data
         coords = data.coordinates()
-
-        # Determine viewport
-        if self._focus is not None:
-            x_min, x_max, y_min, y_max = self._focus
-        else:
-            x_min, x_max = coords["x"].min(), coords["x"].max()
-            y_min, y_max = coords["y"].min(), coords["y"].max()
+        x_min, x_max, y_min, y_max = data.bounds()
 
         # Load expression data
         expr, expr_name = data.get_column(gene)
@@ -372,7 +369,7 @@ class ScatterPlotter:
             p = self._add_grid_layers(p, x_min, x_max, y_min, y_max)
 
         # Focus viewport
-        if self._focus is not None:
+        if data.has_focus:
             p = p + p9.coord_cartesian(xlim=(x_min, x_max), ylim=(y_min, y_max))
 
         # Facet
@@ -454,9 +451,7 @@ class ScatterPlotter:
 
         colors = self._cat_colors or DEFAULT_COLORS
 
-        hdf, (x_min, x_max, y_min, y_max) = self._data.grid_local_histogram(
-            column, min_cell_count
-        )
+        hdf = self._data.grid_local_histogram(column, min_cell_count)
         hdf["category"] = pd.Categorical(
             hdf["category"], sorted(hdf["category"].unique())
         )
@@ -476,9 +471,7 @@ class ScatterPlotter:
         hdf["y_plot"] = hdf["y"] + 0.5
 
         grid_size = self._data._grid_size
-        _x_ticks, _y_ticks, x_labels, y_labels = self._data.grid_labels(
-            x_min, x_max, y_min, y_max
-        )
+        _x_ticks, _y_ticks, x_labels, y_labels = self._data.grid_labels()
         x_ticks = list(range(grid_size))
         y_ticks = list(range(grid_size))
 
@@ -761,9 +754,7 @@ class ScatterPlotter:
         y_max: float,
     ) -> p9.ggplot:
         gc = self._grid_config
-        x_positions, y_positions, x_labels, y_labels = self._data.grid_labels(
-            x_min, x_max, y_min, y_max
-        )
+        x_positions, y_positions, x_labels, y_labels = self._data.grid_labels()
         p = (
             p
             + p9.scale_x_continuous(breaks=list(x_positions), labels=list(x_labels))

@@ -198,27 +198,25 @@ class TestGetGridCoordinates:
 
 class TestGridLocalHistogram:
     def test_basic(self, data):
-        df, bbox = data.grid_local_histogram(CAT_COL, min_cells=5)
+        df = data.grid_local_histogram(CAT_COL, min_cells=5)
         assert "category" in df.columns
         assert "frequency" in df.columns
         assert "total" in df.columns
-        assert len(bbox) == 4
 
     def test_frequencies_sum_to_one_per_bin(self, data):
-        df, _ = data.grid_local_histogram(CAT_COL, min_cells=5)
+        df = data.grid_local_histogram(CAT_COL, min_cells=5)
         grouped = df.groupby(["x", "y"])["frequency"].sum()
         np.testing.assert_allclose(grouped.values, 1.0, atol=1e-6)
 
     def test_min_cells_filter(self, data):
-        df_strict, _ = data.grid_local_histogram(CAT_COL, min_cells=200)
-        df_lax, _ = data.grid_local_histogram(CAT_COL, min_cells=1)
+        df_strict = data.grid_local_histogram(CAT_COL, min_cells=200)
+        df_lax = data.grid_local_histogram(CAT_COL, min_cells=1)
         strict_bins = set(zip(df_strict["x"], df_strict["y"]))
         lax_bins = set(zip(df_lax["x"], df_lax["y"]))
         assert strict_bins.issubset(lax_bins)
 
-    def test_bbox_covers_embedding(self, data):
-        _, bbox = data.grid_local_histogram(CAT_COL)
-        x_min, x_max, y_min, y_max = bbox
+    def test_bounds_covers_embedding(self, data):
+        x_min, x_max, y_min, y_max = data.bounds()
         assert x_min < x_max
         assert y_min < y_max
 

@@ -1,5 +1,6 @@
 """Layer 1: data access (AnnData → DataFrames). No plotting."""
 
+import copy
 import collections
 from typing import Optional
 
@@ -64,6 +65,7 @@ class EmbeddingData:
             raise ValueError(
                 f"embedding must be a string or 3-tuple, got {type(embedding)}"
             )
+        self._focus: Optional[tuple] = None  # (x_min, x_max, y_min, y_max)
 
     @property
     def embedding(self) -> str:
@@ -72,6 +74,42 @@ class EmbeddingData:
     @property
     def grid_size(self) -> int:
         return self._grid_size
+
+    @property
+    def has_focus(self) -> bool:
+        return self._focus is not None
+
+    # ── viewport ────────────────────────────────────────────────────────────
+
+    def focus_on(
+        self,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+    ) -> "EmbeddingData":
+        """Return a new EmbeddingData restricted to the given coordinate window."""
+        new = copy.copy(self)
+        new._focus = (x_min, x_max, y_min, y_max)
+        return new
+
+    def unfocus(self) -> "EmbeddingData":
+        """Return a new EmbeddingData with no focus restriction."""
+        new = copy.copy(self)
+        new._focus = None
+        return new
+
+    def bounds(self) -> tuple:
+        """Return (x_min, x_max, y_min, y_max) — from focus if set, else full data range."""
+        if self._focus is not None:
+            return self._focus
+        coords = self.coordinates()
+        return (
+            float(coords["x"].min()),
+            float(coords["x"].max()),
+            float(coords["y"].min()),
+            float(coords["y"].max()),
+        )
 
     # ── data accessors ──────────────────────────────────────────────────────
 
@@ -145,9 +183,7 @@ class EmbeddingData:
 
     def grid_coordinate(self, x: float, y: float) -> str:
         """Return grid label (e.g. 'A1') for embedding coordinates."""
-        coords = self.coordinates()
-        x_min, x_max = coords["x"].min(), coords["x"].max()
-        y_min, y_max = coords["y"].min(), coords["y"].max()
+        x_min, x_max, y_min, y_max = self.bounds()
         parts = self.point_to_grid(x_min, x_max, y_min, y_max, x, y)
         if self._grid_letters_on_vertical:
             return f"{parts[1]}{parts[0]}"
@@ -156,8 +192,7 @@ class EmbeddingData:
     def grid_coordinates(self) -> pd.Series:
         """Return a Series of grid labels for all cells (vectorised)."""
         coords = self.coordinates()
-        x_min, x_max = coords["x"].min(), coords["x"].max()
-        y_min, y_max = coords["y"].min(), coords["y"].max()
+        x_min, x_max, y_min, y_max = self.bounds()
         x_step = (x_max - x_min) / self._grid_size
         y_step = (y_max - y_min) / self._grid_size
         x_idx = np.clip(
@@ -182,14 +217,9 @@ class EmbeddingData:
             labels = [f"{l}{n}" for l, n in zip(letter_col, number_col)]
         return pd.Series(labels, index=coords.index)
 
-    def grid_labels(
-        self,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
-    ) -> tuple:
+    def grid_labels(self) -> tuple:
         """Return (x_positions, y_positions, x_labels, y_labels) for grid axis ticks."""
+        x_min, x_max, y_min, y_max = self.bounds()
         x_positions = np.linspace(x_min, x_max, self._grid_size + 1)[:-1] + (
             x_max - x_min
         ) / (self._grid_size * 2)
@@ -217,8 +247,15 @@ class EmbeddingData:
                 "This function only works with categorical data."
             )
         coords = self.coordinates()
+        if self._focus is not None:
+            x_min, x_max, y_min, y_max = self._focus
+            mask = (
+                (coords["x"] >= x_min) & (coords["x"] <= x_max)
+                & (coords["y"] >= y_min) & (coords["y"] <= y_max)
+            )
+            coords = coords[mask]
         merged = coords.copy()
-        merged["category"] = col_data
+        merged["category"] = col_data.loc[coords.index]
         centers = merged.groupby("category", observed=True).agg(
             {"x": "median", "y": "median"}
         )
@@ -232,24 +269,15 @@ class EmbeddingData:
         self,
         key: str,
         min_cells: int = 10,
-        x_limits=None,
-        y_limits=None,
-    ) -> tuple:
-        """Return (DataFrame, bbox) for grid-local category histograms."""
+    ) -> pd.DataFrame:
+        """Return DataFrame of grid-local category histograms."""
         expr, _ = self.get_column(key)
         if pd.api.types.is_numeric_dtype(expr) and not isinstance(
             expr.dtype, pd.CategoricalDtype
         ):
             raise ValueError("category types only")
         coords = self.coordinates()
-        if x_limits is None:
-            x_min, x_max = coords["x"].min(), coords["x"].max()
-        else:
-            x_min, x_max = x_limits
-        if y_limits is None:
-            y_min, y_max = coords["y"].min(), coords["y"].max()
-        else:
-            y_min, y_max = y_limits
+        x_min, x_max, y_min, y_max = self.bounds()
 
         x_grid = np.linspace(x_min, x_max + 0.1, self._grid_size + 1)
         y_grid = np.linspace(y_min, y_max + 0.1, self._grid_size + 1)
@@ -289,4 +317,4 @@ class EmbeddingData:
                     histogram["category"].append(cat)
                     histogram["frequency"].append(freq)
                     histogram["total"].append(len(sub))
-        return pd.DataFrame(histogram), (x_min, x_max, y_min, y_max)
+        return pd.DataFrame(histogram)
