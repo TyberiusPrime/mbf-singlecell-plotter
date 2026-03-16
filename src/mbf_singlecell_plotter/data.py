@@ -121,6 +121,12 @@ class EmbeddingData:
         if name in ad.var.index:
             pdf = ad[:, ad.var.index == name].to_df()
             return pdf[name], name
+        if self._alternative_id_column is not None and self._alternative_id_column in ad.var.columns:
+            alt_hits = ad.var[self._alternative_id_column] == name
+            if alt_hits.sum() == 1:
+                pdf = ad[:, alt_hits].to_df()
+                col = pdf.columns[0]
+                return pdf[col], col
         if self._has_name_and_id:
             name_hits = ad.var.index.str.startswith(name + " ")
             if name_hits.sum() == 1:
