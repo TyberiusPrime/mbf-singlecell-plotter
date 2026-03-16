@@ -210,16 +210,10 @@ class TestGetGridCoordinate:
 
 
 class TestGetGridCoordinates:
-    # NOTE: get_grid_coordinates() ignores x_limits/y_limits (params accepted but unused),
-    # and point_to_grid() has an IndexError when a cell coordinate rounds to index == grid_size.
-    # These tests document the current buggy behaviour with xfail markers.
-
-    @pytest.mark.xfail(reason="point_to_grid IndexError on cells at embedding boundary", strict=False)
     def test_length(self, plotter_no_boundary, ad):
         coords = plotter_no_boundary.get_grid_coordinates()
         assert len(coords) == ad.n_obs
 
-    @pytest.mark.xfail(reason="point_to_grid IndexError on cells at embedding boundary", strict=False)
     def test_all_strings(self, plotter_no_boundary):
         coords = plotter_no_boundary.get_grid_coordinates()
         assert all(isinstance(c, str) for c in coords)

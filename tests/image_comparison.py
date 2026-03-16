@@ -115,6 +115,7 @@ def assert_image_matches(
         Close the figure after rendering (default True).
     """
     actual = _fig_to_array(fig, dpi=dpi)
+
     if close_fig:
         plt.close(fig)
 
@@ -146,6 +147,98 @@ def assert_image_matches(
     if bad_fraction > tolerance:
         _save_png(actual, FAILURES_DIR / f"{name}_actual.png")
         import shutil
+        shutil.copy(ref_path, FAILURES_DIR / f"{name}_reference.png")
+        diff = _build_diff_image(ref, actual)
+        _save_png(diff, FAILURES_DIR / f"{name}_diff.png")
+        raise AssertionError(
+            f"Image mismatch for '{name}': "
+            f"{bad_fraction:.2%} pixels differ (tolerance {tolerance:.2%})\n"
+            f"  reference: {FAILURES_DIR / (name + '_reference.png')}\n"
+            f"  actual:    {FAILURES_DIR / (name + '_actual.png')}\n"
+            f"  diff:      {FAILURES_DIR / (name + '_diff.png')}"
+        )
+
+
+def assert_array_matches(
+    actual: np.ndarray,
+    name: str,
+    tolerance: float = DEFAULT_TOLERANCE,
+    pixel_threshold: int = DEFAULT_PIXEL_THRESHOLD,
+) -> None:
+    """Same as assert_image_matches but accepts a pre-rendered RGB uint8 array."""
+    import shutil
+
+    ref_path = REFERENCE_DIR / f"{name}.png"
+    FAILURES_DIR.mkdir(parents=True, exist_ok=True)
+
+    if REGENERATE or not ref_path.exists():
+        _save_png(actual, ref_path)
+        print(f"  [image] Reference saved: {ref_path}")
+        return
+
+    ref = _load_png(ref_path)
+    if ref.shape != actual.shape:
+        _save_png(actual, FAILURES_DIR / f"{name}_actual.png")
+        _save_png(_build_diff_image(ref, actual), FAILURES_DIR / f"{name}_diff.png")
+        raise AssertionError(
+            f"Image shape mismatch for '{name}': "
+            f"reference={ref.shape}, actual={actual.shape}"
+        )
+
+    diff_mask = np.abs(ref.astype(int) - actual.astype(int)).max(axis=2) > pixel_threshold
+    bad_fraction = diff_mask.mean()
+    if bad_fraction > tolerance:
+        _save_png(actual, FAILURES_DIR / f"{name}_actual.png")
+        shutil.copy(ref_path, FAILURES_DIR / f"{name}_reference.png")
+        _save_png(_build_diff_image(ref, actual), FAILURES_DIR / f"{name}_diff.png")
+        raise AssertionError(
+            f"Image mismatch for '{name}': "
+            f"{bad_fraction:.2%} pixels differ (tolerance {tolerance:.2%})\n"
+            f"  reference: {FAILURES_DIR / (name + '_reference.png')}\n"
+            f"  actual:    {FAILURES_DIR / (name + '_actual.png')}\n"
+            f"  diff:      {FAILURES_DIR / (name + '_diff.png')}"
+        )
+
+
+def assert_plotnine_matches(
+    p,
+    name: str,
+    tolerance: float = DEFAULT_TOLERANCE,
+    pixel_threshold: int = DEFAULT_PIXEL_THRESHOLD,
+    dpi: int = 100,
+) -> None:
+    """Same as assert_image_matches but for a plotnine plot object."""
+    import io
+    from PIL import Image
+
+    buf = io.BytesIO()
+    p.save(buf, format="png", dpi=dpi, verbose=False)
+    buf.seek(0)
+    actual = np.array(Image.open(buf).convert("RGB"))
+
+    ref_path = REFERENCE_DIR / f"{name}.png"
+    FAILURES_DIR.mkdir(parents=True, exist_ok=True)
+
+    if REGENERATE or not ref_path.exists():
+        _save_png(actual, ref_path)
+        print(f"  [image] Reference saved: {ref_path}")
+        return
+
+    ref = _load_png(ref_path)
+    if ref.shape != actual.shape:
+        _save_png(actual, FAILURES_DIR / f"{name}_actual.png")
+        diff = _build_diff_image(ref, actual)
+        _save_png(diff, FAILURES_DIR / f"{name}_diff.png")
+        raise AssertionError(
+            f"Image shape mismatch for '{name}': "
+            f"reference={ref.shape}, actual={actual.shape}"
+        )
+
+    import shutil
+    diff_mask = np.abs(ref.astype(int) - actual.astype(int)).max(axis=2) > pixel_threshold
+    bad_fraction = diff_mask.mean()
+    if bad_fraction > tolerance:
+        _save_png(actual, FAILURES_DIR / f"{name}_actual.png")
         shutil.copy(ref_path, FAILURES_DIR / f"{name}_reference.png")
         diff = _build_diff_image(ref, actual)
         _save_png(diff, FAILURES_DIR / f"{name}_diff.png")

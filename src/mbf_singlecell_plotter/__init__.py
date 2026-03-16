@@ -683,10 +683,10 @@ class ScanpyPlotter:
         # Letters for rows (A-Z)
         x_step = (x_max - x_min) / self.grid_size
         y_step = (y_max - y_min) / self.grid_size
-        x_index = int(round((x - x_min) / x_step))
-        y_index = int(round((y - y_min) / y_step))
-        assert x < x_max, "x outside of x_max range"
-        assert y < y_max, "y outside of y_max range"
+        assert x <= x_max, "x outside of x_max range"
+        assert y <= y_max, "y outside of y_max range"
+        x_index = min(int(round((x - x_min) / x_step)), self.grid_size - 1)
+        y_index = min(int(round((y - y_min) / y_step)), self.grid_size - 1)
 
         letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[: self.grid_size]
         non_letters = [x + 1 for x in range(self.grid_size)]

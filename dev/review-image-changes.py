@@ -111,11 +111,9 @@ def _detect_protocol() -> str:
     return "none"
 
 
-def _show_image(path: Path, protocol: str, label: str = "", max_width: int = 380) -> None:
-    if label:
-        print(f"\n  {label}: {path.name}")
+def _show_image(path: Path, protocol: str, max_width: int = 800) -> None:
     if not path.exists():
-        print(f"    (file not found)")
+        print(f"    (file not found: {path.name})")
         return
     if protocol == "kitty":
         _encode_image_kitty(path, max_width=max_width)
@@ -214,17 +212,21 @@ def review(failures_dir: Path, pattern: Optional[str], protocol: str, interactiv
         print(f"  [{i}/{len(failures)}]  {f['name']}")
         print(f"{'='*60}")
 
+        # Always print absolute file:// paths for copy-paste into a browser
+        for label, path in [
+            ("REFERENCE", f["reference"]),
+            ("ACTUAL",    f["actual"]),
+            ("DIFF",      f["diff"]),
+        ]:
+            abs_path = path.resolve()
+            print(f"  {label:<12} file://{abs_path}")
+
         if protocol != "none":
-            # Show reference, actual, diff side by side (vertically in terminal)
-            _show_image(f["reference"], protocol, label="REFERENCE", max_width=380)
-            _show_image(f["actual"],    protocol, label="ACTUAL",    max_width=380)
-            _show_image(f["diff"],      protocol, label="DIFF",      max_width=380)
+            _show_image(f["reference"], protocol, max_width=800)
+            _show_image(f["actual"],    protocol, max_width=800)
+            _show_image(f["diff"],      protocol, max_width=800)
         else:
-            # Text-only fallback
-            print(f"  reference : {f['reference']}")
-            print(f"  actual    : {f['actual']}")
-            print(f"  diff      : {f['diff']}")
-            for label, path in [("reference", f["reference"]), ("actual", f["actual"]), ("diff", f["diff"])]:
+            for _, path in [("reference", f["reference"]), ("actual", f["actual"]), ("diff", f["diff"])]:
                 _print_image_stats(path)
 
         if not _wait_for_next(interactive):
