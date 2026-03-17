@@ -20,7 +20,7 @@ from conftest import CELL_TYPE_COLUMN as CAT_COL
 from mbf_singlecell_plotter import DEFAULT_COLORS
 
 # Dot size used across all scatter tests for legible reference images
-DOT_SIZE = 5
+DOT_SIZE = 2
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ DOT_SIZE = 5
 
 class TestPlotScatterNumerical:
     def test_s100a8_basic(self, plotter_no_boundary):
-        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot("S100A8")
+        p = plotter_no_boundary.zeros(zero_value=-0.50).style(dot_size=DOT_SIZE).plot("S100A8")
         assert_plotnine_matches(p, "scatter_S100A8_basic")
 
     def test_lst1_no_zeros(self, plotter_no_boundary):

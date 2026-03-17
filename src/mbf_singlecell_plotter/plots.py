@@ -15,6 +15,7 @@ from .theme import DEFAULT_COLORS, embedding_theme
 
 # ── Custom matplotlib colorbar legend ────────────────────────────────────────
 
+
 class _PlotWithCustomLegend(p9.ggplot):
     """ggplot subclass that replaces the auto color guide with a custom matplotlib colorbar."""
 
@@ -37,6 +38,7 @@ def _draw_numerical_legend(
     cbar_title: str,
     breaks: list,
     labels: list,
+    base_size: float = 12,
 ) -> None:
     """Add a custom colorbar with rectangular extension boxes to a plotnine figure."""
     import matplotlib as mpl
@@ -73,14 +75,15 @@ def _draw_numerical_legend(
 
     # ── Layout: title | gap | bar (tick labels auto to the right) ────────────
     # The right margin (pos.x1 → 1.0) is already freed by suppressing the guide.
-    title_half = 0.025   # half-width of title text area
+    title_half = 0.025  # half-width of title text area
     gap = 0.008
-    bar_frac = 0.035     # colorbar bar width as fraction of figure
+    bar_frac = 0.035  # colorbar bar width as fraction of figure
 
     bar_left = pos.x1 + 2 * title_half + gap
 
     # Safety: if tight, shrink main axes
-    needed_right = bar_left + bar_frac + 0.01
+    # 0.07 reserved for tick labels to the right of the colorbar
+    needed_right = bar_left + bar_frac + 0.07
     if needed_right > 0.99:
         shrink = needed_right - 0.99
         main_ax.set_position([pos.x0, pos.y0, pos.width - shrink, pos.height])
@@ -88,6 +91,16 @@ def _draw_numerical_legend(
         bar_left = pos.x1 + 2 * title_half + gap
 
     cbar_ax = fig.add_axes([bar_left, pos.y0, bar_frac, pos.height])
+
+    # Drop the boundary ticks that would overlap with extension box labels.
+    tick_breaks = list(breaks)
+    tick_labels = list(labels)
+    if has_clips and tick_breaks:
+        tick_breaks = tick_breaks[:-1]
+        tick_labels = tick_labels[:-1]
+    if has_zeros and tick_breaks:
+        tick_breaks = tick_breaks[1:]
+        tick_labels = tick_labels[1:]
 
     cb = mpl.colorbar.ColorbarBase(
         cbar_ax,
@@ -97,43 +110,52 @@ def _draw_numerical_legend(
         extendrect=True,
         extendfrac=extendfrac,
         orientation="vertical",
-        ticks=breaks,
+        ticks=tick_breaks,
     )
-    cb.set_ticklabels(labels)
-    cb.ax.tick_params(labelsize=9, length=3)
+    cb.set_ticklabels(tick_labels)
+    legend_fontsize = base_size * 0.9
+    cb.ax.tick_params(labelsize=legend_fontsize, length=3)
     cb.ax.yaxis.set_tick_params(which="both", labelleft=False, labelright=True)
 
     # ── Extension box labels ──────────────────────────────────────────────────
-    # With extendfrac=f, each extension occupies f/(1+n_ext*f) of the total
-    # axes height, where n_ext is number of extensions (1 or 2).
-    n_ext = (1 if has_zeros else 0) + (1 if has_clips else 0)
-    denom = 1 + n_ext * extendfrac
-    ext_box_frac = extendfrac / denom  # each extension box as fraction of axes height
-
-    # Whether both or only one extension is present changes which end is which.
-    # With extend='both': bottom=min, top=max.
-    # With extend='min': bottom only. With extend='max': top only.
+    # The colorbar gradient fills transAxes [0, 1]; the extension boxes are
+    # rendered *outside* that range: bottom extension at [-extendfrac, 0] and
+    # top extension at [1, 1+extendfrac].  Their centres are therefore at
+    # -extendfrac/2 and 1+extendfrac/2 in transAxes coordinates.
     if has_zeros:
-        y_zero = ext_box_frac / 2  # centre of bottom box in transAxes
         cb.ax.text(
-            1.08, y_zero, "0",
+            1.08,
+            -extendfrac / 2,
+            "0",
             transform=cb.ax.transAxes,
-            va="center", ha="left", fontsize=9, clip_on=False,
+            va="center",
+            ha="left",
+            fontsize=legend_fontsize,
+            clip_on=False,
         )
     if has_clips:
-        y_clip = 1.0 - ext_box_frac / 2  # centre of top box in transAxes
         cb.ax.text(
-            1.08, y_clip, f">{labels[-1]}",
+            1.08,
+            1.0 + extendfrac / 2,
+            f">{labels[-1]}",
             transform=cb.ax.transAxes,
-            va="center", ha="left", fontsize=9, clip_on=False,
+            va="center",
+            ha="left",
+            fontsize=legend_fontsize,
+            clip_on=False,
         )
 
     # ── Title: vertical text to the LEFT of the bar ──────────────────────────
     title_cx = pos.x1 + title_half
     title_cy = pos.y0 + pos.height * 0.5
     fig.text(
-        title_cx, title_cy, cbar_title,
-        rotation=90, va="center", ha="center", fontsize=9,
+        title_cx,
+        title_cy,
+        cbar_title,
+        rotation=90,
+        va="center",
+        ha="center",
+        fontsize=legend_fontsize,
     )
 
 
@@ -170,9 +192,15 @@ class ScatterPlotter:
         plotter.plot("leiden")
     """
 
-    def __init__(self, ad_or_data=None, embedding: str = "umap"):
+    def __init__(
+        self, ad_or_data=None, embedding: str = "umap", base_size=12, fig_size=None
+    ):
         self._data: Optional[EmbeddingData] = None
         self._cell_type_column: Optional[str] = None
+
+        # basic plot options
+        self.base_size = base_size
+        self.fig_size = fig_size
 
         # dot appearance
         self._dot_size: float = 1
@@ -192,8 +220,8 @@ class ScatterPlotter:
         # zero handling
         self._zeros_behind: bool = True
         self._zero_color: str = "#D0D0D0"
-        self._zero_dot_size: float = 5
-        self._zero_value: float = 0.0
+        self._zero_dot_size: float = 3
+        self._zero_value: Optional[float] = None
 
         # categorical colormap
         self._cat_colors: Optional[list] = None  # None → DEFAULT_COLORS
@@ -225,9 +253,7 @@ class ScatterPlotter:
             new._data = ad_or_data
         else:
             # Preserve grid config from existing _data if present
-            grid_size = (
-                self._data._grid_size if self._data is not None else 12
-            )
+            grid_size = self._data._grid_size if self._data is not None else 12
             glv = (
                 self._data._grid_letters_on_vertical
                 if self._data is not None
@@ -326,16 +352,21 @@ class ScatterPlotter:
     def zeros(
         self,
         *,
-        behind: bool = True,
-        color: str = "#D0D0D0",
+        behind: Optional[bool] = None,
+        color: Optional[str] = None,
         dot_size: Optional[float] = None,
+        zero_value: Optional[float] = None,
     ) -> "ScatterPlotter":
         """Configure zero-value rendering."""
         new = copy.copy(self)
-        new._zeros_behind = behind
-        new._zero_color = color
+        if behind is not None:
+            new._zeros_behind = behind
+        if color is not None:
+            new._zero_color = color
         if dot_size is not None:
             new._zero_dot_size = dot_size
+        if zero_value is not None:
+            new._zero_value = zero_value
         return new
 
     # ── borders ──────────────────────────────────────────────────────────────
@@ -495,12 +526,13 @@ class ScatterPlotter:
             df["facet"] = facet_vals
 
         # Figure size
-        if self._facet_variable is not None:
-            n_facets = df["facet"].nunique()
-            n_row = (n_facets + self._n_col - 1) // self._n_col
-            fig_size = (6 * self._n_col, 5 * n_row)
-        else:
-            fig_size = (6, 5)
+        if self.fig_size is None:
+            if self._facet_variable is not None:
+                n_facets = df["facet"].nunique()
+                n_row = (n_facets + self._n_col - 1) // self._n_col
+                fig_size = (6 * self._n_col, 5 * n_row)
+            else:
+                fig_size = (6, 5)
 
         # Build plot
         legend_config = None
@@ -525,7 +557,9 @@ class ScatterPlotter:
 
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = p + embedding_theme(
-            show_spines=self._show_spines, bg_color=self._bg_color
+            base_size=self.base_size,
+            show_spines=self._show_spines,
+            bg_color=self._bg_color,
         )
         p = p + p9.theme(figure_size=fig_size)
 
@@ -583,14 +617,14 @@ class ScatterPlotter:
                 )
 
         p = p + embedding_theme(
-            show_spines=self._show_spines, bg_color=self._bg_color
+            base_size=self.base_size,
+            show_spines=self._show_spines,
+            bg_color=self._bg_color,
         )
         p = p + p9.theme(figure_size=(6, 5))
         return p
 
-    def plot_grid_histogram(
-        self, column: str, min_cell_count: int = 10
-    ) -> p9.ggplot:
+    def plot_grid_histogram(self, column: str, min_cell_count: int = 10) -> p9.ggplot:
         """Build a grid-local category frequency heatmap (plotnine)."""
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_grid_histogram()")
@@ -694,11 +728,13 @@ class ScatterPlotter:
             return self._cmap
         # Assume matplotlib colormap object — sample 10 colors
         import matplotlib.colors as mcolors
+
         return [mcolors.to_hex(self._cmap(i / 9)) for i in range(10)]
 
     def _get_boundary_df(self) -> pd.DataFrame:
         if self._boundary_cache["df"] is None:
             from .transforms import compute_boundaries
+
             # Resolve cats so dict-based palettes can be ordered correctly
             cell_types, _ = self._data.get_column(self._cell_type_column)
             if hasattr(cell_types, "cat"):
@@ -737,8 +773,10 @@ class ScatterPlotter:
         expr_name: str,
     ) -> p9.ggplot:
         zero_val = self._zero_value
-        df_zeros = df[df["expression"] == zero_val]
-        df_nonzero = df[df["expression"] != zero_val].copy()
+        if zero_val is None:
+            zero_val = df["expression"].min()
+        df_zeros = df[df["expression"] <= zero_val]
+        df_nonzero = df[~(df["expression"] <= zero_val)].copy()
 
         if len(df_nonzero) == 0:
             clip_val = 1.0
@@ -820,6 +858,7 @@ class ScatterPlotter:
             cbar_title=cbar_name,
             breaks=breaks,
             labels=labels,
+            base_size=self.base_size,
         )
         return p, legend_config
 
@@ -840,9 +879,9 @@ class ScatterPlotter:
         cat_order = {c: i for i, c in enumerate(cats)}
         df = df.copy()
         df["_sort_key"] = df["expression"].map(cat_order)
-        df = df.sort_values(
-            "_sort_key", ascending=not self._flip_order
-        ).drop(columns=["_sort_key"])
+        df = df.sort_values("_sort_key", ascending=not self._flip_order).drop(
+            columns=["_sort_key"]
+        )
 
         p = p9.ggplot(df, p9.aes("x", "y", color="expression"))
 
@@ -865,9 +904,7 @@ class ScatterPlotter:
                 if len(sdf) == 0:
                     continue
                 center_x, center_y = sdf["x"].mean(), sdf["y"].mean()
-                dist = np.sqrt(
-                    (sdf["x"] - center_x) ** 2 + (sdf["y"] - center_y) ** 2
-                )
+                dist = np.sqrt((sdf["x"] - center_x) ** 2 + (sdf["y"] - center_y) ** 2)
                 thresh = dist.quantile(self._categorical_outlier_quantile)
                 outlier_dfs.append(sdf[dist > thresh])
             if outlier_dfs:
@@ -935,8 +972,8 @@ class ScatterPlotter:
             + p9.scale_x_continuous(breaks=list(x_positions), labels=list(x_labels))
             + p9.scale_y_continuous(breaks=list(y_positions), labels=list(y_labels))
             + p9.theme(
-                axis_text_x=p9.element_text(size=10),
-                axis_text_y=p9.element_text(size=10),
+                axis_text_x=p9.element_text(size=12 / self.base_size * 12),
+                axis_text_y=p9.element_text(size=12 / self.base_size * 12),
                 axis_ticks_major_x=p9.element_line(color="#555555", size=0.5),
                 axis_ticks_major_y=p9.element_line(color="#555555", size=0.5),
                 axis_ticks_length_major=5,
