@@ -21,11 +21,14 @@ DEFAULT_COLORS = [
 
 
 def embedding_theme(
-    base_size, show_spines: bool = True, bg_color: str = "#FFFFFF"
+    base_size,
+    show_spines: bool = True,
+    bg_color: str = "#FFFFFF",
+    spine_color: str = "#555555",
 ) -> p9.theme:
     """Standard theme for embedding plots: no axis titles, clean ticks."""
     border = (
-        p9.element_rect(color="#AAAAAA", size=0.5, fill=None)
+        p9.element_rect(color=spine_color, size=0.5, fill=None)
         if show_spines
         else p9.element_blank()
     )

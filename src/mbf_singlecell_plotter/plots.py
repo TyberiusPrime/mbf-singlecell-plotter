@@ -174,6 +174,7 @@ class GridConfig:
     vertical_letters: bool = False
     grid_size: int = 12
     color: str = "#777777"
+    label_color: str = "#777777"
 
 
 class ScatterPlotter:
@@ -205,11 +206,13 @@ class ScatterPlotter:
         # dot appearance
         self._dot_size: float = 1
         self._show_spines: bool = True
+        self._spine_color: str = "#555555"
+        self._tick_color: str = "#555555"
         self._bg_color: str = "#FFFFFF"
         self._anti_overplot: bool = True
         self._flip_order: bool = False
-        self._categorical_outliers: bool = True
-        self._categorical_outlier_quantile: float = 0.95
+        self._outlier_quantile: float = 0.95
+        self._outlier_shape: Optional[str] = None  # None → same shape as main dots
 
         # colormap config (numerical)
         self._cmap = None  # None → default blue-magenta, or list of color strings
@@ -218,13 +221,18 @@ class ScatterPlotter:
         self._cbar_title: Optional[str] = None  # None → auto from gene name
 
         # zero handling
-        self._zeros_behind: bool = True
         self._zero_color: str = "#D0D0D0"
         self._zero_dot_size: float = 3
         self._zero_value: Optional[float] = None
 
         # categorical colormap
         self._cat_colors: Optional[list] = None  # None → DEFAULT_COLORS
+
+        # layer visibility
+        self._layer_borders: bool = True
+        self._layer_zeros: bool = True
+        self._layer_data: bool = True
+        self._layer_outliers: bool = True
 
         # optional layers
         self._border_config: Optional[BorderConfig] = None
@@ -275,20 +283,28 @@ class ScatterPlotter:
         *,
         dot_size: Optional[float] = None,
         spines: Optional[bool] = None,
+        spine_color: Optional[str] = None,
+        tick_color: Optional[str] = None,
         bg_color: Optional[str] = None,
     ) -> "ScatterPlotter":
         """Configure visual appearance. Only supplied arguments are changed.
 
         Args:
-            dot_size: Point size for the main scatter layer.
-            spines:   Show/hide the panel border (True = show).
-            bg_color: Background hex color (e.g. ``"#FFFFFF"``).
+            dot_size:    Point size for the main scatter layer.
+            spines:      Show/hide the panel border (True = show).
+            spine_color: Hex color for the panel border (default ``"#555555"``).
+            tick_color:  Hex color for axis ticks and tick labels (default ``"#555555"``).
+            bg_color:    Background hex color (e.g. ``"#FFFFFF"``).
         """
         new = copy.copy(self)
         if dot_size is not None:
             new._dot_size = dot_size
         if spines is not None:
             new._show_spines = spines
+        if spine_color is not None:
+            new._spine_color = spine_color
+        if tick_color is not None:
+            new._tick_color = tick_color
         if bg_color is not None:
             new._bg_color = bg_color
         return new
@@ -299,10 +315,25 @@ class ScatterPlotter:
         new._flip_order = value
         return new
 
-    def outlier_replot(self, enabled: bool = True) -> "ScatterPlotter":
-        """Enable or disable the categorical outlier replot pass (default: enabled)."""
+    def outlier(
+        self,
+        *,
+        shape: Optional[str] = None,
+        quantile: Optional[float] = None,
+    ) -> "ScatterPlotter":
+        """Configure the categorical outlier replot pass.
+
+        Args:
+            shape:    Marker shape for outlier points (e.g. ``"^"``, ``"D"``).
+                      None keeps the same shape as the main scatter dots.
+            quantile: Distance quantile above which a point is an outlier
+                      (default 0.95).
+        """
         new = copy.copy(self)
-        new._categorical_outliers = enabled
+        if shape is not None:
+            new._outlier_shape = shape
+        if quantile is not None:
+            new._outlier_quantile = quantile
         return new
 
     # ── colormap (numerical) ─────────────────────────────────────────────────
@@ -352,15 +383,12 @@ class ScatterPlotter:
     def zeros(
         self,
         *,
-        behind: Optional[bool] = None,
         color: Optional[str] = None,
         dot_size: Optional[float] = None,
         zero_value: Optional[float] = None,
     ) -> "ScatterPlotter":
-        """Configure zero-value rendering."""
+        """Configure zero-value rendering (appearance only; use layers(zeros=) to toggle visibility)."""
         new = copy.copy(self)
-        if behind is not None:
-            new._zeros_behind = behind
         if color is not None:
             new._zero_color = color
         if dot_size is not None:
@@ -404,35 +432,74 @@ class ScatterPlotter:
         new._border_config = None
         return new
 
+    # ── layer visibility ─────────────────────────────────────────────────────
+
+    def layers(
+        self,
+        *,
+        borders: Optional[bool] = None,
+        zeros: Optional[bool] = None,
+        data: Optional[bool] = None,
+        outliers: Optional[bool] = None,
+    ) -> "ScatterPlotter":
+        """Toggle individual rendering layers.
+
+        Args:
+            borders:  Show/hide the cell-type border overlay.
+            zeros:    Show/hide the zero-expression underlay.  When False,
+                      zero-valued points are folded into the data layer and
+                      coloured by the gradient instead of a flat zero colour.
+            data:     Show/hide the main scatter layer.
+            outliers: Show/hide the categorical outlier replot pass.
+        """
+        new = copy.copy(self)
+        if borders is not None:
+            new._layer_borders = borders
+        if zeros is not None:
+            new._layer_zeros = zeros
+        if data is not None:
+            new._layer_data = data
+        if outliers is not None:
+            new._layer_outliers = outliers
+        return new
+
     # ── grid overlay ─────────────────────────────────────────────────────────
 
     def with_grid(
         self,
         *,
-        labels: bool = False,
-        coords: bool = False,
-        vertical_letters: bool = False,
-        grid_size: int = 12,
-        color: str = "#777777",
+        labels: Optional[bool] = None,
+        coords: Optional[bool] = None,
+        vertical_letters: Optional[bool] = None,
+        grid_size: Optional[int] = None,
+        color: Optional[str] = None,
+        label_color: Optional[str] = None,
     ) -> "ScatterPlotter":
         """
         labels: show "A1", "B2" text labels inside each grid cell
         coords: use grid coords as axis tick labels
+
+        Only supplied arguments are changed; unspecified ones inherit from the
+        current grid config (or GridConfig defaults if no grid is set yet).
         """
-        if grid_size > 26:
+        cur = self._grid_config if self._grid_config is not None else GridConfig()
+        resolved_grid_size = grid_size if grid_size is not None else cur.grid_size
+        resolved_vl = vertical_letters if vertical_letters is not None else cur.vertical_letters
+        if resolved_grid_size > 26:
             raise ValueError("grid_size max is 26")
         new = copy.copy(self)
         new._grid_config = GridConfig(
-            labels=labels,
-            coords=coords,
-            vertical_letters=vertical_letters,
-            grid_size=grid_size,
-            color=color,
+            labels=labels if labels is not None else cur.labels,
+            coords=coords if coords is not None else cur.coords,
+            vertical_letters=resolved_vl,
+            grid_size=resolved_grid_size,
+            color=color if color is not None else cur.color,
+            label_color=label_color if label_color is not None else cur.label_color,
         )
         # Sync EmbeddingData grid settings if needed
         if new._data is not None and (
-            new._data._grid_size != grid_size
-            or new._data._grid_letters_on_vertical != vertical_letters
+            new._data._grid_size != resolved_grid_size
+            or new._data._grid_letters_on_vertical != resolved_vl
         ):
             new._data = EmbeddingData(
                 new._data.ad,
@@ -444,8 +511,8 @@ class ScatterPlotter:
                     new._data._embedding_cols[1],
                 ),
                 alternative_id_column=new._data._alternative_id_column,
-                grid_size=grid_size,
-                grid_letters_on_vertical=vertical_letters,
+                grid_size=resolved_grid_size,
+                grid_letters_on_vertical=resolved_vl,
             )
         return new
 
@@ -560,6 +627,7 @@ class ScatterPlotter:
             base_size=self.base_size,
             show_spines=self._show_spines,
             bg_color=self._bg_color,
+            spine_color=self._spine_color,
         )
         p = p + p9.theme(figure_size=fig_size)
 
@@ -620,6 +688,7 @@ class ScatterPlotter:
             base_size=self.base_size,
             show_spines=self._show_spines,
             bg_color=self._bg_color,
+            spine_color=self._spine_color,
         )
         p = p + p9.theme(figure_size=(6, 5))
         return p
@@ -775,8 +844,15 @@ class ScatterPlotter:
         zero_val = self._zero_value
         if zero_val is None:
             zero_val = df["expression"].min()
-        df_zeros = df[df["expression"] <= zero_val]
-        df_nonzero = df[~(df["expression"] <= zero_val)].copy()
+
+        # When the zeros layer is hidden, fold zero-valued points into the
+        # gradient so they get a colour rather than being dropped.
+        if self._layer_zeros:
+            df_zeros = df[df["expression"] <= zero_val]
+            df_nonzero = df[~(df["expression"] <= zero_val)].copy()
+        else:
+            df_zeros = df.iloc[:0]  # empty — nothing to render as flat colour
+            df_nonzero = df.copy()  # all points go through the gradient
 
         if len(df_nonzero) == 0:
             clip_val = 1.0
@@ -801,11 +877,11 @@ class ScatterPlotter:
             p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
-        if self._border_config is not None and self._cell_type_column is not None:
+        if self._layer_borders and self._border_config is not None and self._cell_type_column is not None:
             p = self._add_border_layers(p)
 
         # Zero underlay
-        if self._zeros_behind and len(df_zeros) > 0:
+        if self._layer_zeros and len(df_zeros) > 0:
             p = p + p9.geom_point(
                 data=df_zeros,
                 mapping=p9.aes("x", "y"),
@@ -815,10 +891,11 @@ class ScatterPlotter:
             )
 
         # Main scatter (gradient range)
-        p = p + p9.geom_point(size=self._dot_size)
+        if self._layer_data:
+            p = p + p9.geom_point(size=self._dot_size)
 
         # Clipped values drawn on top in clip color
-        if len(df_above) > 0:
+        if self._layer_data and len(df_above) > 0:
             p = p + p9.geom_point(
                 data=df_above,
                 mapping=p9.aes("x", "y"),
@@ -890,14 +967,15 @@ class ScatterPlotter:
             p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
-        if self._border_config is not None and self._cell_type_column is not None:
+        if self._layer_borders and self._border_config is not None and self._cell_type_column is not None:
             p = self._add_border_layers(p)
 
         # Scatter
-        p = p + p9.geom_point(size=self._dot_size)
+        if self._layer_data:
+            p = p + p9.geom_point(size=self._dot_size)
 
         # Outlier replot
-        if self._categorical_outliers:
+        if self._layer_outliers:
             outlier_dfs = []
             for cat in cats:
                 sdf = df[df["expression"] == cat]
@@ -905,14 +983,16 @@ class ScatterPlotter:
                     continue
                 center_x, center_y = sdf["x"].mean(), sdf["y"].mean()
                 dist = np.sqrt((sdf["x"] - center_x) ** 2 + (sdf["y"] - center_y) ** 2)
-                thresh = dist.quantile(self._categorical_outlier_quantile)
+                thresh = dist.quantile(self._outlier_quantile)
                 outlier_dfs.append(sdf[dist > thresh])
             if outlier_dfs:
                 df_outliers = pd.concat(outlier_dfs)
+                extra = {} if self._outlier_shape is None else {"shape": self._outlier_shape}
                 p = p + p9.geom_point(
                     data=df_outliers,
                     size=self._dot_size,
                     inherit_aes=True,
+                    **extra,
                 )
 
         p = p + p9.scale_color_manual(values=color_values, name=expr_name)
@@ -957,7 +1037,7 @@ class ScatterPlotter:
             p = p + p9.geom_text(
                 data=labels_df,
                 mapping=p9.aes("x", "y", label="label"),
-                color=gc.color,
+                color=gc.label_color,
                 size=8,
                 alpha=0.7,
                 inherit_aes=False,
@@ -972,10 +1052,10 @@ class ScatterPlotter:
             + p9.scale_x_continuous(breaks=list(x_positions), labels=list(x_labels))
             + p9.scale_y_continuous(breaks=list(y_positions), labels=list(y_labels))
             + p9.theme(
-                axis_text_x=p9.element_text(size=12 / self.base_size * 12),
-                axis_text_y=p9.element_text(size=12 / self.base_size * 12),
-                axis_ticks_major_x=p9.element_line(color="#555555", size=0.5),
-                axis_ticks_major_y=p9.element_line(color="#555555", size=0.5),
+                axis_text_x=p9.element_text(size=12 / self.base_size * 12, color=self._tick_color),
+                axis_text_y=p9.element_text(size=12 / self.base_size * 12, color=self._tick_color),
+                axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
+                axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
                 axis_ticks_length_major=5,
             )
         )
