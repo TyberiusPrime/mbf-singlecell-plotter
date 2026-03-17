@@ -5,6 +5,7 @@ import anndata
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend; must be set before importing pyplot
 
+import numpy as np
 from pathlib import Path
 
 EXAMPLE_DATA = Path(__file__).parent.parent / "example_data" / "scanpy-pbmc3k_stripped.h5ad"
@@ -52,3 +53,25 @@ def plotter(data):
         .set_source(data)
         .with_borders(cell_type_column=CELL_TYPE_COLUMN)
     )
+
+
+@pytest.fixture
+def assert_image(request):
+    """Assert a plot or array matches a reference image.
+
+    The reference image name is derived automatically from the test class and
+    function: ``ClassName__test_function_name``.  No manual name string needed.
+    """
+    def _assert(p_or_array, **kwargs):
+        cls = request.node.cls.__name__ if request.node.cls else None
+        fn = request.node.originalname or request.node.name
+        name = f"{cls}__{fn}" if cls else fn
+
+        if isinstance(p_or_array, np.ndarray):
+            from image_comparison import assert_array_matches
+            assert_array_matches(p_or_array, name, **kwargs)
+        else:
+            from image_comparison import assert_plotnine_matches
+            assert_plotnine_matches(p_or_array, name, **kwargs)
+
+    return _assert
