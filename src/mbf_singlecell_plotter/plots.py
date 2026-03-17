@@ -25,6 +25,40 @@ class _PlotWithCustomLegend(p9.ggplot):
         return sv
 
 
+class _PlotWithVerticalLegendTitle(p9.ggplot):
+    """ggplot subclass that adds a vertical title to the right-side categorical legend."""
+
+    def save_helper(self, **kwargs):
+        sv = super().save_helper(**kwargs)
+        _draw_vertical_cat_legend_title(sv.figure, self._cat_legend_title, self._cat_legend_fontsize)
+        return sv
+
+
+def _draw_vertical_cat_legend_title(fig, title: str, fontsize: float) -> None:
+    """Add a rotated title to the left of the categorical legend offsetbox."""
+    le = fig.get_layout_engine()
+    if le is not None:
+        le.execute(fig)
+        fig.set_layout_engine(None)
+
+    # Find the FlexibleAnchoredOffsetbox that plotnine uses for the legend
+    legend_box = None
+    for child in fig.get_children():
+        if type(child).__name__ == "FlexibleAnchoredOffsetbox":
+            legend_box = child
+            break
+
+    if legend_box is None:
+        return
+
+    bb = legend_box.get_window_extent()
+    fig_bb = bb.transformed(fig.transFigure.inverted())
+
+    cx = fig_bb.x0 - 0.025
+    cy = (fig_bb.y0 + fig_bb.y1) / 2
+    fig.text(cx, cy, title, rotation=90, va="center", ha="center", fontsize=fontsize)
+
+
 def _draw_numerical_legend(
     fig,
     *,
@@ -39,6 +73,7 @@ def _draw_numerical_legend(
     breaks: list,
     labels: list,
     base_size: float = 12,
+    title_position: str = "side",
 ) -> None:
     """Add a custom colorbar with rectangular extension boxes to a plotnine figure."""
     import matplotlib as mpl
@@ -70,27 +105,47 @@ def _draw_numerical_legend(
 
     extendfrac = 0.05  # extension boxes = 5% of bar height each
 
-    main_ax = fig.axes[0]
-    pos = main_ax.get_position()  # Bbox in figure [0,1] coords
+    # ── Compute combined bounding box of all data axes ────────────────────────
+    # For faceted plots there are multiple panels; we want the colorbar anchored
+    # to the right edge of the rightmost panel and spanning the full grid height.
+    all_axes = fig.axes
+    grid_x1     = max(ax.get_position().x1 for ax in all_axes)
+    grid_y0     = min(ax.get_position().y0 for ax in all_axes)
+    grid_height = max(ax.get_position().y1 for ax in all_axes) - grid_y0
+
+    # For single-panel figures keep a reference to the one axes for shrinking.
+    main_ax = all_axes[0]
 
     # ── Layout: title | gap | bar (tick labels auto to the right) ────────────
-    # The right margin (pos.x1 → 1.0) is already freed by suppressing the guide.
-    title_half = 0.025  # half-width of title text area
     gap = 0.008
     bar_frac = 0.035  # colorbar bar width as fraction of figure
 
-    bar_left = pos.x1 + 2 * title_half + gap
+    if title_position == "top":
+        # No side title column; bar starts right after the grid
+        bar_left = grid_x1 + gap
+        legend_width = gap + bar_frac + 0.10
+    else:
+        # "side": vertical title text to the left of the bar
+        title_half = 0.025  # half-width of title text area
+        bar_left = grid_x1 + 2 * title_half + gap
+        legend_width = 2 * title_half + gap + bar_frac + 0.10
 
-    # Safety: if tight, shrink main axes
-    # 0.07 reserved for tick labels to the right of the colorbar
-    needed_right = bar_left + bar_frac + 0.07
+    needed_right = grid_x1 + legend_width
+
     if needed_right > 0.99:
-        shrink = needed_right - 0.99
-        main_ax.set_position([pos.x0, pos.y0, pos.width - shrink, pos.height])
-        pos = main_ax.get_position()
-        bar_left = pos.x1 + 2 * title_half + gap
+        # Scale all data axes proportionally so the legend fits within the figure.
+        target_x1 = 0.99 - legend_width
+        scale = target_x1 / grid_x1
+        for ax in all_axes:
+            p = ax.get_position()
+            ax.set_position([p.x0 * scale, p.y0, p.width * scale, p.height])
+        grid_x1 = max(ax.get_position().x1 for ax in all_axes)
+        if title_position == "top":
+            bar_left = grid_x1 + gap
+        else:
+            bar_left = grid_x1 + 2 * title_half + gap
 
-    cbar_ax = fig.add_axes([bar_left, pos.y0, bar_frac, pos.height])
+    cbar_ax = fig.add_axes([bar_left, grid_y0, bar_frac, grid_height])
 
     # Drop the boundary ticks that would overlap with extension box labels.
     tick_breaks = list(breaks)
@@ -145,18 +200,33 @@ def _draw_numerical_legend(
             clip_on=False,
         )
 
-    # ── Title: vertical text to the LEFT of the bar ──────────────────────────
-    title_cx = pos.x1 + title_half
-    title_cy = pos.y0 + pos.height * 0.5
-    fig.text(
-        title_cx,
-        title_cy,
-        cbar_title,
-        rotation=90,
-        va="center",
-        ha="center",
-        fontsize=legend_fontsize,
-    )
+    # ── Title ─────────────────────────────────────────────────────────────────
+    if title_position == "top":
+        # Horizontal title above the bar
+        title_cx = bar_left + bar_frac / 2
+        title_cy = grid_y0 + grid_height + 0.02
+        fig.text(
+            title_cx,
+            title_cy,
+            cbar_title,
+            rotation=0,
+            va="bottom",
+            ha="center",
+            fontsize=legend_fontsize,
+        )
+    else:
+        # Vertical title to the LEFT of the bar
+        title_cx = grid_x1 + title_half
+        title_cy = grid_y0 + grid_height * 0.5
+        fig.text(
+            title_cx,
+            title_cy,
+            cbar_title,
+            rotation=90,
+            va="center",
+            ha="center",
+            fontsize=legend_fontsize,
+        )
 
 
 @dataclass(frozen=True)
@@ -205,10 +275,11 @@ class ScatterPlotter:
 
         # dot appearance
         self._dot_size: float = 1
-        self._show_spines: bool = True
+        self._panel_border: bool = True
         self._spine_color: str = "#555555"
         self._tick_color: str = "#555555"
         self._bg_color: str = "#FFFFFF"
+        self._legend_title_position: Optional[str] = None  # None → auto ("top" for cat, "side" for num)
         self._anti_overplot: bool = True
         self._flip_order: bool = False
         self._outlier_quantile: float = 0.95
@@ -282,31 +353,37 @@ class ScatterPlotter:
         self,
         *,
         dot_size: Optional[float] = None,
-        spines: Optional[bool] = None,
+        panel_border: Optional[bool] = None,
         spine_color: Optional[str] = None,
         tick_color: Optional[str] = None,
         bg_color: Optional[str] = None,
+        legend_title_position: Optional[str] = None,
     ) -> "ScatterPlotter":
         """Configure visual appearance. Only supplied arguments are changed.
 
         Args:
             dot_size:    Point size for the main scatter layer.
-            spines:      Show/hide the panel border (True = show).
+            panel_border: Show/hide the panel border (True = show).
             spine_color: Hex color for the panel border (default ``"#555555"``).
             tick_color:  Hex color for axis ticks and tick labels (default ``"#555555"``).
             bg_color:    Background hex color (e.g. ``"#FFFFFF"``).
+            legend_title_position: ``"top"`` (title above legend, horizontal) or
+                ``"side"`` (title left of legend, vertical).  ``None`` → auto
+                (``"top"`` for categorical, ``"side"`` for numerical).
         """
         new = copy.copy(self)
         if dot_size is not None:
             new._dot_size = dot_size
-        if spines is not None:
-            new._show_spines = spines
+        if panel_border is not None:
+            new._panel_border = panel_border
         if spine_color is not None:
             new._spine_color = spine_color
         if tick_color is not None:
             new._tick_color = tick_color
         if bg_color is not None:
             new._bg_color = bg_color
+        if legend_title_position is not None:
+            new._legend_title_position = legend_title_position
         return new
 
     def flip_draw_order(self, value: bool = True) -> "ScatterPlotter":
@@ -625,7 +702,7 @@ class ScatterPlotter:
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = p + embedding_theme(
             base_size=self.base_size,
-            show_spines=self._show_spines,
+            show_spines=self._panel_border,
             bg_color=self._bg_color,
             spine_color=self._spine_color,
         )
@@ -642,27 +719,42 @@ class ScatterPlotter:
 
         return p
 
-    def plot_density(self, bins: int = 200) -> p9.ggplot:
-        """Build a 2D cell-density heatmap."""
+    def plot_density(self, bins: int = 200, quantile: float = 0.99) -> p9.ggplot:
+        """Build a 2D cell-density heatmap.
+
+        Args:
+            bins:     Number of bins per axis for the 2D histogram.
+            quantile: Upper quantile at which density is clipped (default 0.99).
+                      Set to 1.0 for no clipping (uses the built-in plotnine legend).
+                      Any value < 1.0 clips the colour scale and draws the same
+                      custom matplotlib colourbar as numerical scatter plots.
+        """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_density()")
 
         from .transforms import prepare_density_df
 
         df = prepare_density_df(self._data, bins=bins)
-        coords = self._data.coordinates()
-        clip_val = float(df["density"].quantile(0.99))
+
+        has_clips = quantile < 1.0
+        if has_clips:
+            clip_val = float(df["density"].quantile(quantile))
+        else:
+            clip_val = float(df["density"].max())
+
+        nonzero = df["density"][df["density"] > 0]
+        density_min = float(nonzero.min()) if len(nonzero) > 0 else 0.0
 
         cmap_colors = ["#BFBFFF", "#0000FF"]
-        breaks = list(np.linspace(1, clip_val, 5))
-        labels = [f"{b:.2f}" for b in breaks[:-1]] + [f">{clip_val:.2f}"]
+        breaks = list(np.linspace(density_min, clip_val, 5))
+        labels = [f"{b:.2f}" for b in breaks]
 
         p = (
             p9.ggplot(df, p9.aes("x", "y", fill="density"))
             + p9.geom_tile(p9.aes(width="x_width", height="y_width"))
             + p9.scale_fill_gradientn(
                 colors=cmap_colors,
-                limits=(1, clip_val),
+                limits=(density_min, clip_val),
                 breaks=breaks,
                 labels=labels,
                 na_value="#FFFFFF",
@@ -670,8 +762,11 @@ class ScatterPlotter:
             )
         )
 
+        if has_clips:
+            p = p + p9.guides(fill="none")
+
         # Boundary overlay
-        if self._border_config is not None and self._cell_type_column is not None:
+        if self._layer_borders and self._border_config is not None and self._cell_type_column is not None:
             bdf = self._get_boundary_df()
             border_pt = self._border_config.size / 10
             for color in bdf["color"].unique():
@@ -686,11 +781,30 @@ class ScatterPlotter:
 
         p = p + embedding_theme(
             base_size=self.base_size,
-            show_spines=self._show_spines,
+            show_spines=self._panel_border,
             bg_color=self._bg_color,
             spine_color=self._spine_color,
         )
         p = p + p9.theme(figure_size=(6, 5))
+
+        if has_clips:
+            legend_config = dict(
+                expr_min=density_min,
+                clip_val=clip_val,
+                cmap_colors=cmap_colors,
+                has_zeros=False,
+                zero_color="#FFFFFF",
+                has_clips=True,
+                upper_clip_color=cmap_colors[-1],
+                cbar_title="density",
+                breaks=breaks,
+                labels=labels,
+                base_size=self.base_size,
+                title_position=self._legend_title_position or "side",
+            )
+            p.__class__ = _PlotWithCustomLegend
+            p._legend_config = legend_config
+
         return p
 
     def plot_grid_histogram(self, column: str, min_cell_count: int = 10) -> p9.ggplot:
@@ -936,6 +1050,7 @@ class ScatterPlotter:
             breaks=breaks,
             labels=labels,
             base_size=self.base_size,
+            title_position=self._legend_title_position or "side",
         )
         return p, legend_config
 
@@ -995,7 +1110,19 @@ class ScatterPlotter:
                     **extra,
                 )
 
-        p = p + p9.scale_color_manual(values=color_values, name=expr_name)
+        # Legend title position: auto defaults to "top" for categorical
+        title_pos = self._legend_title_position or "top"
+        if title_pos == "side":
+            # Suppress plotnine's title; we'll draw a rotated one via hook
+            p = p + p9.scale_color_manual(values=color_values, name=expr_name)
+            p = p + p9.theme(legend_title=p9.element_blank())
+            p.__class__ = _PlotWithVerticalLegendTitle
+            p._cat_legend_title = expr_name
+            p._cat_legend_fontsize = self.base_size * 0.9
+        else:
+            # "top" is plotnine's default
+            p = p + p9.scale_color_manual(values=color_values, name=expr_name)
+
         return p
 
     def _add_grid_layers(self, p: p9.ggplot) -> p9.ggplot:

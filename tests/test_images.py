@@ -11,6 +11,7 @@ Fixture choice:
   plotter              — requires scikit-image; tests boundary rendering specifically
 """
 
+from plotnine.themes.themeable import legend_title
 import pytest
 import matplotlib
 
@@ -71,7 +72,7 @@ class TestPlotScatterNumerical:
         assert_plotnine_matches(p, "scatter_CST3_clip100")
 
     def test_cd79a_no_spines(self, plotter_no_boundary):
-        p = plotter_no_boundary.style(dot_size=DOT_SIZE, spines=False).plot("CD79A")
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE, panel_border=False).plot("CD79A")
         assert_plotnine_matches(p, "scatter_CD79A_no_spines")
 
     def test_zeros_vs_no_zeros(self, plotter_no_boundary):
@@ -126,10 +127,23 @@ class TestPlotScatterCategorical:
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot(CAT_COL)
         assert_plotnine_matches(p, "scatter_leiden")
 
+    def test_leiden_clusters_no_outliers(self, plotter_no_boundary):
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).layers(outliers=False).plot(CAT_COL)
+        assert_plotnine_matches(p, "scatter_leiden_no_outliers")
+
+    def test_leiden_clusters_outlier_shape(self, plotter_no_boundary):
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .outlier(shape="^")
+            .plot(CAT_COL)
+        )
+        assert_plotnine_matches(p, "scatter_leiden_outlier_shape")
+
     def test_leiden_flip_order(self, plotter_no_boundary):
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
             .flip_draw_order(True)
+            .style(legend_title_position='side')
             .plot(CAT_COL)
         )
         assert_plotnine_matches(p, "scatter_leiden_flip_order")
@@ -146,7 +160,7 @@ class TestPlotCellDensity:
         assert_plotnine_matches(p, "cell_density_basic")
 
     def test_no_spines(self, plotter_no_boundary):
-        p = plotter_no_boundary.style(spines=False).plot_density()
+        p = plotter_no_boundary.style(panel_border=False).plot_density()
         assert_plotnine_matches(p, "cell_density_no_spines")
 
     def test_custom_bins(self, plotter_no_boundary):

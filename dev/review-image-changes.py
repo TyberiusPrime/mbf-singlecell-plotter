@@ -5,20 +5,21 @@ Review image test failures in the terminal.
 Usage:
     python dev/review-image-changes.py [--failures-dir PATH] [--filter PATTERN]
 
-Finds all sets of (reference, actual, diff) PNGs in tests/failures/ and
-displays them side-by-side in the terminal using the Kitty graphics protocol.
-Falls back to printing file paths + basic PIL stats if Kitty is not available.
+Finds all *_actual.png files in tests/failures/ and shows the reference and
+actual images side by side.
 
-Controls (Kitty mode):
-    Press Enter / n  → next failure
-    Press q          → quit
+Controls:
+    Space        → toggle: cycle between full-size reference / full-size actual
+                   (for flicker comparison; side-by-side is the resting view)
+    a            → accept: copy actual → canonical reference, advance to next
+    Enter / n    → next failure
+    q            → quit
 """
 
 import argparse
 import os
+import shutil
 import sys
-import struct
-import zlib
 import base64
 import termios
 import tty
@@ -31,57 +32,34 @@ DEFAULT_REFERENCE = TESTS_DIR / "reference_images"
 
 
 # ---------------------------------------------------------------------------
-# Kitty graphics protocol helpers
+# Image display helpers
 # ---------------------------------------------------------------------------
 
-def _kitty_supported() -> bool:
-    """Heuristic: check if TERM or TERM_PROGRAM suggests Kitty."""
-    term = os.environ.get("TERM", "")
-    term_program = os.environ.get("TERM_PROGRAM", "")
-    return "kitty" in term.lower() or "kitty" in term_program.lower()
-
-
-def _encode_image_kitty(path: Path, max_width: int = 400) -> None:
-    """
-    Display an image using the Kitty terminal graphics protocol (APC escape).
-    Reads the PNG, sends it in base64-encoded chunks.
-    """
+def _send_kitty(path: Path, max_width: int) -> None:
     try:
         from PIL import Image
         import io
-
         img = Image.open(path).convert("RGB")
-        # Scale down if too wide
         w, h = img.size
         if w > max_width:
             scale = max_width / w
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         data = base64.standard_b64encode(buf.getvalue())
-
-        chunk_size = 4096
-        chunks = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)]
-
-        for i, chunk in enumerate(chunks):
-            is_last = i == len(chunks) - 1
-            m_value = 0 if is_last else 1
-            if i == 0:
-                header = f"a=T,f=100,m={m_value}"
-            else:
-                header = f"m={m_value}"
-            sys.stdout.buffer.write(
-                b"\x1b_G" + header.encode() + b";" + chunk + b"\x1b\\"
-            )
+        chunk = 4096
+        chunks = [data[i:i + chunk] for i in range(0, len(data), chunk)]
+        for i, c in enumerate(chunks):
+            m = 0 if i == len(chunks) - 1 else 1
+            hdr = f"a=T,f=100,m={m}" if i == 0 else f"m={m}"
+            sys.stdout.buffer.write(b"\x1b_G" + hdr.encode() + b";" + c + b"\x1b\\")
         sys.stdout.buffer.flush()
-        print()  # newline after image
+        print()
     except Exception as e:
         print(f"  [kitty error: {e}] {path}")
 
 
-def _iterm2_encode(path: Path, max_width: int = 400) -> None:
-    """Display via iTerm2 inline images protocol (fallback for iTerm2)."""
+def _send_iterm2(path: Path, max_width: int) -> None:
     try:
         from PIL import Image
         import io
@@ -93,54 +71,86 @@ def _iterm2_encode(path: Path, max_width: int = 400) -> None:
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         data = base64.standard_b64encode(buf.getvalue()).decode()
-        sys.stdout.write(f"\x1b]1337;File=inline=1;width=400px:{data}\x07\n")
+        sys.stdout.write(f"\x1b]1337;File=inline=1;width={max_width}px:{data}\x07\n")
         sys.stdout.flush()
     except Exception as e:
         print(f"  [iterm2 error: {e}] {path}")
 
 
-def _detect_protocol() -> str:
-    """Detect which image protocol to use. Returns 'kitty', 'iterm2', or 'none'."""
-    term = os.environ.get("TERM", "").lower()
-    term_program = os.environ.get("TERM_PROGRAM", "").lower()
-    if "kitty" in term:
-        return "kitty"
-    if "iterm" in term_program:
-        return "iterm2"
-    # Try sixel? For now, fall through to none.
-    return "none"
+def _composite_side_by_side(left: Path, right: Path, gap: int = 20) -> "Image":
+    from PIL import Image
+    a = Image.open(left).convert("RGB")
+    b = Image.open(right).convert("RGB")
+    h = max(a.height, b.height)
+    w = a.width + gap + b.width
+    out = Image.new("RGB", (w, h), (220, 220, 220))
+    out.paste(a, (0, (h - a.height) // 2))
+    out.paste(b, (a.width + gap, (h - b.height) // 2))
+    return out
 
 
-def _show_image(path: Path, protocol: str, max_width: int = 800) -> None:
-    if not path.exists():
-        print(f"    (file not found: {path.name})")
+def _terminal_pixel_width() -> int:
+    """Best-effort terminal width in pixels."""
+    # Try TIOCGWINSZ ioctl (gives both cell and pixel dimensions)
+    try:
+        import fcntl, struct
+        packed = fcntl.ioctl(sys.stdout.fileno(), 0x5413,  # TIOCGWINSZ
+                             b"\x00" * 8)
+        _rows, _cols, px_w, _px_h = struct.unpack("HHHH", packed)
+        if px_w > 0:
+            return px_w
+    except Exception:
+        pass
+    # Fallback: assume ~9 pixels per column
+    cols = shutil.get_terminal_size((120, 40)).columns
+    return cols * 9
+
+
+def _show_composite(left: Path, right: Path, protocol: str, max_width: Optional[int] = None) -> None:
+    if max_width is None:
+        max_width = _terminal_pixel_width()
+    if protocol == "none":
+        _print_stats(left, "REFERENCE")
+        _print_stats(right, "ACTUAL")
         return
-    if protocol == "kitty":
-        _encode_image_kitty(path, max_width=max_width)
-    elif protocol == "iterm2":
-        _iterm2_encode(path, max_width=max_width)
-    else:
-        _print_image_stats(path)
+    try:
+        from PIL import Image
+        import io
+        img = _composite_side_by_side(left, right)
+        w, h = img.size
+        if w > max_width:
+            scale = max_width / w
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        tmp = Path("/tmp/_review_composite.png")
+        img.save(tmp)
+        if protocol == "kitty":
+            _send_kitty(tmp, max_width)
+        else:
+            _send_iterm2(tmp, max_width)
+    except Exception as e:
+        print(f"  [composite error: {e}]")
+        _print_stats(left, "REFERENCE")
+        _print_stats(right, "ACTUAL")
 
 
-def _print_image_stats(path: Path) -> None:
-    """Print basic image statistics when no graphics protocol is available."""
+
+def _print_stats(path: Path, label: str = "") -> None:
     try:
         from PIL import Image
         import numpy as np
         img = Image.open(path).convert("RGB")
-        arr = np.array(img)
-        print(f"    size={img.size}  mean={arr.mean():.1f}  path={path}")
+        arr = __import__("numpy").array(img)
+        tag = f"  {label:<12}" if label else "  "
+        print(f"{tag} size={img.size}  mean={arr.mean():.1f}  {path}")
     except Exception:
-        print(f"    path={path}")
+        print(f"  {path}")
 
 
 # ---------------------------------------------------------------------------
-# Keyboard helper
+# Keyboard
 # ---------------------------------------------------------------------------
 
 def _getch() -> str:
-    """Read a single character from stdin without echo."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -151,50 +161,47 @@ def _getch() -> str:
     return ch
 
 
-def _wait_for_next(interactive: bool) -> bool:
-    """Returns True to continue, False to quit."""
-    if not interactive:
-        return True
-    print("\n  [Enter/n = next | q = quit] ", end="", flush=True)
-    try:
-        ch = _getch()
-    except Exception:
-        return False
-    print()
-    return ch.lower() not in ("q",)
-
-
 # ---------------------------------------------------------------------------
 # Failure discovery
 # ---------------------------------------------------------------------------
 
 def find_failures(failures_dir: Path, pattern: Optional[str] = None):
-    """
-    Yield dicts with keys: name, reference, actual, diff.
-    Looks for *_actual.png files and resolves their siblings.
-    """
     if not failures_dir.exists():
         return
-
     for actual_path in sorted(failures_dir.glob("*_actual.png")):
         name = actual_path.stem[: -len("_actual")]
         if pattern and pattern.lower() not in name.lower():
             continue
         ref_in_failures = failures_dir / f"{name}_reference.png"
-        ref_in_refs = DEFAULT_REFERENCE / f"{name}.png"
-        ref_path = ref_in_failures if ref_in_failures.exists() else ref_in_refs
-        diff_path = failures_dir / f"{name}_diff.png"
-        yield {
-            "name": name,
-            "reference": ref_path,
-            "actual": actual_path,
-            "diff": diff_path,
-        }
+        ref_canonical = DEFAULT_REFERENCE / f"{name}.png"
+        ref_path = ref_in_failures if ref_in_failures.exists() else ref_canonical
+        yield {"name": name, "reference": ref_path, "actual": actual_path}
 
 
 # ---------------------------------------------------------------------------
-# Main display logic
+# Accept helper
 # ---------------------------------------------------------------------------
+
+def _accept(f: dict) -> None:
+    """Copy actual → canonical reference and clean up failures dir."""
+    dest = DEFAULT_REFERENCE / f"{f['name']}.png"
+    shutil.copy2(f["actual"], dest)
+    # Remove artefacts from failures dir
+    for suffix in ("_actual.png", "_reference.png", "_diff.png"):
+        p = DEFAULT_FAILURES / f"{f['name']}{suffix}"
+        if p.exists():
+            p.unlink()
+    print(f"  ✓ accepted  →  {dest}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def _clear() -> None:
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+
 
 def review(failures_dir: Path, pattern: Optional[str], protocol: str, interactive: bool) -> None:
     failures = list(find_failures(failures_dir, pattern))
@@ -204,80 +211,87 @@ def review(failures_dir: Path, pattern: Optional[str], protocol: str, interactiv
             print(f"  (filter: '{pattern}')")
         return
 
-    print(f"Found {len(failures)} failure(s) in {failures_dir}\n")
-    print("=" * 60)
+    print(f"Found {len(failures)} failure(s)\n")
 
-    for i, f in enumerate(failures, 1):
-        print(f"\n{'='*60}")
-        print(f"  [{i}/{len(failures)}]  {f['name']}")
-        print(f"{'='*60}")
+    i = 0
+    while i < len(failures):
+        f = failures[i]
+        # flipped=False: reference left, actual right
+        # flipped=True:  actual left, reference right
+        flipped = False
 
-        # Always print absolute file:// paths for copy-paste into a browser
-        for label, path in [
-            ("REFERENCE", f["reference"]),
-            ("ACTUAL",    f["actual"]),
-            ("DIFF",      f["diff"]),
-        ]:
-            abs_path = path.resolve()
-            print(f"  {label:<12} file://{abs_path}")
+        while True:
+            _clear()
+            print(f"  [{i+1}/{len(failures)}]  {f['name']}")
+            print(f"  ref:    file://{f['reference'].resolve()}")
+            print(f"  actual: file://{f['actual'].resolve()}")
+            if flipped:
+                left, right = f["actual"], f["reference"]
+                print("  [actual (left)  |  reference (right)]")
+            else:
+                left, right = f["reference"], f["actual"]
+                print("  [reference (left)  |  actual (right)]")
+            print()
+            _show_composite(left, right, protocol)
 
-        if protocol != "none":
-            _show_image(f["reference"], protocol, max_width=800)
-            _show_image(f["actual"],    protocol, max_width=800)
-            _show_image(f["diff"],      protocol, max_width=800)
-        else:
-            for _, path in [("reference", f["reference"]), ("actual", f["actual"]), ("diff", f["diff"])]:
-                _print_image_stats(path)
+            if not interactive:
+                i += 1
+                break
 
-        if not _wait_for_next(interactive):
-            print("Quit.")
-            return
+            print("\n  Space=swap  a=accept  Enter/n=next  q=quit  ", end="", flush=True)
+            try:
+                ch = _getch()
+            except Exception:
+                i += 1
+                break
+            print()
 
-    print(f"\nAll {len(failures)} failure(s) reviewed.")
+            if ch == " ":
+                flipped = not flipped
+            elif ch == "a":
+                _accept(f)
+                i += 1
+                break
+            elif ch.lower() == "q":
+                print("Quit.")
+                return
+            elif ch in ("\r", "\n", "n"):
+                i += 1
+                break
+            # any other key: redraw
+
+    print(f"\nDone.")
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _detect_protocol() -> str:
+    term = os.environ.get("TERM", "").lower()
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if "kitty" in term:
+        return "kitty"
+    if "iterm" in term_program:
+        return "iterm2"
+    return "none"
+
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Review image test failures in the terminal."
-    )
+    parser = argparse.ArgumentParser(description="Review image test failures.")
+    parser.add_argument("--failures-dir", type=Path, default=DEFAULT_FAILURES)
+    parser.add_argument("--filter", metavar="PATTERN")
     parser.add_argument(
-        "--failures-dir",
-        type=Path,
-        default=DEFAULT_FAILURES,
-        help=f"Directory containing failure images (default: {DEFAULT_FAILURES})",
+        "--protocol", choices=["auto", "kitty", "iterm2", "none"], default="auto"
     )
-    parser.add_argument(
-        "--filter",
-        metavar="PATTERN",
-        help="Only show failures whose name contains PATTERN (case-insensitive)",
-    )
-    parser.add_argument(
-        "--protocol",
-        choices=["auto", "kitty", "iterm2", "none"],
-        default="auto",
-        help="Image display protocol (default: auto-detect)",
-    )
-    parser.add_argument(
-        "--no-interactive",
-        action="store_true",
-        help="Print all failures without waiting for keypress",
-    )
+    parser.add_argument("--no-interactive", action="store_true")
     args = parser.parse_args()
 
-    if args.protocol == "auto":
-        protocol = _detect_protocol()
-        if protocol == "none":
-            print("No graphics protocol detected (not Kitty or iTerm2).")
-            print("Falling back to text output.  Set --protocol kitty/iterm2 to force.")
-    else:
-        protocol = args.protocol
+    protocol = _detect_protocol() if args.protocol == "auto" else args.protocol
+    if protocol == "none" and args.protocol == "auto":
+        print("No graphics protocol detected; falling back to text.  Use --protocol to force.")
 
     interactive = not args.no_interactive and sys.stdin.isatty()
-
     review(
         failures_dir=args.failures_dir,
         pattern=args.filter,
