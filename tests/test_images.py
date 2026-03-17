@@ -20,7 +20,6 @@ import matplotlib
 matplotlib.use("Agg")
 
 from conftest import CELL_TYPE_COLUMN as CAT_COL
-from mbf_singlecell_plotter import DEFAULT_COLORS
 
 # Dot size used across all scatter tests for legible reference images
 DOT_SIZE = 2
@@ -73,7 +72,9 @@ class TestPlotScatterNumerical:
         assert_image(p)
 
     def test_cd79a_no_spines(self, plotter_no_boundary, assert_image):
-        p = plotter_no_boundary.style(dot_size=DOT_SIZE, panel_border=False).plot("CD79A")
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE, panel_border=False).plot(
+            "CD79A"
+        )
         assert_image(p)
 
     def test_zeros_vs_no_zeros(self, plotter_no_boundary, assert_image):
@@ -124,13 +125,28 @@ class TestPlotScatterCategorical:
         assert_image(p)
 
     def test_leiden_clusters_no_outliers(self, plotter_no_boundary, assert_image):
-        p = plotter_no_boundary.style(dot_size=DOT_SIZE).layers(outliers=False).plot(CAT_COL)
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .layers(outliers=False)
+            .plot(CAT_COL)
+        )
         assert_image(p)
 
     def test_leiden_clusters_outlier_shape(self, plotter_no_boundary, assert_image):
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
-            .outlier(shape="^")
+            .outlier(shape="x")
+            .plot(CAT_COL)
+        )
+        assert_image(p)
+
+    def test_leiden_clusters_outlier_shape_only_outlier(
+        self, plotter_no_boundary, assert_image
+    ):
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .layers(borders=False, outliers=True, zeros=False, data=False)
+            .outlier(shape="x")
             .plot(CAT_COL)
         )
         assert_image(p)
@@ -139,7 +155,6 @@ class TestPlotScatterCategorical:
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
             .flip_draw_order(True)
-            .style(legend_title_position='side')
             .plot(CAT_COL)
         )
         assert_image(p)
@@ -177,6 +192,20 @@ class TestPlotCellDensity:
 
 class TestGridOverlays:
     """Visual tests for the various grid rendering modes."""
+
+    def test_no_grid(self, plotter_no_boundary, assert_image):
+        """Grid lines only — no axis-tick replacement, no cell labels."""
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).without_grid().plot("S100A8")
+        assert_image(p)
+
+    def test_draw_grid_no_coords(self, plotter_no_boundary, assert_image):
+        """Grid lines only — no axis-tick replacement, no cell labels."""
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .with_grid(coords=False)
+            .plot("S100A8")
+        )
+        assert_image(p)
 
     def test_draw_grid(self, plotter_no_boundary, assert_image):
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).with_grid().plot("S100A8")
@@ -239,7 +268,10 @@ class TestBoundaryRendering:
         assert_image(p)
 
     def test_categorical_with_borders(self, plotter, assert_image):
-        p = plotter.style(dot_size=DOT_SIZE).plot(CAT_COL)
+        plotter._data.ad.obs["even"] = (
+            plotter._data.ad.obs["leiden"].astype(int) % 2 == 0
+        ).replace({True: "yes", False: "no"})
+        p = plotter.style(dot_size=1).plot("even")
         assert_image(p)
 
     def test_cell_density_with_borders(self, plotter, assert_image):

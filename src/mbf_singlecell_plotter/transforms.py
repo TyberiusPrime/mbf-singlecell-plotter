@@ -82,10 +82,10 @@ def compute_boundaries(
     import matplotlib.colors as mcolors
     import matplotlib
     from natsort import natsorted
-    from .theme import DEFAULT_COLORS
+    from .theme import DEFAULT_COLORS_BORDERS
 
     if colors is None:
-        colors = DEFAULT_COLORS
+        colors = DEFAULT_COLORS_BORDERS
 
     cmap = matplotlib.colors.ListedColormap(colors)
     coords = data.coordinates()

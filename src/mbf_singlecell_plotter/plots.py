@@ -1,7 +1,7 @@
 """Layer 3: plotnine plot builders."""
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -10,7 +10,7 @@ import plotnine as p9
 from natsort import natsorted
 
 from .data import EmbeddingData, ColumnData, _LETTERS
-from .theme import DEFAULT_COLORS, embedding_theme
+from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_theme
 
 
 # ── Custom matplotlib colorbar legend ────────────────────────────────────────
@@ -23,40 +23,6 @@ class _PlotWithCustomLegend(p9.ggplot):
         sv = super().save_helper(**kwargs)
         _draw_numerical_legend(sv.figure, **self._legend_config)
         return sv
-
-
-class _PlotWithVerticalLegendTitle(p9.ggplot):
-    """ggplot subclass that adds a vertical title to the right-side categorical legend."""
-
-    def save_helper(self, **kwargs):
-        sv = super().save_helper(**kwargs)
-        _draw_vertical_cat_legend_title(sv.figure, self._cat_legend_title, self._cat_legend_fontsize)
-        return sv
-
-
-def _draw_vertical_cat_legend_title(fig, title: str, fontsize: float) -> None:
-    """Add a rotated title to the left of the categorical legend offsetbox."""
-    le = fig.get_layout_engine()
-    if le is not None:
-        le.execute(fig)
-        fig.set_layout_engine(None)
-
-    # Find the FlexibleAnchoredOffsetbox that plotnine uses for the legend
-    legend_box = None
-    for child in fig.get_children():
-        if type(child).__name__ == "FlexibleAnchoredOffsetbox":
-            legend_box = child
-            break
-
-    if legend_box is None:
-        return
-
-    bb = legend_box.get_window_extent()
-    fig_bb = bb.transformed(fig.transFigure.inverted())
-
-    cx = fig_bb.x0 - 0.025
-    cy = (fig_bb.y0 + fig_bb.y1) / 2
-    fig.text(cx, cy, title, rotation=90, va="center", ha="center", fontsize=fontsize)
 
 
 def _draw_numerical_legend(
@@ -109,8 +75,8 @@ def _draw_numerical_legend(
     # For faceted plots there are multiple panels; we want the colorbar anchored
     # to the right edge of the rightmost panel and spanning the full grid height.
     all_axes = fig.axes
-    grid_x1     = max(ax.get_position().x1 for ax in all_axes)
-    grid_y0     = min(ax.get_position().y0 for ax in all_axes)
+    grid_x1 = max(ax.get_position().x1 for ax in all_axes)
+    grid_y0 = min(ax.get_position().y0 for ax in all_axes)
     grid_height = max(ax.get_position().y1 for ax in all_axes) - grid_y0
 
     # For single-panel figures keep a reference to the one axes for shrinking.
@@ -235,6 +201,9 @@ class BorderConfig:
     resolution: int = 200
     blur: float = 1.1
     threshold: float = 0.95
+    colors: tuple = field(default_factory=lambda: tuple(DEFAULT_COLORS_BORDERS))
+    legend: bool = True
+    legend_dot_size: float = 4
 
 
 @dataclass(frozen=True)
@@ -275,11 +244,11 @@ class ScatterPlotter:
 
         # dot appearance
         self._dot_size: float = 1
+        self._legend_dot_size: float = 4
         self._panel_border: bool = True
         self._spine_color: str = "#555555"
         self._tick_color: str = "#555555"
         self._bg_color: str = "#FFFFFF"
-        self._legend_title_position: Optional[str] = None  # None → auto ("top" for cat, "side" for num)
         self._anti_overplot: bool = True
         self._flip_order: bool = False
         self._outlier_quantile: float = 0.95
@@ -297,7 +266,7 @@ class ScatterPlotter:
         self._zero_value: Optional[float] = None
 
         # categorical colormap
-        self._cat_colors: Optional[list] = None  # None → DEFAULT_COLORS
+        self._cat_colors: Optional[list] = None  # None → DEFAULT_COLORS_CATEGORIES
 
         # layer visibility
         self._layer_borders: bool = True
@@ -353,27 +322,28 @@ class ScatterPlotter:
         self,
         *,
         dot_size: Optional[float] = None,
+        legend_dot_size: Optional[float] = None,  # None = keep current (default 4)
         panel_border: Optional[bool] = None,
         spine_color: Optional[str] = None,
         tick_color: Optional[str] = None,
         bg_color: Optional[str] = None,
-        legend_title_position: Optional[str] = None,
     ) -> "ScatterPlotter":
         """Configure visual appearance. Only supplied arguments are changed.
 
         Args:
-            dot_size:    Point size for the main scatter layer.
-            panel_border: Show/hide the panel border (True = show).
-            spine_color: Hex color for the panel border (default ``"#555555"``).
-            tick_color:  Hex color for axis ticks and tick labels (default ``"#555555"``).
-            bg_color:    Background hex color (e.g. ``"#FFFFFF"``).
-            legend_title_position: ``"top"`` (title above legend, horizontal) or
-                ``"side"`` (title left of legend, vertical).  ``None`` → auto
-                (``"top"`` for categorical, ``"side"`` for numerical).
+            dot_size:        Point size for the main scatter layer.
+            legend_dot_size: Override the dot size shown in the categorical legend
+                             (default: same as dot_size).
+            panel_border:    Show/hide the panel border (True = show).
+            spine_color:     Hex color for the panel border (default ``"#555555"``).
+            tick_color:      Hex color for axis ticks and tick labels (default ``"#555555"``).
+            bg_color:        Background hex color (e.g. ``"#FFFFFF"``).
         """
         new = copy.copy(self)
         if dot_size is not None:
             new._dot_size = dot_size
+        if legend_dot_size is not None:
+            new._legend_dot_size = legend_dot_size
         if panel_border is not None:
             new._panel_border = panel_border
         if spine_color is not None:
@@ -382,8 +352,6 @@ class ScatterPlotter:
             new._tick_color = tick_color
         if bg_color is not None:
             new._bg_color = bg_color
-        if legend_title_position is not None:
-            new._legend_title_position = legend_title_position
         return new
 
     def flip_draw_order(self, value: bool = True) -> "ScatterPlotter":
@@ -484,24 +452,30 @@ class ScatterPlotter:
         resolution: int = 200,
         blur: float = 1.1,
         threshold: float = 0.95,
+        colors: Optional[list] = None,
+        legend: bool = True,
+        legend_dot_size: float = 4,
     ) -> "ScatterPlotter":
         new = copy.copy(self)
+        resolved_colors = tuple(colors) if colors is not None else tuple(DEFAULT_COLORS_BORDERS)
         new._border_config = BorderConfig(
-            size=size, resolution=resolution, blur=blur, threshold=threshold
+            size=size, resolution=resolution, blur=blur, threshold=threshold,
+            colors=resolved_colors, legend=legend, legend_dot_size=legend_dot_size,
         )
         if cell_type_column is not None:
             new._cell_type_column = cell_type_column
-        # Reset cache only if image-processing params changed
+        # Reset cache if anything that affects the boundary image changes
         old = self._border_config
         if (
             old is None
             or old.resolution != resolution
             or old.blur != blur
             or old.threshold != threshold
+            or old.colors != resolved_colors
             or cell_type_column != self._cell_type_column
         ):
             new._boundary_cache = {"df": None}
-        # else: share the same cache dict (shallow copy) — only size changed
+        # else: share the same cache dict (shallow copy) — only size/legend changed
         return new
 
     def without_borders(self) -> "ScatterPlotter":
@@ -561,7 +535,9 @@ class ScatterPlotter:
         """
         cur = self._grid_config if self._grid_config is not None else GridConfig()
         resolved_grid_size = grid_size if grid_size is not None else cur.grid_size
-        resolved_vl = vertical_letters if vertical_letters is not None else cur.vertical_letters
+        resolved_vl = (
+            vertical_letters if vertical_letters is not None else cur.vertical_letters
+        )
         if resolved_grid_size > 26:
             raise ValueError("grid_size max is 26")
         new = copy.copy(self)
@@ -711,6 +687,8 @@ class ScatterPlotter:
         # Grid axis tick labels (applied after theme so they survive theme_void)
         if self._grid_config is not None and self._grid_config.coords:
             p = self._add_grid_axis_ticks(p)
+        elif self._grid_config is None:
+            p = self._add_plain_axis_ticks(p)
 
         # Wrap numerical plots so the custom legend is injected at save time
         if legend_config is not None:
@@ -766,7 +744,11 @@ class ScatterPlotter:
             p = p + p9.guides(fill="none")
 
         # Boundary overlay
-        if self._layer_borders and self._border_config is not None and self._cell_type_column is not None:
+        if (
+            self._layer_borders
+            and self._border_config is not None
+            and self._cell_type_column is not None
+        ):
             bdf = self._get_boundary_df()
             border_pt = self._border_config.size / 10
             for color in bdf["color"].unique():
@@ -787,6 +769,9 @@ class ScatterPlotter:
         )
         p = p + p9.theme(figure_size=(6, 5))
 
+        if self._grid_config is None:
+            p = self._add_plain_axis_ticks(p)
+
         if has_clips:
             legend_config = dict(
                 expr_min=density_min,
@@ -800,7 +785,6 @@ class ScatterPlotter:
                 breaks=breaks,
                 labels=labels,
                 base_size=self.base_size,
-                title_position=self._legend_title_position or "side",
             )
             p.__class__ = _PlotWithCustomLegend
             p._legend_config = legend_config
@@ -899,10 +883,10 @@ class ScatterPlotter:
         """
         if isinstance(self._cat_colors, dict):
             return [
-                self._cat_colors.get(str(c), DEFAULT_COLORS[i % len(DEFAULT_COLORS)])
+                self._cat_colors.get(str(c), DEFAULT_COLORS_CATEGORIES[i % len(DEFAULT_COLORS_CATEGORIES)])
                 for i, c in enumerate(cats)
             ]
-        return self._cat_colors or DEFAULT_COLORS
+        return self._cat_colors or DEFAULT_COLORS_CATEGORIES
 
     def _get_cmap_colors(self) -> list:
         if self._cmap is None:
@@ -918,18 +902,11 @@ class ScatterPlotter:
         if self._boundary_cache["df"] is None:
             from .transforms import compute_boundaries
 
-            # Resolve cats so dict-based palettes can be ordered correctly
-            cell_types, _ = self._data.get_column(self._cell_type_column)
-            if hasattr(cell_types, "cat"):
-                cats = list(cell_types.cat.categories)
-            else:
-                cats = natsorted(cell_types.unique())
-            colors = self._colors_as_list(cats)
             bc = self._border_config
             self._boundary_cache["df"] = compute_boundaries(
                 data=self._data,
                 cell_type_column=self._cell_type_column,
-                colors=colors,
+                colors=list(bc.colors),
                 resolution=bc.resolution,
                 blur=bc.blur,
                 threshold=bc.threshold,
@@ -938,7 +915,10 @@ class ScatterPlotter:
 
     def _add_border_layers(self, p: p9.ggplot) -> p9.ggplot:
         bdf = self._get_boundary_df()
-        border_pt = self._border_config.size / 10
+        bc = self._border_config
+        border_pt = bc.size / 10
+
+        # Render border dots (fixed color per group, avoids plotnine scale conflicts)
         for color in bdf["color"].unique():
             sub = bdf[bdf["color"] == color]
             p = p + p9.geom_point(
@@ -948,6 +928,42 @@ class ScatterPlotter:
                 size=border_pt,
                 inherit_aes=False,
             )
+
+        if bc.legend:
+            # Build cat→border_color mapping (same cycling logic as compute_boundaries)
+            cell_types, _ = self._data.get_column(self._cell_type_column)
+            cats = (
+                list(cell_types.cat.categories)
+                if hasattr(cell_types, "cat")
+                else natsorted(cell_types.unique())
+            )
+            colors = list(bc.colors)
+            cat_to_color = {cat: colors[i % len(colors)] for i, cat in enumerate(cats)}
+
+            # One invisible phantom point per category — carries the fill aesthetic
+            # for the legend. Uses fill (not color) so it doesn't clash with the
+            # scatter's color scale. Placed at (x_min, y_min) which is already
+            # within the data bounds so the axis range is unaffected.
+            x_min, _, y_min, _ = self._data.bounds()
+            legend_df = pd.DataFrame({"cell_type": cats, "x": x_min, "y": y_min})
+            p = (
+                p
+                + p9.geom_point(
+                    data=legend_df,
+                    mapping=p9.aes("x", "y", fill="cell_type"),
+                    shape="o",
+                    color="none",
+                    size=border_pt * 1.5,
+                    alpha=0,
+                    inherit_aes=False,
+                )
+                + p9.scale_fill_manual(
+                    values=cat_to_color,
+                    name="borders",
+                    guide=p9.guide_legend(override_aes={"alpha": 1, "size": bc.legend_dot_size}),
+                )
+            )
+
         return p
 
     def _build_numerical(
@@ -991,7 +1007,11 @@ class ScatterPlotter:
             p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
-        if self._layer_borders and self._border_config is not None and self._cell_type_column is not None:
+        if (
+            self._layer_borders
+            and self._border_config is not None
+            and self._cell_type_column is not None
+        ):
             p = self._add_border_layers(p)
 
         # Zero underlay
@@ -1050,7 +1070,6 @@ class ScatterPlotter:
             breaks=breaks,
             labels=labels,
             base_size=self.base_size,
-            title_position=self._legend_title_position or "side",
         )
         return p, legend_config
 
@@ -1082,7 +1101,11 @@ class ScatterPlotter:
             p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
-        if self._layer_borders and self._border_config is not None and self._cell_type_column is not None:
+        if (
+            self._layer_borders
+            and self._border_config is not None
+            and self._cell_type_column is not None
+        ):
             p = self._add_border_layers(p)
 
         # Scatter
@@ -1102,7 +1125,11 @@ class ScatterPlotter:
                 outlier_dfs.append(sdf[dist > thresh])
             if outlier_dfs:
                 df_outliers = pd.concat(outlier_dfs)
-                extra = {} if self._outlier_shape is None else {"shape": self._outlier_shape}
+                extra = (
+                    {}
+                    if self._outlier_shape is None
+                    else {"shape": self._outlier_shape}
+                )
                 p = p + p9.geom_point(
                     data=df_outliers,
                     size=self._dot_size,
@@ -1110,18 +1137,11 @@ class ScatterPlotter:
                     **extra,
                 )
 
-        # Legend title position: auto defaults to "top" for categorical
-        title_pos = self._legend_title_position or "top"
-        if title_pos == "side":
-            # Suppress plotnine's title; we'll draw a rotated one via hook
-            p = p + p9.scale_color_manual(values=color_values, name=expr_name)
-            p = p + p9.theme(legend_title=p9.element_blank())
-            p.__class__ = _PlotWithVerticalLegendTitle
-            p._cat_legend_title = expr_name
-            p._cat_legend_fontsize = self.base_size * 0.9
-        else:
-            # "top" is plotnine's default
-            p = p + p9.scale_color_manual(values=color_values, name=expr_name)
+        p = p + p9.scale_color_manual(
+            values=color_values,
+            name=expr_name,
+            guide=p9.guide_legend(override_aes={"size": self._legend_dot_size}),
+        )
 
         return p
 
@@ -1179,14 +1199,39 @@ class ScatterPlotter:
             + p9.scale_x_continuous(breaks=list(x_positions), labels=list(x_labels))
             + p9.scale_y_continuous(breaks=list(y_positions), labels=list(y_labels))
             + p9.theme(
-                axis_text_x=p9.element_text(size=12 / self.base_size * 12, color=self._tick_color),
-                axis_text_y=p9.element_text(size=12 / self.base_size * 12, color=self._tick_color),
+                axis_text_x=p9.element_text(
+                    size=12 / self.base_size * 12, color=self._tick_color
+                ),
+                axis_text_y=p9.element_text(
+                    size=12 / self.base_size * 12, color=self._tick_color
+                ),
                 axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
                 axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
                 axis_ticks_length_major=5,
             )
         )
         return p
+
+    def _add_plain_axis_ticks(self, p: p9.ggplot) -> p9.ggplot:
+        """Restore regular axis ticks (major + minor) when no grid is active."""
+
+        return (
+            p
+            + p9.scale_x_continuous(minor_breaks=5)
+            + p9.scale_y_continuous(minor_breaks=5)
+            + p9.theme(
+                panel_grid_major=p9.element_line(color="#d0d0d0"),
+                panel_grid_minor=p9.element_line(color="#e0e0e0"),
+                axis_text_x=p9.element_text(color=self._tick_color),
+                axis_text_y=p9.element_text(color=self._tick_color),
+                axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.7),
+                axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.7),
+                axis_ticks_minor_x=p9.element_line(color=self._tick_color, size=0.4),
+                axis_ticks_minor_y=p9.element_line(color=self._tick_color, size=0.4),
+                axis_ticks_length_major=6,
+                axis_ticks_length_minor=3,
+            )
+        )
 
     @staticmethod
     def _point_to_grid_label(

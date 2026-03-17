@@ -1,6 +1,6 @@
 import plotnine as p9
 
-DEFAULT_COLORS = [
+DEFAULT_COLORS_BORDERS = [
     "#1C86EE",
     "#008B00",
     "#FF7F00",  # orange
@@ -18,6 +18,21 @@ DEFAULT_COLORS = [
     "#CDCD00",
     "#F52A2A",
 ]
+
+DEFAULT_COLORS_CATEGORIES = [
+    "#98414f",
+    "#ab7780",
+    "#776431",
+    "#a29164",
+    "#738368",
+    "#5a6673",
+    "#a8bbcf",
+    "#b6b2ac",
+    "#573875",
+    "#c89c0a",
+    "#a070a9",
+]
+
 
 
 def embedding_theme(

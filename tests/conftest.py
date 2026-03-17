@@ -5,8 +5,18 @@ import anndata
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend; must be set before importing pyplot
 
+import shutil
 import numpy as np
 from pathlib import Path
+
+FAILURES_DIR = Path(__file__).parent / "failures"
+
+
+def pytest_sessionstart(session):
+    """Clear stale failure images before the run begins."""
+    if FAILURES_DIR.exists():
+        shutil.rmtree(FAILURES_DIR)
+
 
 EXAMPLE_DATA = Path(__file__).parent.parent / "example_data" / "scanpy-pbmc3k_stripped.h5ad"
 
