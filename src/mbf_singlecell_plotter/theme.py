@@ -23,7 +23,7 @@ DEFAULT_COLORS = [
 def embedding_theme(show_spines: bool = True, bg_color: str = "#FFFFFF") -> p9.theme:
     """Standard theme for embedding plots: no axis titles, clean ticks."""
     border = (
-        p9.element_rect(color="black", fill=None)
+        p9.element_rect(color="#AAAAAA", size=0.5, fill=None)
         if show_spines
         else p9.element_blank()
     )
@@ -31,5 +31,7 @@ def embedding_theme(show_spines: bool = True, bg_color: str = "#FFFFFF") -> p9.t
         plot_background=p9.element_rect(fill=bg_color, color=None),
         panel_background=p9.element_rect(fill=bg_color),
         panel_border=border,
-        legend_background=p9.element_rect(fill=bg_color, color=None),
+        legend_background=p9.element_rect(fill=bg_color, color=bg_color, size=0.0),
+        legend_box_background=p9.element_blank(),
+        plot_margin=0.05,
     )

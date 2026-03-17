@@ -2,7 +2,7 @@
 
 import copy
 import collections
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,13 @@ from natsort import natsorted
 from .util import map_to_integers, unmap
 
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+class ColumnData(NamedTuple):
+    """Return type of :meth:`EmbeddingData.get_column`."""
+
+    series: pd.Series
+    name: str
 
 
 class EmbeddingData:
@@ -83,14 +90,18 @@ class EmbeddingData:
 
     def focus_on(
         self,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
+        *,
+        x: tuple,
+        y: tuple,
     ) -> "EmbeddingData":
-        """Return a new EmbeddingData restricted to the given coordinate window."""
+        """Return a new EmbeddingData restricted to the given coordinate window.
+
+        Args:
+            x: (x_min, x_max)
+            y: (y_min, y_max)
+        """
         new = copy.copy(self)
-        new._focus = (x_min, x_max, y_min, y_max)
+        new._focus = (x[0], x[1], y[0], y[1])
         return new
 
     def unfocus(self) -> "EmbeddingData":
@@ -113,31 +124,31 @@ class EmbeddingData:
 
     # ── data accessors ──────────────────────────────────────────────────────
 
-    def get_column(self, name: str) -> tuple:
-        """Return (Series, column_name) for an obs column or gene."""
+    def get_column(self, name: str) -> ColumnData:
+        """Return ColumnData(series, column_name) for an obs column or gene."""
         ad = self.ad
         if name in ad.obs:
-            return ad.obs[name], name
+            return ColumnData(ad.obs[name], name)
         if name in ad.var.index:
             pdf = ad[:, ad.var.index == name].to_df()
-            return pdf[name], name
+            return ColumnData(pdf[name], name)
         if self._alternative_id_column is not None and self._alternative_id_column in ad.var.columns:
             alt_hits = ad.var[self._alternative_id_column] == name
             if alt_hits.sum() == 1:
                 pdf = ad[:, alt_hits].to_df()
                 col = pdf.columns[0]
-                return pdf[col], col
+                return ColumnData(pdf[col], col)
         if self._has_name_and_id:
             name_hits = ad.var.index.str.startswith(name + " ")
             if name_hits.sum() == 1:
                 pdf = ad[:, name_hits].to_df()
                 col = pdf.columns[0]
-                return pdf[col], col
+                return ColumnData(pdf[col], col)
             id_hits = ad.var.index.str.endswith(" " + name)
             if id_hits.sum() == 1:
                 pdf = ad[:, id_hits].to_df()
                 col = pdf.columns[0]
-                return pdf[col], col
+                return ColumnData(pdf[col], col)
         raise KeyError(f"Column or gene {name!r} not found")
 
     def coordinates(self) -> pd.DataFrame:
@@ -226,20 +237,24 @@ class EmbeddingData:
     def grid_labels(self) -> tuple:
         """Return (x_positions, y_positions, x_labels, y_labels) for grid axis ticks."""
         x_min, x_max, y_min, y_max = self.bounds()
-        x_positions = np.linspace(x_min, x_max, self._grid_size + 1)[:-1] + (
-            x_max - x_min
-        ) / (self._grid_size * 2)
-        y_positions = np.linspace(y_min, y_max, self._grid_size + 1)[:-1] + (
-            y_max - y_min
-        ) / (self._grid_size * 2)
-        x_labels = [
-            self.point_to_grid(x_min, x_max, y_min, y_max, x, y_min)[0]
-            for x in x_positions
-        ]
-        y_labels = [
-            self.point_to_grid(x_min, x_max, y_min, y_max, x_min, y)[1]
-            for y in y_positions
-        ]
+        gs = self._grid_size
+        cell_w = (x_max - x_min) / gs
+        cell_h = (y_max - y_min) / gs
+
+        # Centers of each grid cell — direct arithmetic, no rounding issues
+        x_positions = np.array([x_min + (i + 0.5) * cell_w for i in range(gs)])
+        y_positions = np.array([y_min + (i + 0.5) * cell_h for i in range(gs)])
+
+        letters = list(_LETTERS[:gs])
+        if self._grid_letters_on_vertical:
+            # x-axis: numbers 1..gs; y-axis: letters (A at top = max y)
+            x_labels = list(range(1, gs + 1))
+            y_labels = letters[::-1]
+        else:
+            # x-axis: letters A..Z; y-axis: numbers (1 at top = max y)
+            x_labels = letters
+            y_labels = list(range(gs, 0, -1))
+
         return x_positions, y_positions, x_labels, y_labels
 
     def cluster_centers(self, cluster_column: str) -> pd.DataFrame:

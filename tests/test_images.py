@@ -29,28 +29,28 @@ DOT_SIZE = 5
 
 class TestPlotScatterNumerical:
     def test_s100a8_basic(self, plotter_no_boundary):
-        p = plotter_no_boundary.dot_size(DOT_SIZE).plot("S100A8")
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot("S100A8")
         assert_plotnine_matches(p, "scatter_S100A8_basic")
 
     def test_lst1_no_zeros(self, plotter_no_boundary):
-        p = plotter_no_boundary.dot_size(DOT_SIZE).zeros(behind=False).plot("LST1")
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).zeros(behind=False).plot("LST1")
         assert_plotnine_matches(p, "scatter_LST1_no_zeros")
 
     def test_cst3_clip_quantile(self, plotter_no_boundary):
         p = (
             plotter_no_boundary
-            .dot_size(DOT_SIZE)
+            .style(dot_size=DOT_SIZE)
             .colormap(max_quantile=0.99)
             .plot("CST3")
         )
         assert_plotnine_matches(p, "scatter_CST3_clip99")
 
     def test_cd79a_no_spines(self, plotter_no_boundary):
-        p = plotter_no_boundary.dot_size(DOT_SIZE).no_spines().plot("CD79A")
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE, spines=False).plot("CD79A")
         assert_plotnine_matches(p, "scatter_CD79A_no_spines")
 
     def test_tyrobp_no_zeros(self, plotter_no_boundary):
-        p = plotter_no_boundary.dot_size(DOT_SIZE).zeros(behind=False).plot("TYROBP")
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).zeros(behind=False).plot("TYROBP")
         assert_plotnine_matches(p, "scatter_TYROBP_no_zeros")
 
     def test_zeros_vs_no_zeros(self, plotter_no_boundary):
@@ -60,13 +60,13 @@ class TestPlotScatterNumerical:
 
         p_with = (
             plotter_no_boundary
-            .dot_size(DOT_SIZE)
+            .style(dot_size=DOT_SIZE)
             .zeros(behind=True, color="green", dot_size=DOT_SIZE)
             .plot("S100A8")
         )
         p_without = (
             plotter_no_boundary
-            .dot_size(DOT_SIZE)
+            .style(dot_size=DOT_SIZE)
             .zeros(behind=False, color="green", dot_size=DOT_SIZE)
             .plot("S100A8")
         )
@@ -90,7 +90,7 @@ class TestPlotScatterNumerical:
 
     def test_returns_ggplot(self, plotter_no_boundary):
         import plotnine as p9
-        p = plotter_no_boundary.dot_size(DOT_SIZE).plot("S100A8")
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot("S100A8")
         assert isinstance(p, p9.ggplot)
 
 
@@ -100,11 +100,11 @@ class TestPlotScatterNumerical:
 
 class TestPlotScatterCategorical:
     def test_leiden_clusters(self, plotter_no_boundary):
-        p = plotter_no_boundary.dot_size(DOT_SIZE).plot(CAT_COL)
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot(CAT_COL)
         assert_plotnine_matches(p, "scatter_leiden")
 
     def test_leiden_flip_order(self, plotter_no_boundary):
-        p = plotter_no_boundary.dot_size(DOT_SIZE).flip().plot(CAT_COL)
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).flip_draw_order(True).plot(CAT_COL)
         assert_plotnine_matches(p, "scatter_leiden_flip_order")
 
 
@@ -118,7 +118,7 @@ class TestPlotCellDensity:
         assert_plotnine_matches(p, "cell_density_basic")
 
     def test_no_spines(self, plotter_no_boundary):
-        p = plotter_no_boundary.no_spines().plot_density()
+        p = plotter_no_boundary.style(spines=False).plot_density()
         assert_plotnine_matches(p, "cell_density_no_spines")
 
     def test_custom_bins(self, plotter_no_boundary):
@@ -139,13 +139,13 @@ class TestGridOverlays:
     """Visual tests for the various grid rendering modes."""
 
     def test_draw_grid(self, plotter_no_boundary):
-        p = plotter_no_boundary.dot_size(DOT_SIZE).with_grid().plot("S100A8")
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).with_grid().plot("S100A8")
         assert_plotnine_matches(p, "grid_draw")
 
     def test_draw_grid_with_labels(self, plotter_no_boundary):
         p = (
             plotter_no_boundary
-            .dot_size(DOT_SIZE)
+            .style(dot_size=DOT_SIZE)
             .with_grid(labels=True)
             .plot("S100A8")
         )
@@ -155,7 +155,7 @@ class TestGridOverlays:
         """grid coords replaces axis ticks with grid-cell labels."""
         p = (
             plotter_no_boundary
-            .dot_size(DOT_SIZE)
+            .style(dot_size=DOT_SIZE)
             .with_grid(coords=True)
             .plot("S100A8")
         )
@@ -164,7 +164,7 @@ class TestGridOverlays:
     def test_grid_custom_color(self, plotter_no_boundary):
         p = (
             plotter_no_boundary
-            .dot_size(DOT_SIZE)
+            .style(dot_size=DOT_SIZE)
             .with_grid(labels=True, color="#CC0000")
             .plot("S100A8")
         )
@@ -173,7 +173,7 @@ class TestGridOverlays:
     def test_categorical_with_grid(self, plotter_no_boundary):
         p = (
             plotter_no_boundary
-            .dot_size(DOT_SIZE)
+            .style(dot_size=DOT_SIZE)
             .with_grid(labels=True)
             .plot(CAT_COL)
         )
@@ -188,11 +188,11 @@ class TestBoundaryRendering:
     """Tests that specifically exercise the cell-type boundary overlay."""
 
     def test_numerical_with_borders(self, plotter):
-        p = plotter.dot_size(DOT_SIZE).plot("S100A8")
+        p = plotter.style(dot_size=DOT_SIZE).plot("S100A8")
         assert_plotnine_matches(p, "border_scatter_S100A8")
 
     def test_categorical_with_borders(self, plotter):
-        p = plotter.dot_size(DOT_SIZE).plot(CAT_COL)
+        p = plotter.style(dot_size=DOT_SIZE).plot(CAT_COL)
         assert_plotnine_matches(p, "border_scatter_leiden")
 
     def test_cell_density_with_borders(self, plotter):
@@ -200,15 +200,15 @@ class TestBoundaryRendering:
         assert_plotnine_matches(p, "border_cell_density")
 
     def test_border_size_small(self, plotter):
-        p = plotter.with_borders(size=5).dot_size(DOT_SIZE).plot("S100A8")
+        p = plotter.with_borders(size=5).style(dot_size=DOT_SIZE).plot("S100A8")
         assert_plotnine_matches(p, "border_scatter_S100A8_border5")
 
     def test_border_size_large(self, plotter):
-        p = plotter.with_borders(size=30).dot_size(DOT_SIZE).plot("S100A8")
+        p = plotter.with_borders(size=30).style(dot_size=DOT_SIZE).plot("S100A8")
         assert_plotnine_matches(p, "border_scatter_S100A8_border30")
 
     def test_borders_with_grid(self, plotter):
-        p = plotter.dot_size(DOT_SIZE).with_grid(labels=True).plot("S100A8")
+        p = plotter.style(dot_size=DOT_SIZE).with_grid(labels=True).plot("S100A8")
         assert_plotnine_matches(p, "border_scatter_S100A8_grid")
 
 
@@ -231,7 +231,7 @@ class TestPlotScatterFacet:
         p = (
             plotter_no_boundary
             .facet(CAT_COL, n_col=3)
-            .dot_size(DOT_SIZE)
+            .style(dot_size=DOT_SIZE)
             .plot("S100A8")
         )
         assert_plotnine_matches(p, "scatter_S100A8_facet_leiden")
@@ -248,8 +248,8 @@ class TestPlotScatterLimits:
         y_mid = coords["y"].median()
         p = (
             plotter_no_boundary
-            .dot_size(DOT_SIZE)
-            .focus_on(coords["x"].min(), x_mid, coords["y"].min(), y_mid)
+            .style(dot_size=DOT_SIZE)
+            .focus_on(x=(coords["x"].min(), x_mid), y=(coords["y"].min(), y_mid))
             .plot("S100A8")
         )
         assert_plotnine_matches(p, "scatter_S100A8_custom_limits")

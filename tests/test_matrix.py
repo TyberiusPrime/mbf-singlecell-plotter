@@ -32,7 +32,7 @@ DOT_SIZE = 5
 def _build_plotter(data, borders, grid_mode, focus):
     from mbf_singlecell_plotter import ScatterPlotter
 
-    sp = ScatterPlotter().set_source(data).dot_size(DOT_SIZE)
+    sp = ScatterPlotter().set_source(data).style(dot_size=DOT_SIZE)
 
     if borders:
         sp = sp.with_borders(cell_type_column=CELL_TYPE_COLUMN)
@@ -48,7 +48,7 @@ def _build_plotter(data, borders, grid_mode, focus):
         coords = data.coordinates()
         x_mid = coords["x"].median()
         y_mid = coords["y"].median()
-        sp = sp.focus_on(coords["x"].min(), x_mid, coords["y"].min(), y_mid)
+        sp = sp.focus_on(x=(coords["x"].min(), x_mid), y=(coords["y"].min(), y_mid))
 
     return sp
 

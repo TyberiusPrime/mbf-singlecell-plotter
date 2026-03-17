@@ -2,7 +2,7 @@
 
 from .util import map_to_integers, unmap
 from .theme import DEFAULT_COLORS, embedding_theme
-from .data import EmbeddingData
+from .data import EmbeddingData, ColumnData
 from .transforms import prepare_density_df, prepare_scatter_df, compute_boundaries
 from .plots import ScatterPlotter, BorderConfig, GridConfig
 
@@ -12,6 +12,7 @@ default_colors = DEFAULT_COLORS
 __all__ = [
     # data
     "EmbeddingData",
+    "ColumnData",
     # plotting
     "ScatterPlotter",
     "BorderConfig",

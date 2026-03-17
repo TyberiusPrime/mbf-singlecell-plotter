@@ -9,8 +9,132 @@ import pandas as pd
 import plotnine as p9
 from natsort import natsorted
 
-from .data import EmbeddingData, _LETTERS
+from .data import EmbeddingData, ColumnData, _LETTERS
 from .theme import DEFAULT_COLORS, embedding_theme
+
+
+# ── Custom matplotlib colorbar legend ────────────────────────────────────────
+
+class _PlotWithCustomLegend(p9.ggplot):
+    """ggplot subclass that replaces the auto color guide with a custom matplotlib colorbar."""
+
+    def save_helper(self, **kwargs):
+        sv = super().save_helper(**kwargs)
+        _draw_numerical_legend(sv.figure, **self._legend_config)
+        return sv
+
+
+def _draw_numerical_legend(
+    fig,
+    *,
+    expr_min: float,
+    clip_val: float,
+    cmap_colors: list,
+    has_zeros: bool,
+    zero_color: str,
+    has_clips: bool,
+    upper_clip_color: str,
+    cbar_title: str,
+    breaks: list,
+    labels: list,
+) -> None:
+    """Add a custom colorbar with rectangular extension boxes to a plotnine figure."""
+    import matplotlib as mpl
+    from matplotlib.colors import LinearSegmentedColormap
+
+    # Finalise axes positions via the plotnine layout engine, then freeze it
+    le = fig.get_layout_engine()
+    if le is not None:
+        le.execute(fig)
+        fig.set_layout_engine(None)
+
+    # Build colormap with over/under colors for extensions
+    cmap = LinearSegmentedColormap.from_list("_cbar", cmap_colors)
+    if has_zeros:
+        cmap.set_under(zero_color)
+    if has_clips:
+        cmap.set_over(upper_clip_color)
+
+    if has_zeros and has_clips:
+        extend = "both"
+    elif has_zeros:
+        extend = "min"
+    elif has_clips:
+        extend = "max"
+    else:
+        extend = "neither"
+
+    norm = mpl.colors.Normalize(vmin=expr_min, vmax=clip_val)
+
+    extendfrac = 0.05  # extension boxes = 5% of bar height each
+
+    main_ax = fig.axes[0]
+    pos = main_ax.get_position()  # Bbox in figure [0,1] coords
+
+    # ── Layout: title | gap | bar (tick labels auto to the right) ────────────
+    # The right margin (pos.x1 → 1.0) is already freed by suppressing the guide.
+    title_half = 0.025   # half-width of title text area
+    gap = 0.008
+    bar_frac = 0.035     # colorbar bar width as fraction of figure
+
+    bar_left = pos.x1 + 2 * title_half + gap
+
+    # Safety: if tight, shrink main axes
+    needed_right = bar_left + bar_frac + 0.01
+    if needed_right > 0.99:
+        shrink = needed_right - 0.99
+        main_ax.set_position([pos.x0, pos.y0, pos.width - shrink, pos.height])
+        pos = main_ax.get_position()
+        bar_left = pos.x1 + 2 * title_half + gap
+
+    cbar_ax = fig.add_axes([bar_left, pos.y0, bar_frac, pos.height])
+
+    cb = mpl.colorbar.ColorbarBase(
+        cbar_ax,
+        cmap=cmap,
+        norm=norm,
+        extend=extend,
+        extendrect=True,
+        extendfrac=extendfrac,
+        orientation="vertical",
+        ticks=breaks,
+    )
+    cb.set_ticklabels(labels)
+    cb.ax.tick_params(labelsize=9, length=3)
+    cb.ax.yaxis.set_tick_params(which="both", labelleft=False, labelright=True)
+
+    # ── Extension box labels ──────────────────────────────────────────────────
+    # With extendfrac=f, each extension occupies f/(1+n_ext*f) of the total
+    # axes height, where n_ext is number of extensions (1 or 2).
+    n_ext = (1 if has_zeros else 0) + (1 if has_clips else 0)
+    denom = 1 + n_ext * extendfrac
+    ext_box_frac = extendfrac / denom  # each extension box as fraction of axes height
+
+    # Whether both or only one extension is present changes which end is which.
+    # With extend='both': bottom=min, top=max.
+    # With extend='min': bottom only. With extend='max': top only.
+    if has_zeros:
+        y_zero = ext_box_frac / 2  # centre of bottom box in transAxes
+        cb.ax.text(
+            1.08, y_zero, "0",
+            transform=cb.ax.transAxes,
+            va="center", ha="left", fontsize=9, clip_on=False,
+        )
+    if has_clips:
+        y_clip = 1.0 - ext_box_frac / 2  # centre of top box in transAxes
+        cb.ax.text(
+            1.08, y_clip, f">{labels[-1]}",
+            transform=cb.ax.transAxes,
+            va="center", ha="left", fontsize=9, clip_on=False,
+        )
+
+    # ── Title: vertical text to the LEFT of the bar ──────────────────────────
+    title_cx = pos.x1 + title_half
+    title_cy = pos.y0 + pos.height * 0.5
+    fig.text(
+        title_cx, title_cy, cbar_title,
+        rotation=90, va="center", ha="center", fontsize=9,
+    )
 
 
 @dataclass(frozen=True)
@@ -46,7 +170,7 @@ class ScatterPlotter:
         plotter.plot("leiden")
     """
 
-    def __init__(self):
+    def __init__(self, ad_or_data=None, embedding: str = "umap"):
         self._data: Optional[EmbeddingData] = None
         self._cell_type_column: Optional[str] = None
 
@@ -77,10 +201,16 @@ class ScatterPlotter:
         # optional layers
         self._border_config: Optional[BorderConfig] = None
         self._boundary_cache: dict = {"df": None}
-        self._grid_config: Optional[GridConfig] = None
+        self._grid_config: Optional[GridConfig] = GridConfig(coords=True)
         self._facet_variable: Optional[str] = None
         self._n_col: int = 2
         self._title_override = _UNSET
+
+        if ad_or_data is not None:
+            if isinstance(ad_or_data, EmbeddingData):
+                self._data = ad_or_data
+            else:
+                self._data = EmbeddingData(ad_or_data, embedding)
 
     # ── source ──────────────────────────────────────────────────────────────
 
@@ -114,34 +244,39 @@ class ScatterPlotter:
 
     # ── dot appearance ───────────────────────────────────────────────────────
 
-    def dot_size(self, s: float) -> "ScatterPlotter":
+    def style(
+        self,
+        *,
+        dot_size: Optional[float] = None,
+        spines: Optional[bool] = None,
+        bg_color: Optional[str] = None,
+    ) -> "ScatterPlotter":
+        """Configure visual appearance. Only supplied arguments are changed.
+
+        Args:
+            dot_size: Point size for the main scatter layer.
+            spines:   Show/hide the panel border (True = show).
+            bg_color: Background hex color (e.g. ``"#FFFFFF"``).
+        """
         new = copy.copy(self)
-        new._dot_size = s
+        if dot_size is not None:
+            new._dot_size = dot_size
+        if spines is not None:
+            new._show_spines = spines
+        if bg_color is not None:
+            new._bg_color = bg_color
         return new
 
-    def no_spines(self) -> "ScatterPlotter":
+    def flip_draw_order(self, value: bool = True) -> "ScatterPlotter":
+        """Reverse categorical draw order (last category drawn on top when False)."""
         new = copy.copy(self)
-        new._show_spines = False
+        new._flip_order = value
         return new
 
-    def spines(self) -> "ScatterPlotter":
+    def outlier_replot(self, enabled: bool = True) -> "ScatterPlotter":
+        """Enable or disable the categorical outlier replot pass (default: enabled)."""
         new = copy.copy(self)
-        new._show_spines = True
-        return new
-
-    def background(self, color: str) -> "ScatterPlotter":
-        new = copy.copy(self)
-        new._bg_color = color
-        return new
-
-    def flip(self) -> "ScatterPlotter":
-        new = copy.copy(self)
-        new._flip_order = True
-        return new
-
-    def no_outlier_replot(self) -> "ScatterPlotter":
-        new = copy.copy(self)
-        new._categorical_outliers = False
+        new._categorical_outliers = enabled
         return new
 
     # ── colormap (numerical) ─────────────────────────────────────────────────
@@ -168,14 +303,22 @@ class ScatterPlotter:
 
     # ── categorical colors ───────────────────────────────────────────────────
 
-    def colormap_discrete(self, cmap_or_list) -> "ScatterPlotter":
-        """Set the discrete color palette for categorical data."""
+    def colormap_discrete(self, cmap_or_list_or_dict) -> "ScatterPlotter":
+        """Set the discrete color palette for categorical data.
+
+        Accepts:
+        - A list of hex color strings (positional, cycling).
+        - A dict mapping category name → hex color string.
+        - A matplotlib ``ListedColormap`` or similar (uses ``.colors``).
+        """
         new = copy.copy(self)
-        if isinstance(cmap_or_list, list):
-            new._cat_colors = cmap_or_list
+        if isinstance(cmap_or_list_or_dict, dict):
+            new._cat_colors = cmap_or_list_or_dict
+        elif isinstance(cmap_or_list_or_dict, list):
+            new._cat_colors = cmap_or_list_or_dict
         else:
             # Assume matplotlib ListedColormap or similar
-            new._cat_colors = list(cmap_or_list.colors)
+            new._cat_colors = list(cmap_or_list_or_dict.colors)
         return new
 
     # ── zero handling ────────────────────────────────────────────────────────
@@ -282,17 +425,17 @@ class ScatterPlotter:
 
     # ── viewport ─────────────────────────────────────────────────────────────
 
-    def focus_on(
-        self,
-        x_min: float,
-        x_max: float,
-        y_min: float,
-        y_max: float,
-    ) -> "ScatterPlotter":
+    def focus_on(self, *, x: tuple, y: tuple) -> "ScatterPlotter":
+        """Restrict viewport to a coordinate window.
+
+        Args:
+            x: (x_min, x_max)
+            y: (y_min, y_max)
+        """
         if self._data is None:
             raise RuntimeError("call .set_source() before .focus_on()")
         new = copy.copy(self)
-        new._data = self._data.focus_on(x_min, x_max, y_min, y_max)
+        new._data = self._data.focus_on(x=x, y=y)
         return new
 
     def unfocus(self) -> "ScatterPlotter":
@@ -324,8 +467,8 @@ class ScatterPlotter:
 
     # ── terminal ─────────────────────────────────────────────────────────────
 
-    def plot(self, gene: str) -> p9.ggplot:
-        """Build and return a plotnine ggplot for the given gene/column."""
+    def plot(self, column: str) -> p9.ggplot:
+        """Build and return a plotnine ggplot for the given obs column or gene."""
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot()")
 
@@ -334,7 +477,7 @@ class ScatterPlotter:
         x_min, x_max, y_min, y_max = data.bounds()
 
         # Load expression data
-        expr, expr_name = data.get_column(gene)
+        expr, expr_name = data.get_column(column)
         is_numerical = (
             (expr.dtype != "object")
             and (expr.dtype != "category")
@@ -360,14 +503,11 @@ class ScatterPlotter:
             fig_size = (6, 5)
 
         # Build plot
+        legend_config = None
         if is_numerical:
-            p = self._build_numerical(df, expr_name)
+            p, legend_config = self._build_numerical(df, expr_name)
         else:
             p = self._build_categorical(df, expr_name)
-
-        # Grid overlay
-        if self._grid_config is not None:
-            p = self._add_grid_layers(p)
 
         # Focus viewport
         if data.has_focus:
@@ -383,15 +523,20 @@ class ScatterPlotter:
         elif is_numerical:
             p = p + p9.labs(title=expr_name)
 
-        # Grid axis tick labels
-        if self._grid_config is not None and self._grid_config.coords:
-            p = self._add_grid_axis_ticks(p)
-
-        # Theme
+        # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = p + embedding_theme(
             show_spines=self._show_spines, bg_color=self._bg_color
         )
         p = p + p9.theme(figure_size=fig_size)
+
+        # Grid axis tick labels (applied after theme so they survive theme_void)
+        if self._grid_config is not None and self._grid_config.coords:
+            p = self._add_grid_axis_ticks(p)
+
+        # Wrap numerical plots so the custom legend is injected at save time
+        if legend_config is not None:
+            p.__class__ = _PlotWithCustomLegend
+            p._legend_config = legend_config
 
         return p
 
@@ -450,13 +595,13 @@ class ScatterPlotter:
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_grid_histogram()")
 
-        colors = self._cat_colors or DEFAULT_COLORS
-
         hdf = self._data.grid_local_histogram(column, min_cell_count)
         hdf["category"] = pd.Categorical(
             hdf["category"], sorted(hdf["category"].unique())
         )
         hdf = hdf.sort_values(["x", "y", "category"])
+        cats = list(hdf["category"].cat.categories)
+        colors = self._colors_as_list(cats)
 
         factor = 0.8
         hdf["frequency"] = hdf["frequency"] * factor
@@ -523,11 +668,24 @@ class ScatterPlotter:
         )
         return p
 
-    def render(self, gene: str, path: str, **kwargs):
-        """Shortcut: plot + save."""
-        self.plot(gene).save(path, **kwargs)
+    def render(self, column: str, path: str, **kwargs):
+        """Plot and save to *path*. ``**kwargs`` are forwarded to :meth:`plotnine.ggplot.save`."""
+        self.plot(column).save(path, **kwargs)
 
     # ── internals ────────────────────────────────────────────────────────────
+
+    def _colors_as_list(self, cats: list) -> list:
+        """Return an ordered color list for *cats*.
+
+        Handles both list (positional cycling) and dict (name → color) forms
+        of ``_cat_colors``.
+        """
+        if isinstance(self._cat_colors, dict):
+            return [
+                self._cat_colors.get(str(c), DEFAULT_COLORS[i % len(DEFAULT_COLORS)])
+                for i, c in enumerate(cats)
+            ]
+        return self._cat_colors or DEFAULT_COLORS
 
     def _get_cmap_colors(self) -> list:
         if self._cmap is None:
@@ -541,7 +699,13 @@ class ScatterPlotter:
     def _get_boundary_df(self) -> pd.DataFrame:
         if self._boundary_cache["df"] is None:
             from .transforms import compute_boundaries
-            colors = self._cat_colors or DEFAULT_COLORS
+            # Resolve cats so dict-based palettes can be ordered correctly
+            cell_types, _ = self._data.get_column(self._cell_type_column)
+            if hasattr(cell_types, "cat"):
+                cats = list(cell_types.cat.categories)
+            else:
+                cats = natsorted(cell_types.unique())
+            colors = self._colors_as_list(cats)
             bc = self._border_config
             self._boundary_cache["df"] = compute_boundaries(
                 data=self._data,
@@ -583,14 +747,20 @@ class ScatterPlotter:
             clip_val = float(df_nonzero["expression"].quantile(self._max_quantile))
             expr_min = float(df_nonzero["expression"].min())
 
-        df_nonzero["expression_plot"] = df_nonzero["expression"].clip(
-            upper=clip_val
-        )
+        # Split into gradient range and clipped-above values
+        df_normal = df_nonzero[df_nonzero["expression"] <= clip_val].copy()
+        df_above = df_nonzero[df_nonzero["expression"] > clip_val].copy()
 
         if self._anti_overplot:
-            df_nonzero = df_nonzero.sort_values("expression")
+            df_normal = df_normal.sort_values("expression")
 
-        p = p9.ggplot(df_nonzero, p9.aes("x", "y", color="expression_plot"))
+        df_normal["expression_plot"] = df_normal["expression"]
+
+        p = p9.ggplot(df_normal, p9.aes("x", "y", color="expression_plot"))
+
+        # Grid lines first so they render behind all other layers
+        if self._grid_config is not None:
+            p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
         if self._border_config is not None and self._cell_type_column is not None:
@@ -606,17 +776,23 @@ class ScatterPlotter:
                 inherit_aes=False,
             )
 
-        # Main scatter
+        # Main scatter (gradient range)
         p = p + p9.geom_point(size=self._dot_size)
+
+        # Clipped values drawn on top in clip color
+        if len(df_above) > 0:
+            p = p + p9.geom_point(
+                data=df_above,
+                mapping=p9.aes("x", "y"),
+                color=self._upper_clip_color,
+                size=self._dot_size,
+                inherit_aes=False,
+            )
 
         # Color scale
         cmap_colors = self._get_cmap_colors()
         breaks = list(np.linspace(expr_min, clip_val, 5))
-        clipped = clip_val < df_nonzero["expression"].max() if len(df_nonzero) > 0 else False
-        if clipped:
-            labels = [f"{b:.2f}" for b in breaks[:-1]] + [f">{clip_val:.2f}"]
-        else:
-            labels = [f"{b:.2f}" for b in breaks]
+        labels = [f"{b:.2f}" for b in breaks]
 
         cbar_name = (
             self._cbar_title
@@ -630,7 +806,22 @@ class ScatterPlotter:
             labels=labels,
             name=cbar_name,
         )
-        return p
+        # Suppress plotnine's auto-guide; we'll draw a custom matplotlib one
+        p = p + p9.guides(color="none")
+
+        legend_config = dict(
+            expr_min=expr_min,
+            clip_val=clip_val,
+            cmap_colors=cmap_colors,
+            has_zeros=len(df_zeros) > 0,
+            zero_color=self._zero_color,
+            has_clips=len(df_above) > 0,
+            upper_clip_color=self._upper_clip_color,
+            cbar_title=cbar_name,
+            breaks=breaks,
+            labels=labels,
+        )
+        return p, legend_config
 
     def _build_categorical(
         self,
@@ -642,7 +833,7 @@ class ScatterPlotter:
         else:
             cats = natsorted(df["expression"].unique())
 
-        colors = self._cat_colors or DEFAULT_COLORS
+        colors = self._colors_as_list(cats)
         color_values = {str(c): colors[i % len(colors)] for i, c in enumerate(cats)}
 
         # Sort for draw order (flip_order controls which appears on top)
@@ -654,6 +845,10 @@ class ScatterPlotter:
         ).drop(columns=["_sort_key"])
 
         p = p9.ggplot(df, p9.aes("x", "y", color="expression"))
+
+        # Grid lines first so they render behind all other layers
+        if self._grid_config is not None:
+            p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
         if self._border_config is not None and self._cell_type_column is not None:
@@ -740,10 +935,11 @@ class ScatterPlotter:
             + p9.scale_x_continuous(breaks=list(x_positions), labels=list(x_labels))
             + p9.scale_y_continuous(breaks=list(y_positions), labels=list(y_labels))
             + p9.theme(
-                axis_text_x=p9.element_text(size=8),
-                axis_text_y=p9.element_text(size=8),
-                axis_ticks_major_x=p9.element_line(),
-                axis_ticks_major_y=p9.element_line(),
+                axis_text_x=p9.element_text(size=10),
+                axis_text_y=p9.element_text(size=10),
+                axis_ticks_major_x=p9.element_line(color="#555555", size=0.5),
+                axis_ticks_major_y=p9.element_line(color="#555555", size=0.5),
+                axis_ticks_length_major=5,
             )
         )
         return p

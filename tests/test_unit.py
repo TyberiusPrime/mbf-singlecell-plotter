@@ -254,3 +254,8 @@ class TestConstructor:
         colors = ["#FF0000", "#00FF00", "#0000FF"]
         sp = ScatterPlotter().colormap_discrete(colors)
         assert sp._cat_colors == colors
+
+    def test_custom_colors_dict(self):
+        colors = {"T-cell": "#FF0000", "B-cell": "#00FF00", "NK": "#0000FF"}
+        sp = ScatterPlotter().colormap_discrete(colors)
+        assert sp._cat_colors == colors
