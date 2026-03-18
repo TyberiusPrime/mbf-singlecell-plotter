@@ -516,9 +516,7 @@ class ScatterPlotter:
         - A matplotlib ``ListedColormap`` or similar (uses ``.colors``).
         """
         new = copy.copy(self)
-        if isinstance(cmap_or_list_or_dict, dict):
-            new._cat_colors = cmap_or_list_or_dict
-        elif isinstance(cmap_or_list_or_dict, list):
+        if isinstance(cmap_or_list_or_dict, (dict, list)):
             new._cat_colors = cmap_or_list_or_dict
         else:
             # Assume matplotlib ListedColormap or similar
@@ -532,7 +530,7 @@ class ScatterPlotter:
         *,
         color: Optional[str] = None,
         dot_size: Optional[float] = None,
-        zero_value: Optional[float] = None,
+        max_zero_value: Optional[float] = None,
     ) -> "ScatterPlotter":
         """Configure zero-value rendering (appearance only; use layers(zeros=) to toggle visibility)."""
         new = copy.copy(self)
@@ -540,8 +538,8 @@ class ScatterPlotter:
             new._zero_color = color
         if dot_size is not None:
             new._zero_dot_size = dot_size
-        if zero_value is not None:
-            new._zero_value = zero_value
+        if max_zero_value is not None:
+            new._zero_value = max_zero_value
         return new
 
     # ── borders ──────────────────────────────────────────────────────────────
@@ -1009,11 +1007,18 @@ class ScatterPlotter:
         of ``_cat_colors``.
         """
         if isinstance(self._cat_colors, dict):
-            return [
-                self._cat_colors.get(str(c), DEFAULT_COLORS_CATEGORIES[i % len(DEFAULT_COLORS_CATEGORIES)])
-                for i, c in enumerate(cats)
-            ]
-        return self._cat_colors or DEFAULT_COLORS_CATEGORIES
+            missing = sorted([str(c) for c in cats if str(c) not in self._cat_colors])
+            if missing:
+                raise ValueError(
+                    f"not enough colors: dict is missing entries for: {missing}"
+                )
+            return [self._cat_colors[str(c)] for c in cats]
+        colors = self._cat_colors or DEFAULT_COLORS_CATEGORIES
+        if len(colors) < len(cats):
+            raise ValueError(
+                f"not enough colors: {len(colors)} provided for {len(cats)} categories"
+            )
+        return colors
 
     def _get_cmap_colors(self) -> list:
         if self._cmap is None:

@@ -33,7 +33,7 @@ DOT_SIZE = 2
 class TestPlotScatterNumerical:
     def test_s100a8_basic(self, plotter_no_boundary, assert_image):
         p = (
-            plotter_no_boundary.zeros(zero_value=-0.50)
+            plotter_no_boundary.zeros(max_zero_value=-0.50)
             .style(dot_size=DOT_SIZE)
             .plot("S100A8")
         )
@@ -84,7 +84,7 @@ class TestPlotScatterNumerical:
 
         p_with = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
-            .zeros(color="green", dot_size=DOT_SIZE, zero_value=0.0)
+            .zeros(color="green", dot_size=DOT_SIZE, max_zero_value=0.0)
             .plot("S100A8")
         )
         p_without = (
@@ -273,8 +273,7 @@ class TestBoundaryRendering:
     """Tests that specifically exercise the cell-type boundary overlay."""
 
     def test_numerical_with_borders(self, plotter, assert_image):
-        # todo rename zero_value to min_value or such
-        p = plotter.zeros(zero_value=-0.5).style(dot_size=DOT_SIZE).plot("S100A8")
+        p = plotter.zeros(max_zero_value=-0.5).style(dot_size=DOT_SIZE).plot("S100A8")
         assert_image(p)
 
     def test_categorical_with_borders(self, plotter, assert_image):
@@ -295,7 +294,7 @@ class TestBoundaryRendering:
     def test_border_size_large(self, plotter, assert_image):
         p = (
             plotter.with_borders(size=30)
-            .zeros(zero_value=-0.5)
+            .zeros(max_zero_value=-0.5)
             .style(dot_size=DOT_SIZE)
             .plot("S100A8")
         )
@@ -367,10 +366,8 @@ class TestPlotGridLocalHistogram:
 
     def test_vertical_letters(self, plotter_no_boundary, assert_image):
         """Grid histogram with letters on the vertical axis."""
-        p = (
-            plotter_no_boundary
-            .with_grid(vertical_letters=True)
-            .plot_grid_histogram(CAT_COL, min_cell_count=10)
+        p = plotter_no_boundary.with_grid(vertical_letters=True).plot_grid_histogram(
+            CAT_COL, min_cell_count=10
         )
         assert_image(p)
 
@@ -394,7 +391,7 @@ class TestPanelSize:
     def test_numerical_fixed_panel_with_borders(self, plotter, assert_image):
         """Fixed panel with cell-type border overlay — extra right-side decoration."""
         p = (
-            plotter.zeros(zero_value=-0.5)
+            plotter.zeros(max_zero_value=-0.5)
             .style(dot_size=DOT_SIZE)
             .panel_size(3, 3)
             .plot("S100A8")
@@ -403,9 +400,77 @@ class TestPanelSize:
 
     def test_grid_histogram_fixed_panel(self, plotter_no_boundary, assert_image):
         """panel_size applied to a grid histogram."""
-        p = (
-            plotter_no_boundary
-            .panel_size(3, 3)
-            .plot_grid_histogram(CAT_COL, min_cell_count=10)
+        p = plotter_no_boundary.panel_size(3, 3).plot_grid_histogram(
+            CAT_COL, min_cell_count=10
         )
         assert_image(p)
+
+
+class TestColormaps:
+    def test_numeric_manual_colors(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.colormap(cmap=["red", "white", "blue"]).plot("S100A8")
+        assert_image(p)
+
+    def test_numeric_map(self, plotter_no_boundary, assert_image):
+        import matplotlib.cm
+
+        p = plotter_no_boundary.colormap(
+            cmap=matplotlib.cm.Reds, upper_clip_color="green"
+        ).plot("S100A8")
+        assert_image(p)
+
+    def test_categorical_color_list(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.colormap_discrete(
+            [
+                "red",
+                "grey",
+                "blue",
+                "purple",
+                "green",
+                "lime",
+                "pink",
+                "yellow",
+                "darkgreen",
+            ]
+        ).plot("leiden")
+        assert_image(p)
+
+    def test_categorical_color_list_too_few(self, plotter_no_boundary):
+        with pytest.raises(ValueError, match="not enough colors"):
+            plotter_no_boundary.colormap_discrete(
+                [
+                    "red",
+                    "grey",
+                ]
+            ).plot("leiden")
+
+    def test_categorical_color_dict(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.colormap_discrete(
+            {
+                "9": "black",  # that's ignored.
+                "8": "red",
+                "7": "grey",
+                "6": "blue",
+                "5": "purple",
+                "4": "green",
+                "3": "lime",
+                "2": "pink",
+                "1": "yellow",
+                "0": "darkgreen",
+            }
+        ).plot("leiden")
+        assert_image(p)
+
+    def test_categorical_color_map_missing(self, plotter_no_boundary):
+        with pytest.raises(ValueError, match="not enough colors: dict is missing entries for: \\['7', '8'\\]"):
+            plotter_no_boundary.colormap_discrete(
+                {
+                    "6": "blue",
+                    "5": "purple",
+                    "4": "green",
+                    "3": "lime",
+                    "2": "pink",
+                    "1": "yellow",
+                    "0": "darkgreen",
+                }
+            ).plot("leiden")
