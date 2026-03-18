@@ -726,7 +726,7 @@ class ScatterPlotter:
         # Title
         if self._title_override is not _UNSET:
             p = p + p9.labs(title=self._title_override)
-        elif is_numerical:
+        else:
             p = p + p9.labs(title=expr_name)
 
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
@@ -886,7 +886,7 @@ class ScatterPlotter:
                     fill="category",
                 ),
             )
-            + p9.theme_bw()
+            + embedding_theme(base_size=self.base_size, show_spines=True)
             + p9.geom_hline(
                 p9.aes(yintercept="xx"),
                 data=pd.DataFrame({"xx": list(range(grid_size + 1))}),
@@ -1194,7 +1194,9 @@ class ScatterPlotter:
         p = p + p9.scale_color_manual(
             values=color_values,
             name=expr_name,
-            guide=p9.guide_legend(override_aes={"size": self._legend_dot_size}),
+            guide=p9.guide_legend(
+                override_aes={"size": self._legend_dot_size, "shape": "o"}
+            ),
         )
 
         return p

@@ -254,6 +254,15 @@ class TestGridOverlays:
         )
         assert_image(p)
 
+    def test_vertical_letters_scatter(self, plotter_no_boundary, assert_image):
+        """Grid with letters on the vertical axis instead of horizontal."""
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .with_grid(labels=True, vertical_letters=True)
+            .plot("S100A8")
+        )
+        assert_image(p)
+
 
 # ---------------------------------------------------------------------------
 # Boundary (border) rendering — requires scikit-image (skips if absent)
@@ -354,4 +363,13 @@ class TestPlotGridLocalHistogram:
     def test_high_min_cells(self, plotter_no_boundary, assert_image):
         """Fewer grid cells shown when min_cell_count is large."""
         p = plotter_no_boundary.plot_grid_histogram(CAT_COL, min_cell_count=100)
+        assert_image(p)
+
+    def test_vertical_letters(self, plotter_no_boundary, assert_image):
+        """Grid histogram with letters on the vertical axis."""
+        p = (
+            plotter_no_boundary
+            .with_grid(vertical_letters=True)
+            .plot_grid_histogram(CAT_COL, min_cell_count=10)
+        )
         assert_image(p)
