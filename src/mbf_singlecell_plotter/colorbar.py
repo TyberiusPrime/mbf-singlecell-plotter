@@ -26,8 +26,6 @@ class sc_guide_colorbar(guide_colorbar):
     clip_label: str = ""
 
     def draw(self):
-        if self.title:
-            self.title = self.title.upper()
 
         # theme + … drops the `targets` attr (set by setup(), not a dataclass
         # field).  Save and restore it so super().draw() can still write to it.
@@ -65,7 +63,9 @@ class sc_guide_colorbar(guide_colorbar):
 
     def _add_extensions(self, box) -> None:
         """Append zero / clip rectangles + labels directly to the auxbox."""
-        from matplotlib.patches import Rectangle
+        import numpy as np
+        from matplotlib.colors import ListedColormap
+        from matplotlib.collections import QuadMesh
         from matplotlib.text import Text
 
         # auxbox is always the last child (title precedes it for "left" position)
@@ -73,30 +73,35 @@ class sc_guide_colorbar(guide_colorbar):
 
         elements = self.elements
         bar_h = elements.key_height
-        bar_w = elements.key_width + elements.frame.linewidth
+        bar_w = elements.key_width
         ext_h = bar_h * 0.10
         text_x = bar_w + elements.text.margin
         fontsize = elements.text.fontsize
 
-        if self.zero_color is not None:
-            auxbox.add_artist(
-                Rectangle(
-                    (0, -ext_h), bar_w, ext_h,
-                    facecolor=self.zero_color, linewidth=0,
-                )
+        def _make_box(color: str, y0: float, y1: float):
+            """Return a QuadMesh matching the gradient's rendering characteristics."""
+            x = np.array([0.0, bar_w])
+            y = np.array([y0, y1])
+            X, Y = np.meshgrid(x, y)
+            coords = np.stack([X, Y], axis=-1)
+            coll = QuadMesh(
+                coords,
+                antialiased=False,
+                shading="gouraud",
+                cmap=ListedColormap([color, color]),
+                array=np.zeros(4),  # 4 vertices, all same value → uniform color
             )
+            return coll
+
+        if self.zero_color is not None:
+            auxbox.add_artist(_make_box(self.zero_color, -ext_h, 0.0))
             auxbox.add_artist(
                 Text(text_x, -ext_h / 2, self.zero_label,
                      fontsize=fontsize, va="center", ha="left")
             )
 
         if self.upper_clip_color is not None:
-            auxbox.add_artist(
-                Rectangle(
-                    (0, bar_h), bar_w, ext_h,
-                    facecolor=self.upper_clip_color, linewidth=0,
-                )
-            )
+            auxbox.add_artist(_make_box(self.upper_clip_color, bar_h, bar_h + ext_h))
             auxbox.add_artist(
                 Text(text_x, bar_h + ext_h / 2, self.clip_label,
                      fontsize=fontsize, va="center", ha="left")
