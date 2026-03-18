@@ -17,6 +17,43 @@ from .colorbar import sc_guide_colorbar
 # ── Custom matplotlib colorbar legend ────────────────────────────────────────
 
 
+class _PlotWithFixedPanel(p9.ggplot):
+    """ggplot subclass that enforces a fixed panel (scatter-area) size in inches.
+
+    After the first draw the decoration sizes (margins, legend, title) are
+    measured in inches using plotnine's own LayoutSpaces.  The figure is then
+    resized to ``desired_panel + decorations`` and the layout engine is
+    re-executed so every artist is repositioned correctly for the new size.
+    """
+
+    _fixed_panel_w: float = 0.0
+    _fixed_panel_h: float = 0.0
+
+    def save_helper(self, **kwargs):
+        from plotnine._mpl.layout_manager._spaces import LayoutSpaces
+
+        sv = super().save_helper(**kwargs)
+        fig = sv.figure
+        fw, fh = fig.get_size_inches()
+
+        # Measure decoration sizes in inches (independent of figure size).
+        le = fig.get_layout_engine()
+        spaces = LayoutSpaces(le.plot)
+        l_in = spaces.l.total * fw
+        r_in = spaces.r.total * fw
+        b_in = spaces.b.total * fh
+        t_in = spaces.t.total * fh
+
+        new_fw = l_in + self._fixed_panel_w + r_in
+        new_fh = b_in + self._fixed_panel_h + t_in
+
+        fig.set_size_inches(new_fw, new_fh)
+        le.execute(fig)          # recompute gridspec positions
+        fig.canvas.draw()        # re-render artists at new positions
+
+        return sv
+
+
 class _PlotWithCustomLegend(p9.ggplot):
     """ggplot subclass that replaces the auto color guide with a custom matplotlib colorbar."""
 
@@ -288,6 +325,7 @@ class ScatterPlotter:
         # basic plot options
         self.base_size = base_size
         self.fig_size = fig_size
+        self._fixed_panel_size: Optional[tuple] = None
 
         # dot appearance
         self._dot_size: float = 1
@@ -645,6 +683,17 @@ class ScatterPlotter:
         new._data = self._data.unfocus()
         return new
 
+    def panel_size(self, width: float, height: float) -> "ScatterPlotter":
+        """Fix the scatter-panel (data area) to *width* × *height* inches.
+
+        The figure size grows to accommodate the panel plus whatever space the
+        legends, title, and axis labels require — so plots with different
+        legends remain comparable.
+        """
+        new = copy.copy(self)
+        new._fixed_panel_size = (width, height)
+        return new
+
     # ── faceting ─────────────────────────────────────────────────────────────
 
     def facet(self, variable: str, n_col: int = 2) -> "ScatterPlotter":
@@ -744,7 +793,10 @@ class ScatterPlotter:
         elif self._grid_config is None:
             p = self._add_plain_axis_ticks(p)
 
-
+        # Fixed panel size: promote p to _PlotWithFixedPanel
+        if self._fixed_panel_size is not None:
+            p.__class__ = _PlotWithFixedPanel
+            p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
 
         return p
 
@@ -918,6 +970,11 @@ class ScatterPlotter:
                 axis_title=p9.element_blank(),
             )
         )
+
+        if self._fixed_panel_size is not None:
+            p.__class__ = _PlotWithFixedPanel
+            p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
+
         return p
 
     def render(self, column: str, path: str, **kwargs):
@@ -1123,6 +1180,11 @@ class ScatterPlotter:
                 zero_label=zero_label,
                 upper_clip_color=self._upper_clip_color if has_clips else None,
                 clip_label=f">{clip_val:.3g}",
+                key_height_pt=(
+                    round(self._fixed_panel_size[1] * 72 * 0.70)
+                    if self._fixed_panel_size is not None
+                    else None
+                ),
             ),
         )
         return p
@@ -1309,7 +1371,7 @@ class ScatterPlotter:
             letters_rev = letters[::-1]
             letter = letters_rev[y_index]
             number = non_letters[x_index]
-            return f"{number}{letter}"
+            return f"{letter}{number}"
         else:
             letter = letters[x_index]
             number = non_letters[gc.grid_size - 1 - y_index]

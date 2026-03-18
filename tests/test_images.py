@@ -373,3 +373,39 @@ class TestPlotGridLocalHistogram:
             .plot_grid_histogram(CAT_COL, min_cell_count=10)
         )
         assert_image(p)
+
+
+# ---------------------------------------------------------------------------
+# panel_size — fixed scatter-panel dimensions
+# ---------------------------------------------------------------------------
+
+
+class TestPanelSize:
+    def test_numerical_fixed_panel(self, plotter_no_boundary, assert_image):
+        """Numerical plot with a fixed 3×3-inch panel."""
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).panel_size(3, 3).plot("S100A8")
+        assert_image(p)
+
+    def test_categorical_fixed_panel(self, plotter_no_boundary, assert_image):
+        """Categorical plot with the same 3×3-inch panel — legend is wider."""
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).panel_size(3, 3).plot(CAT_COL)
+        assert_image(p)
+
+    def test_numerical_fixed_panel_with_borders(self, plotter, assert_image):
+        """Fixed panel with cell-type border overlay — extra right-side decoration."""
+        p = (
+            plotter.zeros(zero_value=-0.5)
+            .style(dot_size=DOT_SIZE)
+            .panel_size(3, 3)
+            .plot("S100A8")
+        )
+        assert_image(p)
+
+    def test_grid_histogram_fixed_panel(self, plotter_no_boundary, assert_image):
+        """panel_size applied to a grid histogram."""
+        p = (
+            plotter_no_boundary
+            .panel_size(3, 3)
+            .plot_grid_histogram(CAT_COL, min_cell_count=10)
+        )
+        assert_image(p)

@@ -24,6 +24,8 @@ class sc_guide_colorbar(guide_colorbar):
     zero_label: str = "0"
     upper_clip_color: Optional[str] = None
     clip_label: str = ""
+    # When set, use this value directly instead of computing from figure height.
+    key_height_pt: Optional[float] = None
 
     def draw(self):
 
@@ -34,8 +36,11 @@ class sc_guide_colorbar(guide_colorbar):
         # Target colorbar height ≈ 70 % of figure height (in pt).
         # Setting legend_key_height explicitly disables the inherited 7.25×
         # scale factor, so the value is used directly as the bar height in pt.
-        fig_h_pt = self.theme.getp("figure_size")[1] * 72
-        target_key_h = round(fig_h_pt * 0.70)
+        if self.key_height_pt is not None:
+            target_key_h = round(self.key_height_pt)
+        else:
+            fig_h_pt = self.theme.getp("figure_size")[1] * 72
+            target_key_h = round(fig_h_pt * 0.70)
 
         self.theme = self.theme + p9.theme(
             legend_title_position="left",

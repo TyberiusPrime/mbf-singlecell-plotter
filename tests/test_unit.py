@@ -259,3 +259,61 @@ class TestConstructor:
         colors = {"T-cell": "#FF0000", "B-cell": "#00FF00", "NK": "#0000FF"}
         sp = ScatterPlotter().colormap_discrete(colors)
         assert sp._cat_colors == colors
+
+
+# ---------------------------------------------------------------------------
+# panel_size
+# ---------------------------------------------------------------------------
+
+
+class TestPanelSize:
+    def test_attributes_set(self, plotter_no_boundary):
+        """panel_size() stores the desired dimensions on the ggplot object."""
+        p = plotter_no_boundary.panel_size(2.0, 3.0).plot("S100A8")
+        assert p._fixed_panel_w == 2.0
+        assert p._fixed_panel_h == 3.0
+
+    def test_larger_panel_produces_larger_image(self, plotter_no_boundary):
+        """A bigger panel_size yields a bigger rendered figure."""
+        import io
+        from PIL import Image
+
+        p_small = plotter_no_boundary.panel_size(1, 1).plot("S100A8")
+        p_large = plotter_no_boundary.panel_size(4, 4).plot("S100A8")
+
+        buf_small, buf_large = io.BytesIO(), io.BytesIO()
+        p_small.save(buf_small, format="png", dpi=100, verbose=False)
+        p_large.save(buf_large, format="png", dpi=100, verbose=False)
+        buf_small.seek(0)
+        buf_large.seek(0)
+
+        img_small = Image.open(buf_small)
+        img_large = Image.open(buf_large)
+
+        assert img_large.size[0] > img_small.size[0], "Wider panel → wider image"
+        assert img_large.size[1] > img_small.size[1], "Taller panel → taller image"
+
+    def test_same_panel_different_legends_different_figure_size(
+        self, plotter_no_boundary
+    ):
+        """Same panel_size, different legend content → different total figure size."""
+        import io
+        from PIL import Image
+
+        # numerical → continuous colorbar (narrow)
+        p_num = plotter_no_boundary.panel_size(3, 3).plot("S100A8")
+        # categorical → discrete legend (wider right margin)
+        p_cat = plotter_no_boundary.panel_size(3, 3).plot("leiden")
+
+        buf_num, buf_cat = io.BytesIO(), io.BytesIO()
+        p_num.save(buf_num, format="png", dpi=100, verbose=False)
+        p_cat.save(buf_cat, format="png", dpi=100, verbose=False)
+        buf_num.seek(0)
+        buf_cat.seek(0)
+
+        img_num = Image.open(buf_num)
+        img_cat = Image.open(buf_cat)
+
+        assert img_num.size != img_cat.size, (
+            "Different legend sizes should give different total figure sizes"
+        )
