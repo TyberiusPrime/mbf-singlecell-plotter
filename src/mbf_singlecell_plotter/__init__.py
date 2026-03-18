@@ -5,6 +5,7 @@ from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_
 from .data import EmbeddingData, ColumnData
 from .transforms import prepare_density_df, prepare_scatter_df, compute_boundaries
 from .plots import ScatterPlotter, BorderConfig, GridConfig
+from .colorbar import sc_guide_colorbar
 
 __all__ = [
     # data
@@ -22,6 +23,8 @@ __all__ = [
     "DEFAULT_COLORS_BORDERS",
     "DEFAULT_COLORS_CATEGORIES",
     "embedding_theme",
+    # colorbar
+    "sc_guide_colorbar",
     # utilities
     "map_to_integers",
     "unmap",

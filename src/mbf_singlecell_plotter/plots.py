@@ -11,6 +11,7 @@ from natsort import natsorted
 
 from .data import EmbeddingData, ColumnData, _LETTERS
 from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_theme
+from .colorbar import sc_guide_colorbar
 
 
 # ── Custom matplotlib colorbar legend ────────────────────────────────────────
@@ -735,7 +736,7 @@ class ScatterPlotter:
             bg_color=self._bg_color,
             spine_color=self._spine_color,
         )
-        p = p + p9.theme(figure_size=fig_size)
+        p = p + p9.theme(figure_size=fig_size, legend_box="horizontal")
 
         # Grid axis tick labels (applied after theme so they survive theme_void)
         if self._grid_config is not None and self._grid_config.coords:
@@ -1103,6 +1104,7 @@ class ScatterPlotter:
             colors=cmap_colors,
             limits=(expr_min, clip_val),
             name=cbar_name,
+            guide=sc_guide_colorbar(),
         )
         return p
 

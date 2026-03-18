@@ -264,7 +264,8 @@ class TestBoundaryRendering:
     """Tests that specifically exercise the cell-type boundary overlay."""
 
     def test_numerical_with_borders(self, plotter, assert_image):
-        p = plotter.style(dot_size=DOT_SIZE).plot("S100A8")
+        # todo rename zero_value to min_value or such
+        p = plotter.zeros(zero_value=-0.5).style(dot_size=DOT_SIZE).plot("S100A8")
         assert_image(p)
 
     def test_categorical_with_borders(self, plotter, assert_image):
