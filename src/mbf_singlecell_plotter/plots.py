@@ -1104,9 +1104,19 @@ class ScatterPlotter:
             f"≤{zero_val_str}" if has_zeros and data_min < zero_val - 1e-9
             else zero_val_str
         )
+        # Use MaxNLocator to get ≥7 "nice" break values so that after removing
+        # the boundary ticks that duplicate the extension-box labels (1 at each
+        # end), at least 5 ticks remain.
+        import matplotlib.ticker as _ticker
+        cbar_breaks = list(
+            _ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]).tick_values(
+                zero_val, clip_val
+            )
+        )
         p = p + p9.scale_color_gradientn(
             colors=cmap_colors,
             limits=(zero_val, clip_val),
+            breaks=cbar_breaks,
             name=cbar_name,
             guide=sc_guide_colorbar(
                 zero_color=self._zero_color if has_zeros else None,
