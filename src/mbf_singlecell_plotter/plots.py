@@ -40,9 +40,12 @@ def _draw_numerical_legend(
     labels: list,
     base_size: float = 12,
     title_position: str = "side",
+    border_cats: dict = None,
+    border_legend_dot_size: float = 4,
 ) -> None:
     """Add a custom colorbar with rectangular extension boxes to a plotnine figure."""
     import matplotlib as mpl
+    import matplotlib.lines
     from matplotlib.colors import LinearSegmentedColormap
 
     # Finalise axes positions via the plotnine layout engine, then freeze it
@@ -87,11 +90,9 @@ def _draw_numerical_legend(
     bar_frac = 0.035  # colorbar bar width as fraction of figure
 
     if title_position == "top":
-        # No side title column; bar starts right after the grid
         bar_left = grid_x1 + gap
         legend_width = gap + bar_frac + 0.10
     else:
-        # "side": vertical title text to the left of the bar
         title_half = 0.025  # half-width of title text area
         bar_left = grid_x1 + 2 * title_half + gap
         legend_width = 2 * title_half + gap + bar_frac + 0.10
@@ -166,6 +167,50 @@ def _draw_numerical_legend(
             clip_on=False,
         )
 
+    # ── Border category legend (matplotlib patches, left of the colorbar) ────
+    if border_cats:
+        handles = [
+            mpl.lines.Line2D(
+                [0], [0],
+                marker="o",
+                color="none",
+                markerfacecolor=color,
+                markersize=border_legend_dot_size,
+                label=str(cat),
+            )
+            for cat, color in border_cats.items()
+        ]
+        legend_fontsize = max(6, base_size * 0.7)
+        border_leg = fig.legend(
+            handles=handles,
+            title="borders",
+            loc="upper left",
+            bbox_to_anchor=(grid_x1 + gap, grid_y0 + grid_height),
+            bbox_transform=fig.transFigure,
+            fontsize=legend_fontsize,
+            title_fontsize=legend_fontsize,
+            frameon=False,
+            handlelength=0.8,
+            handletextpad=0.4,
+            borderpad=0.3,
+        )
+        # Shift the colorbar right to clear the border legend
+        fig.canvas.draw()
+        try:
+            _r = fig.canvas.renderer
+        except AttributeError:
+            _r = None
+        bb = border_leg.get_window_extent(_r)
+        bb_fig = bb.transformed(fig.transFigure.inverted())
+        bar_left = max(bar_left, bb_fig.x1 + gap)
+        cbar_ax.set_position([bar_left, grid_y0, bar_frac, grid_height])
+        if title_position != "top":
+            # Re-centre the vertical title
+            for txt in fig.texts:
+                if txt.get_text() == cbar_title:
+                    txt.set_position((bar_left - title_half, grid_y0 + grid_height * 0.5))
+                    break
+
     # ── Title ─────────────────────────────────────────────────────────────────
     if title_position == "top":
         # Horizontal title above the bar
@@ -204,6 +249,7 @@ class BorderConfig:
     colors: tuple = field(default_factory=lambda: tuple(DEFAULT_COLORS_BORDERS))
     legend: bool = True
     legend_dot_size: float = 4
+    legend_title: Optional[str] = None  # None → use the cell_type column name
 
 
 @dataclass(frozen=True)
@@ -455,12 +501,14 @@ class ScatterPlotter:
         colors: Optional[list] = None,
         legend: bool = True,
         legend_dot_size: float = 4,
+        legend_title: Optional[str] = None,
     ) -> "ScatterPlotter":
         new = copy.copy(self)
         resolved_colors = tuple(colors) if colors is not None else tuple(DEFAULT_COLORS_BORDERS)
         new._border_config = BorderConfig(
             size=size, resolution=resolution, blur=blur, threshold=threshold,
             colors=resolved_colors, legend=legend, legend_dot_size=legend_dot_size,
+            legend_title=legend_title,
         )
         if cell_type_column is not None:
             new._cell_type_column = cell_type_column
@@ -652,12 +700,17 @@ class ScatterPlotter:
                 n_row = (n_facets + self._n_col - 1) // self._n_col
                 fig_size = (6 * self._n_col, 5 * n_row)
             else:
-                fig_size = (6, 5)
+                has_border_legend = (
+                    self._layer_borders
+                    and self._border_config is not None
+                    and self._border_config.legend
+                )
+                # Two legends on the right need more width
+                fig_size = (8 if has_border_legend else 6, 5)
 
         # Build plot
-        legend_config = None
         if is_numerical:
-            p, legend_config = self._build_numerical(df, expr_name)
+            p = self._build_numerical(df, expr_name)
         else:
             p = self._build_categorical(df, expr_name)
 
@@ -690,10 +743,7 @@ class ScatterPlotter:
         elif self._grid_config is None:
             p = self._add_plain_axis_ticks(p)
 
-        # Wrap numerical plots so the custom legend is injected at save time
-        if legend_config is not None:
-            p.__class__ = _PlotWithCustomLegend
-            p._legend_config = legend_config
+
 
         return p
 
@@ -913,6 +963,17 @@ class ScatterPlotter:
             )
         return self._boundary_cache["df"]
 
+    def _border_cat_to_color(self) -> dict:
+        """Return ordered {category: hex_color} mapping for the border palette."""
+        cell_types, _ = self._data.get_column(self._cell_type_column)
+        cats = (
+            list(cell_types.cat.categories)
+            if hasattr(cell_types, "cat")
+            else natsorted(cell_types.unique())
+        )
+        colors = list(self._border_config.colors)
+        return {cat: colors[i % len(colors)] for i, cat in enumerate(cats)}
+
     def _add_border_layers(self, p: p9.ggplot) -> p9.ggplot:
         bdf = self._get_boundary_df()
         bc = self._border_config
@@ -930,21 +991,14 @@ class ScatterPlotter:
             )
 
         if bc.legend:
-            # Build cat→border_color mapping (same cycling logic as compute_boundaries)
-            cell_types, _ = self._data.get_column(self._cell_type_column)
-            cats = (
-                list(cell_types.cat.categories)
-                if hasattr(cell_types, "cat")
-                else natsorted(cell_types.unique())
-            )
-            colors = list(bc.colors)
-            cat_to_color = {cat: colors[i % len(colors)] for i, cat in enumerate(cats)}
+            cat_to_color = self._border_cat_to_color()
 
             # One invisible phantom point per category — carries the fill aesthetic
             # for the legend. Uses fill (not color) so it doesn't clash with the
             # scatter's color scale. Placed at (x_min, y_min) which is already
             # within the data bounds so the axis range is unaffected.
             x_min, _, y_min, _ = self._data.bounds()
+            cats = list(cat_to_color.keys())
             legend_df = pd.DataFrame({"cell_type": cats, "x": x_min, "y": y_min})
             p = (
                 p
@@ -959,7 +1013,7 @@ class ScatterPlotter:
                 )
                 + p9.scale_fill_manual(
                     values=cat_to_color,
-                    name="borders",
+                    name=bc.legend_title if bc.legend_title is not None else self._cell_type_column,
                     guide=p9.guide_legend(override_aes={"alpha": 1, "size": bc.legend_dot_size}),
                 )
             )
@@ -1040,9 +1094,6 @@ class ScatterPlotter:
 
         # Color scale
         cmap_colors = self._get_cmap_colors()
-        breaks = list(np.linspace(expr_min, clip_val, 5))
-        labels = [f"{b:.2f}" for b in breaks]
-
         cbar_name = (
             self._cbar_title
             if self._cbar_title is not None
@@ -1051,27 +1102,9 @@ class ScatterPlotter:
         p = p + p9.scale_color_gradientn(
             colors=cmap_colors,
             limits=(expr_min, clip_val),
-            breaks=breaks,
-            labels=labels,
             name=cbar_name,
         )
-        # Suppress plotnine's auto-guide; we'll draw a custom matplotlib one
-        p = p + p9.guides(color="none")
-
-        legend_config = dict(
-            expr_min=expr_min,
-            clip_val=clip_val,
-            cmap_colors=cmap_colors,
-            has_zeros=len(df_zeros) > 0,
-            zero_color=self._zero_color,
-            has_clips=len(df_above) > 0,
-            upper_clip_color=self._upper_clip_color,
-            cbar_title=cbar_name,
-            breaks=breaks,
-            labels=labels,
-            base_size=self.base_size,
-        )
-        return p, legend_config
+        return p
 
     def _build_categorical(
         self,
