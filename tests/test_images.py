@@ -348,6 +348,17 @@ class TestPlotScatterLimits:
         )
         assert_image(p)
 
+    def test_grid_limits(self, plotter_no_boundary, data, assert_image):
+        coords = data.coordinates()
+        x_mid = coords["x"].median()
+        y_mid = coords["y"].median()
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .focus_on_grid("K12", "G9")
+            .plot("S100A8")
+        )
+        assert_image(p)
+
 
 # ---------------------------------------------------------------------------
 # plot_grid_local_histogram  (plotnine output)
@@ -462,7 +473,10 @@ class TestColormaps:
         assert_image(p)
 
     def test_categorical_color_map_missing(self, plotter_no_boundary):
-        with pytest.raises(ValueError, match="not enough colors: dict is missing entries for: \\['7', '8'\\]"):
+        with pytest.raises(
+            ValueError,
+            match="not enough colors: dict is missing entries for: \\['7', '8'\\]",
+        ):
             plotter_no_boundary.colormap_discrete(
                 {
                     "6": "blue",

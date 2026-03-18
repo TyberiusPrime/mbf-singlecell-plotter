@@ -7,6 +7,7 @@ Example data has:
   var index:   gene names like "S100A8", no "NAME ID" spaces
 """
 
+import anndata
 import numpy as np
 import pandas as pd
 import pytest
@@ -316,4 +317,141 @@ class TestPanelSize:
 
         assert img_num.size != img_cat.size, (
             "Different legend sizes should give different total figure sizes"
+        )
+
+
+# ---------------------------------------------------------------------------
+# focus_on_grid
+# ---------------------------------------------------------------------------
+
+# Synthetic 2×2 grid: four corner cells at data coords (0,0)..(10,10).
+# grid_size=2 → cell_w = cell_h = 5.0
+#   Labels (default):          Labels (vertical-letters):
+#     A1 (top-left)   B1          1A (top-left)   2A
+#     A2 (bottom-left) B2         1B (bottom-left) 2B
+
+@pytest.fixture(scope="module")
+def grid2_ad():
+    coords = np.array([[0.0, 0.0], [0.0, 10.0], [10.0, 0.0], [10.0, 10.0]])
+    ad = anndata.AnnData(np.zeros((4, 1), dtype=np.float32))
+    ad.obs_names = ["c0", "c1", "c2", "c3"]
+    ad.var_names = ["g0"]
+    ad.obsm["X_test"] = coords
+    return ad
+
+
+@pytest.fixture(scope="module")
+def grid2_data(grid2_ad):
+    return EmbeddingData(grid2_ad, "test", grid_size=2)
+
+
+@pytest.fixture(scope="module")
+def grid2_data_vl(grid2_ad):
+    """Vertical-letters orientation: column=number, row=letter."""
+    return EmbeddingData(grid2_ad, "test", grid_size=2, grid_letters_on_vertical=True)
+
+
+@pytest.fixture(scope="module")
+def grid2_plotter(grid2_ad):
+    return ScatterPlotter().set_source(grid2_ad, "test").with_grid(grid_size=2)
+
+
+class TestFocusOnGrid:
+    # ── happy-path: default orientation ─────────────────────────────────────
+
+    def test_top_left_cell(self, grid2_data):
+        b = grid2_data.focus_on_grid("A1", "A1").bounds()
+        assert b == pytest.approx((0.0, 5.0, 5.0, 10.0))
+
+    def test_bottom_right_cell(self, grid2_data):
+        b = grid2_data.focus_on_grid("B2", "B2").bounds()
+        assert b == pytest.approx((5.0, 10.0, 0.0, 5.0))
+
+    def test_full_grid_matches_full_bounds(self, grid2_data):
+        b = grid2_data.focus_on_grid("A1", "B2").bounds()
+        assert b == pytest.approx(grid2_data.full_bounds())
+
+    def test_top_row_both_columns(self, grid2_data):
+        b = grid2_data.focus_on_grid("A1", "B1").bounds()
+        assert b == pytest.approx((0.0, 10.0, 5.0, 10.0))
+
+    def test_left_column_both_rows(self, grid2_data):
+        b = grid2_data.focus_on_grid("A1", "A2").bounds()
+        assert b == pytest.approx((0.0, 5.0, 0.0, 10.0))
+
+    def test_lowercase_accepted(self, grid2_data):
+        b = grid2_data.focus_on_grid("a1", "b2").bounds()
+        assert b == pytest.approx(grid2_data.full_bounds())
+
+    # ── happy-path: vertical-letters orientation ─────────────────────────────
+
+    def test_vl_top_left_cell(self, grid2_data_vl):
+        b = grid2_data_vl.focus_on_grid("1A", "1A").bounds()
+        assert b == pytest.approx((0.0, 5.0, 5.0, 10.0))
+
+    def test_vl_bottom_right_cell(self, grid2_data_vl):
+        b = grid2_data_vl.focus_on_grid("2B", "2B").bounds()
+        assert b == pytest.approx((5.0, 10.0, 0.0, 5.0))
+
+    def test_vl_full_grid(self, grid2_data_vl):
+        b = grid2_data_vl.focus_on_grid("1A", "2B").bounds()
+        assert b == pytest.approx(grid2_data_vl.full_bounds())
+
+    # ── ScatterPlotter: without_grid() raises ────────────────────────────────
+
+    def test_without_grid_raises(self, grid2_plotter):
+        with pytest.raises(ValueError, match="without_grid"):
+            grid2_plotter.without_grid().focus_on_grid("A1", "B2")
+
+    def test_without_grid_error_mentions_focus_on_grid(self, grid2_plotter):
+        with pytest.raises(ValueError, match="focus_on_grid"):
+            grid2_plotter.without_grid().focus_on_grid("A1", "B2")
+
+    # ── error: bad label format ───────────────────────────────────────────────
+
+    def test_missing_number(self, grid2_data):
+        with pytest.raises(ValueError, match="letter\\+number"):
+            grid2_data.focus_on_grid("A", "B2")
+
+    def test_missing_letter(self, grid2_data):
+        with pytest.raises(ValueError, match="letter\\+number"):
+            grid2_data.focus_on_grid("1", "B2")
+
+    def test_vl_wrong_format(self, grid2_data_vl):
+        with pytest.raises(ValueError, match="number\\+letter"):
+            grid2_data_vl.focus_on_grid("A1", "2B")
+
+    # ── error: out-of-range column/row ───────────────────────────────────────
+
+    def test_column_letter_out_of_range(self, grid2_data):
+        with pytest.raises(ValueError, match="A..B"):
+            grid2_data.focus_on_grid("C1", "C1")
+
+    def test_column_letter_mentions_grid_size(self, grid2_data):
+        with pytest.raises(ValueError, match="grid_size=2"):
+            grid2_data.focus_on_grid("Z1", "Z1")
+
+    def test_row_zero_invalid(self, grid2_data):
+        with pytest.raises(ValueError, match="1..2"):
+            grid2_data.focus_on_grid("A0", "A1")
+
+    def test_row_too_large(self, grid2_data):
+        with pytest.raises(ValueError, match="1..2"):
+            grid2_data.focus_on_grid("A1", "A3")
+
+    # ── swapped args are silently corrected ──────────────────────────────────
+
+    def test_column_swapped(self, grid2_data):
+        assert grid2_data.focus_on_grid("B1", "A2").bounds() == pytest.approx(
+            grid2_data.focus_on_grid("A1", "B2").bounds()
+        )
+
+    def test_row_swapped(self, grid2_data):
+        assert grid2_data.focus_on_grid("A2", "B1").bounds() == pytest.approx(
+            grid2_data.focus_on_grid("A1", "B2").bounds()
+        )
+
+    def test_both_swapped(self, grid2_data):
+        assert grid2_data.focus_on_grid("B2", "A1").bounds() == pytest.approx(
+            grid2_data.focus_on_grid("A1", "B2").bounds()
         )

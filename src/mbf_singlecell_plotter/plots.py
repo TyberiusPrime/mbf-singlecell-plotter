@@ -691,6 +691,24 @@ class ScatterPlotter:
         new._data = self._data.focus_on(x=x, y=y)
         return new
 
+    def focus_on_grid(self, cell_min: str, cell_max: str) -> "ScatterPlotter":
+        """Restrict viewport to the rectangle from cell_min (top-left) to cell_max (bottom-right).
+
+        Raises RuntimeError if no source has been set.
+        Raises ValueError if the grid has been disabled with without_grid().
+        See EmbeddingData.focus_on_grid() for label format conventions.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .focus_on_grid()")
+        if self._grid_config is None:
+            raise ValueError(
+                "focus_on_grid() requires a grid; call .with_grid() to re-enable "
+                "or remove .without_grid()"
+            )
+        new = copy.copy(self)
+        new._data = self._data.focus_on_grid(cell_min, cell_max)
+        return new
+
     def unfocus(self) -> "ScatterPlotter":
         if self._data is None:
             raise RuntimeError("call .set_source() before .unfocus()")
@@ -993,10 +1011,6 @@ class ScatterPlotter:
             p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
 
         return p
-
-    def render(self, column: str, path: str, **kwargs):
-        """Plot and save to *path*. ``**kwargs`` are forwarded to :meth:`plotnine.ggplot.save`."""
-        self.plot(column).save(path, **kwargs)
 
     # ── internals ────────────────────────────────────────────────────────────
 

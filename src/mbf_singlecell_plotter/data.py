@@ -13,6 +13,56 @@ from .util import map_to_integers, unmap
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
+def _parse_grid_label(label: str, gs: int, letters_on_vertical: bool) -> tuple:
+    """Parse a grid label string → (col_idx, row_from_top), both 0-indexed.
+
+    Default orientation (letters_on_vertical=False): format '{letter}{number}',
+    e.g. 'G3' — letter is the column (A=0), number is the row (1=top).
+
+    Vertical-letters orientation (letters_on_vertical=True): format '{number}{letter}',
+    e.g. '3G' — number is the column (1=0), letter is the row (A=top).
+
+    Raises ValueError with a descriptive message on invalid input.
+    """
+    valid_letters = _LETTERS[:gs]
+    s = label.strip()
+    if not letters_on_vertical:
+        # expect: one letter then 1-2 digits
+        if len(s) < 2 or not s[0].isalpha() or not s[1:].isdigit():
+            raise ValueError(
+                f"grid label must be letter+number, e.g. 'A1' (grid_size={gs}), got {label!r}"
+            )
+        letter, number = s[0].upper(), int(s[1:])
+        col_idx = _LETTERS.index(letter) if letter in valid_letters else -1
+        if col_idx < 0:
+            raise ValueError(
+                f"grid label column must be A..{valid_letters[-1]} (grid_size={gs}), got {letter!r}"
+            )
+        if not (1 <= number <= gs):
+            raise ValueError(
+                f"grid label row must be 1..{gs} (grid_size={gs}), got {number}"
+            )
+        return col_idx, number - 1
+    else:
+        # expect: 1-2 digits then one letter
+        if len(s) < 2 or not s[-1].isalpha() or not s[:-1].isdigit():
+            raise ValueError(
+                f"grid label must be number+letter, e.g. '1A' (grid_size={gs}), got {label!r}"
+            )
+        letter, number = s[-1].upper(), int(s[:-1])
+        if letter not in valid_letters:
+            raise ValueError(
+                f"grid label row must be A..{valid_letters[-1]} (grid_size={gs}), got {letter!r}"
+            )
+        if not (1 <= number <= gs):
+            raise ValueError(
+                f"grid label column must be 1..{gs} (grid_size={gs}), got {number}"
+            )
+        col_idx = number - 1
+        row_from_top = _LETTERS.index(letter)
+        return col_idx, row_from_top
+
+
 class ColumnData(NamedTuple):
     """Return type of :meth:`EmbeddingData.get_column`."""
 
@@ -103,6 +153,33 @@ class EmbeddingData:
         new = copy.copy(self)
         new._focus = (x[0], x[1], y[0], y[1])
         return new
+
+    def focus_on_grid(self, cell_min: str, cell_max: str) -> "EmbeddingData":
+        """Restrict viewport to the rectangle from cell_min (top-left) to cell_max (bottom-right).
+
+        Uses the same label format as grid_coordinate(): e.g. 'G3' for default
+        orientation, '3G' for vertical-letters orientation.  The focus spans
+        from the left/top edge of cell_min to the right/bottom edge of cell_max,
+        resolved in the original (unfocused) coordinate space.
+        """
+        gs = self._grid_size
+        glv = self._grid_letters_on_vertical
+        col_min, row_min = _parse_grid_label(cell_min, gs, glv)
+        col_max, row_max = _parse_grid_label(cell_max, gs, glv)
+
+        if col_min > col_max:
+            col_min, col_max = col_max, col_min
+        if row_min > row_max:
+            row_min, row_max = row_max, row_min
+
+        x_min_d, x_max_d, y_min_d, y_max_d = self.full_bounds()
+        cell_w = (x_max_d - x_min_d) / gs
+        cell_h = (y_max_d - y_min_d) / gs
+
+        return self.focus_on(
+            x=(x_min_d + col_min * cell_w, x_min_d + (col_max + 1) * cell_w),
+            y=(y_max_d - (row_max + 1) * cell_h, y_max_d - row_min * cell_h),
+        )
 
     def unfocus(self) -> "EmbeddingData":
         """Return a new EmbeddingData with no focus restriction."""

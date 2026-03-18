@@ -199,6 +199,7 @@ Works for both `.plot()` and `.plot_grid_histogram()`.
 
 ```python
 plotter.focus_on(x=(x_min, x_max), y=(y_min, y_max))
+plotter.focus_on_grid("G3", "H12")
 plotter.unfocus()
 ```
 
@@ -221,18 +222,6 @@ plotter.title("My custom title")  # or None to suppress
 
 ---
 
-### Outlier appearance (categorical)
-
-Points far from their category centre are re-plotted on top so they are not hidden.
-
-```python
-plotter.outlier(shape="x", quantile=0.95)
-```
-
-Legend markers always remain circles regardless of outlier shape.
-
----
-
 ## Terminal methods
 
 ```python
@@ -246,11 +235,10 @@ p = plotter.plot_density(bins=200, quantile=0.99)
 # Grid-local category frequency histogram
 p = plotter.plot_grid_histogram("leiden", min_cell_count=10)
 
-# Save directly
-plotter.render("S100A8", "s100a8.png", dpi=150)
 ```
 
-All terminal methods return a `plotnine.ggplot` object; call `.save()` on it or pass it to any plotnine-aware function.
+All terminal methods return a `plotnine.ggplot` object; call `.save()` on it or
+pass it to any plotnine-aware function.
 
 ---
 
