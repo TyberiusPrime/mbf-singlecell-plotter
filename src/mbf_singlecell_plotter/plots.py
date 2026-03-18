@@ -939,8 +939,10 @@ class ScatterPlotter:
 
         grid_size = self._data._grid_size
         _x_ticks, _y_ticks, x_labels, y_labels = self._data.grid_labels()
-        x_ticks = list(range(grid_size))
-        y_ticks = list(range(grid_size))
+        # Ticks at cell centres: bars are centred at (x - 0.5) and (y + 0.5),
+        # matching the scatter plot where axis labels also sit at cell centres.
+        x_ticks = [-0.5 + i for i in range(grid_size)]
+        y_ticks = [0.5 + i for i in range(grid_size)]
 
         hdf = hdf[::-1]
 
