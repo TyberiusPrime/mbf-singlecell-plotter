@@ -1026,9 +1026,7 @@ class ScatterPlotter:
         df: pd.DataFrame,
         expr_name: str,
     ) -> p9.ggplot:
-        zero_val = self._zero_value
-        if zero_val is None:
-            zero_val = df["expression"].min()
+        zero_val = self._zero_value if self._zero_value is not None else 0.0
 
         # When the zeros layer is hidden, fold zero-valued points into the
         # gradient so they get a colour rather than being dropped.
@@ -1041,10 +1039,8 @@ class ScatterPlotter:
 
         if len(df_nonzero) == 0:
             clip_val = 1.0
-            expr_min = 0.0
         else:
             clip_val = float(df_nonzero["expression"].quantile(self._max_quantile))
-            expr_min = float(df_nonzero["expression"].min())
 
         # Split into gradient range and clipped-above values
         df_normal = df_nonzero[df_nonzero["expression"] <= clip_val].copy()
@@ -1100,11 +1096,24 @@ class ScatterPlotter:
             if self._cbar_title is not None
             else (expr_name + ": log2 expression")
         )
+        has_zeros = self._layer_zeros and len(df_zeros) > 0
+        has_clips = len(df_above) > 0
+        zero_val_str = "0" if abs(zero_val) < 1e-9 else f"{zero_val:.3g}"
+        data_min = float(df["expression"].min())
+        zero_label = (
+            f"≤{zero_val_str}" if has_zeros and data_min < zero_val - 1e-9
+            else zero_val_str
+        )
         p = p + p9.scale_color_gradientn(
             colors=cmap_colors,
-            limits=(expr_min, clip_val),
+            limits=(zero_val, clip_val),
             name=cbar_name,
-            guide=sc_guide_colorbar(),
+            guide=sc_guide_colorbar(
+                zero_color=self._zero_color if has_zeros else None,
+                zero_label=zero_label,
+                upper_clip_color=self._upper_clip_color if has_clips else None,
+                clip_label=f">{clip_val:.3g}",
+            ),
         )
         return p
 
