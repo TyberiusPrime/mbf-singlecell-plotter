@@ -51,6 +51,23 @@ class _PlotWithFixedPanel(p9.ggplot):
         le.execute(fig)          # recompute gridspec positions
         fig.canvas.draw()        # re-render artists at new positions
 
+        # Correction passes: the LayoutSpaces fractions shift slightly at the
+        # new figure size (and coord_fixed adds its own constraint), so the
+        # actual panel may differ from the target by a small amount.
+        # Two iterations based on the measured axes bbox are enough to converge.
+        for _ in range(3):
+            ax = fig.get_axes()[0]
+            pos = ax.get_position()
+            cur_fw, cur_fh = fig.get_size_inches()
+            actual_w = pos.width * cur_fw
+            actual_h = pos.height * cur_fh
+            fig.set_size_inches(
+                cur_fw + (self._fixed_panel_w - actual_w),
+                cur_fh + (self._fixed_panel_h - actual_h),
+            )
+            le.execute(fig)
+            fig.canvas.draw()
+
         return sv
 
 
