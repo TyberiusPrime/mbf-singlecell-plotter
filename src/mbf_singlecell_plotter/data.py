@@ -234,9 +234,23 @@ class EmbeddingData:
             labels = [f"{l}{n}" for l, n in zip(letter_col, number_col)]
         return pd.Series(labels, index=coords.index)
 
+    def full_bounds(self) -> tuple:
+        """Return (x_min, x_max, y_min, y_max) from the full data range, ignoring focus."""
+        coords = self.coordinates()
+        return (
+            float(coords["x"].min()),
+            float(coords["x"].max()),
+            float(coords["y"].min()),
+            float(coords["y"].max()),
+        )
+
     def grid_labels(self) -> tuple:
-        """Return (x_positions, y_positions, x_labels, y_labels) for grid axis ticks."""
-        x_min, x_max, y_min, y_max = self.bounds()
+        """Return (x_positions, y_positions, x_labels, y_labels) for grid axis ticks.
+
+        Always computed in the original (unfocused) coordinate space so that
+        labels reflect the correct grid cell when a focus/zoom is active.
+        """
+        x_min, x_max, y_min, y_max = self.full_bounds()
         gs = self._grid_size
         cell_w = (x_max - x_min) / gs
         cell_h = (y_max - y_min) / gs
