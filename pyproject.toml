@@ -2,7 +2,7 @@
 name = "mbf-singlecell-plotter"
 version = "0.1.0"
 description = "Add your description here"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
  "anndata>=0.12.6",
  "dppd>=0.31",
