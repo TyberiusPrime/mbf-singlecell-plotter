@@ -494,3 +494,47 @@ class TestColormaps:
             "bool"
         )
         assert_image(p)
+
+
+# ---------------------------------------------------------------------------
+# plot_embedding_color — 2D positional color gradient
+# ---------------------------------------------------------------------------
+
+
+class TestPlotEmbeddingColor:
+    def test_pca_in_umap(self, plotter_no_boundary, assert_image):
+        """Color cells by PCA position, plotted in UMAP space.
+
+        Each cell's color encodes where it sits in the first two PCA dimensions:
+        red=top-left, blue=top-right, yellow=bottom-left, green=bottom-right.
+        """
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca", show_legend=True
+        )
+        assert_image(p)
+
+    def test_umap_in_umap(self, plotter_no_boundary, assert_image):
+        """Self-referential: color cells by their own UMAP position.
+
+        Should produce a smooth rainbow gradient perfectly matching the layout.
+        """
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "umap", show_legend=True
+        )
+        assert_image(p)
+
+    def test_custom_corners(self, plotter_no_boundary, assert_image):
+        """Custom corner colors: cyan / magenta / white / black."""
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca",
+            corner_colors=("#00CCCC", "#CC00CC", "#FFFFFF", "#111111"),
+            show_legend=True,
+        )
+        assert_image(p)
+
+    def test_no_legend(self, plotter_no_boundary, assert_image):
+        """Verify show_legend=False suppresses the inset."""
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca", show_legend=False
+        )
+        assert_image(p)

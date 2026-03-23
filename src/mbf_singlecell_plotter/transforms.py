@@ -7,6 +7,8 @@ import pandas as pd
 
 from .util import map_to_integers, unmap
 
+_EMBEDDING_COLOR_DEFAULTS = ("#FF4444", "#4444FF", "#FFCC00", "#44BB44")
+
 
 def prepare_scatter_df(
     data,
@@ -189,3 +191,57 @@ def compute_boundaries(
         lambda c: mcolors.to_hex(c) if not isinstance(c, str) else c
     )
     return bdf
+
+
+def prepare_embedding_color_df(
+    current_data,
+    reference_data,
+    corner_colors=_EMBEDDING_COLOR_DEFAULTS,
+) -> pd.DataFrame:
+    """Assign 2D gradient colors to cells based on their position in reference_data.
+
+    Each cell is colored by bilinear interpolation between four corner colors at
+    its normalized (x, y) position in the reference embedding.  The returned
+    DataFrame carries x, y coordinates from current_data and a ``color`` column
+    of hex strings ready for ``scale_color_identity()``.
+
+    Args:
+        current_data:   EmbeddingData supplying x, y plot coordinates.
+        reference_data: EmbeddingData whose coordinates drive the color mapping.
+        corner_colors:  4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
+
+    Returns:
+        DataFrame with columns: x, y, color (hex string).
+    """
+    import matplotlib.colors as mcolors
+
+    current_coords = current_data.coordinates()
+    ref_coords = reference_data.coordinates().loc[current_coords.index]
+
+    rx, ry = ref_coords["x"], ref_coords["y"]
+    t = (rx - rx.min()) / (rx.max() - rx.min() + 1e-12)  # [0,1] left → right
+    s = (ry - ry.min()) / (ry.max() - ry.min() + 1e-12)  # [0,1] bottom → top
+
+    tl = np.array(mcolors.to_rgb(corner_colors[0]))
+    tr = np.array(mcolors.to_rgb(corner_colors[1]))
+    bl = np.array(mcolors.to_rgb(corner_colors[2]))
+    br = np.array(mcolors.to_rgb(corner_colors[3]))
+
+    t_arr = t.values[:, None]
+    s_arr = s.values[:, None]
+    rgb = (
+        (1 - t_arr) * s_arr * tl
+        + t_arr * s_arr * tr
+        + (1 - t_arr) * (1 - s_arr) * bl
+        + t_arr * (1 - s_arr) * br
+    )
+    rgb = np.clip(rgb, 0, 1)
+
+    hex_colors = [
+        f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+        for r, g, b in rgb
+    ]
+
+    df = current_coords.copy()
+    df["color"] = hex_colors
+    return df

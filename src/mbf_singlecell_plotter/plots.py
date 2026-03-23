@@ -80,6 +80,80 @@ class _PlotWithCustomLegend(p9.ggplot):
         return sv
 
 
+# ── 2-D embedding colour legend ──────────────────────────────────────────────
+
+_EMBEDDING_COLOR_DEFAULTS = ("#FF4444", "#4444FF", "#FFCC00", "#44BB44")
+
+
+def _make_2d_color_image(corner_colors, size: int = 64) -> np.ndarray:
+    """Return an (H, W, 3) float32 gradient image for the 2D legend.
+
+    Row 0 = top (s=1=high y), col 0 = left (t=0=low x).
+    corner_colors: (top_left, top_right, bottom_left, bottom_right).
+    """
+    import matplotlib.colors as mcolors
+
+    tl = np.array(mcolors.to_rgb(corner_colors[0]))
+    tr = np.array(mcolors.to_rgb(corner_colors[1]))
+    bl = np.array(mcolors.to_rgb(corner_colors[2]))
+    br = np.array(mcolors.to_rgb(corner_colors[3]))
+
+    xs = np.linspace(0, 1, size)  # t: left → right
+    ys = np.linspace(1, 0, size)  # s: top row → bottom row (row 0 = s=1 = top)
+    T, S = np.meshgrid(xs, ys)
+
+    img = (
+        (1 - T[..., None]) * S[..., None] * tl
+        + T[..., None] * S[..., None] * tr
+        + (1 - T[..., None]) * (1 - S[..., None]) * bl
+        + T[..., None] * (1 - S[..., None]) * br
+    )
+    return np.clip(img, 0, 1).astype(np.float32)
+
+
+def _draw_embedding_color_legend(fig, *, corner_colors, ref_name: str, size: int = 64):
+    """Add a 2D color-gradient legend inset anchored to the main scatter axes."""
+    le = fig.get_layout_engine()
+    if le is not None:
+        le.execute(fig)
+
+    ax = fig.get_axes()[0]
+    pos = ax.get_position()  # (left, bottom, width, height) in figure coords
+
+    frac = 0.18
+    pad = 0.02
+    lw = pos.width * frac
+    lh = pos.height * frac
+    lx = pos.x1 - lw - pos.width * pad
+    ly = pos.y1 - lh - pos.height * pad
+
+    ax_leg = fig.add_axes([lx, ly, lw, lh])
+    img = _make_2d_color_image(corner_colors, size=size)
+    ax_leg.imshow(img, aspect="auto", origin="upper")
+
+    ax_leg.set_xticks([0, size - 1])
+    ax_leg.set_xticklabels(["←", "→"], fontsize=6, color="#333333")
+    ax_leg.xaxis.tick_top()
+    ax_leg.set_yticks([0, size - 1])
+    ax_leg.set_yticklabels(["↑", "↓"], fontsize=6, color="#333333")
+    ax_leg.tick_params(length=1, pad=1)
+    ax_leg.set_title(ref_name, fontsize=6, pad=2, color="#333333")
+    for sp in ax_leg.spines.values():
+        sp.set_linewidth(0.5)
+        sp.set_color("#777777")
+
+
+class _PlotWithEmbeddingColorLegend(p9.ggplot):
+    """ggplot subclass that draws a 2D colour legend inset."""
+
+    _embedding_legend_config: dict = {}
+
+    def save_helper(self, **kwargs):
+        sv = super().save_helper(**kwargs)
+        _draw_embedding_color_legend(sv.figure, **self._embedding_legend_config)
+        return sv
+
+
 def _draw_numerical_legend(
     fig,
     *,
@@ -1009,6 +1083,108 @@ class ScatterPlotter:
         if self._fixed_panel_size is not None:
             p.__class__ = _PlotWithFixedPanel
             p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
+
+        return p
+
+    def plot_embedding_color(
+        self,
+        reference_embedding,
+        *,
+        corner_colors=_EMBEDDING_COLOR_DEFAULTS,
+        show_legend: bool = False,
+        dot_size: Optional[float] = None,
+    ) -> p9.ggplot:
+        """Plot cells in the current embedding colored by 2D position in another embedding.
+
+        Each cell receives a color from a bilinear gradient defined by four corner
+        colors at its normalized (x, y) position in the reference embedding.  This
+        lets you see how the layout of one embedding corresponds to another.
+
+        Args:
+            reference_embedding: Embedding name (str) or EmbeddingData for color assignment.
+            corner_colors:        4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
+                                  Default: red / blue / yellow / green.
+            show_legend:          Add a small 2D color legend inset (default True).
+            dot_size:             Point size; defaults to the plotter's dot_size.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .plot_embedding_color()")
+
+        from .transforms import prepare_embedding_color_df
+
+        data = self._data
+        x_min, x_max, y_min, y_max = data.bounds()
+
+        if isinstance(reference_embedding, str):
+            ref_name = reference_embedding
+            ref_data = EmbeddingData(data.ad, reference_embedding)
+        elif isinstance(reference_embedding, EmbeddingData):
+            ref_name = reference_embedding.embedding
+            ref_data = reference_embedding
+        else:
+            raise ValueError("reference_embedding must be a str or EmbeddingData")
+
+        df = prepare_embedding_color_df(data, ref_data, corner_colors=corner_colors)
+
+        dot = dot_size if dot_size is not None else self._dot_size
+
+        p = p9.ggplot(df, p9.aes("x", "y", color="color"))
+
+        # Grid lines first so they render behind all other layers
+        if self._grid_config is not None:
+            p = self._add_grid_layers(p)
+
+        # Boundary layer (behind scatter)
+        if (
+            self._layer_borders
+            and self._border_config is not None
+            and self._cell_type_column is not None
+        ):
+            p = self._add_border_layers(p)
+
+        # Main scatter — identity scale reads hex color strings directly
+        if self._layer_data:
+            p = p + p9.geom_point(size=dot)
+
+        p = p + p9.scale_color_identity(guide=None)
+
+        # Focus viewport
+        if data.has_focus:
+            p = p + p9.coord_cartesian(xlim=(x_min, x_max), ylim=(y_min, y_max))
+
+        # Title
+        if self._title_override is not _UNSET:
+            p = p + p9.labs(title=self._title_override)
+        else:
+            p = p + p9.labs(title=f"position in {ref_name}")
+
+        # Theme
+        p = p + embedding_theme(
+            base_size=self.base_size,
+            show_spines=self._panel_border,
+            bg_color=self._bg_color,
+            spine_color=self._spine_color,
+        )
+        p = p + p9.theme(figure_size=(6, 5))
+
+        # Grid axis ticks
+        if self._grid_config is not None and self._grid_config.coords:
+            p = self._add_grid_axis_ticks(p)
+        elif self._grid_config is None:
+            p = self._add_plain_axis_ticks(p)
+
+        # Fixed panel size
+        if self._fixed_panel_size is not None:
+            p.__class__ = _PlotWithFixedPanel
+            p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
+
+        # 2D colour legend inset
+        if show_legend:
+            p.__class__ = _PlotWithEmbeddingColorLegend
+            p._embedding_legend_config = {
+                "corner_colors": corner_colors,
+                "ref_name": ref_name,
+            }
 
         return p
 
