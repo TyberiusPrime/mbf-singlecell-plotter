@@ -488,3 +488,9 @@ class TestColormaps:
                     "0": "darkgreen",
                 }
             ).plot("leiden")
+
+    def test_bool(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.colormap_discrete({True: "blue", False: "red"}).plot(
+            "bool"
+        )
+        assert_image(p)

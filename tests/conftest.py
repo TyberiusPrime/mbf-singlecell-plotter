@@ -3,6 +3,8 @@
 import pytest
 import anndata
 import matplotlib
+import pandas as pd
+
 matplotlib.use("Agg")  # non-interactive backend; must be set before importing pyplot
 
 import shutil
@@ -18,11 +20,21 @@ def pytest_sessionstart(session):
         shutil.rmtree(FAILURES_DIR)
 
 
-EXAMPLE_DATA = Path(__file__).parent.parent / "example_data" / "scanpy-pbmc3k_stripped.h5ad"
+EXAMPLE_DATA = (
+    Path(__file__).parent.parent / "example_data" / "scanpy-pbmc3k_stripped.h5ad"
+)
 
 SAMPLE_GENES = [
-    "S100A8", "HIST1H2AH", "LST1", "KRBOX4", "FBXL14",
-    "CST3", "TYROBP", "CD79A", "ZNF256", "NEFH",
+    "S100A8",
+    "HIST1H2AH",
+    "LST1",
+    "KRBOX4",
+    "FBXL14",
+    "CST3",
+    "TYROBP",
+    "CD79A",
+    "ZNF256",
+    "NEFH",
 ]
 
 # The categorical cluster column in the example data (leiden clusters)
@@ -32,13 +44,18 @@ CELL_TYPE_COLUMN = "leiden"
 @pytest.fixture(scope="session")
 def ad():
     """Load the example AnnData once per test session."""
-    return anndata.read_h5ad(EXAMPLE_DATA)
+    res = anndata.read_h5ad(EXAMPLE_DATA)
+    half_and_half = pd.Series(True, index=res.obs.index)
+    half_and_half.iloc[: len(half_and_half) // 2] = False
+    res.obs["bool"] = half_and_half
+    return res
 
 
 @pytest.fixture(scope="session")
 def data(ad):
     """An EmbeddingData with UMAP embedding."""
     from mbf_singlecell_plotter import EmbeddingData
+
     return EmbeddingData(ad, "umap")
 
 
@@ -46,6 +63,7 @@ def data(ad):
 def plotter_no_boundary(data):
     """A ScatterPlotter without border overlay (faster for unit tests)."""
     from mbf_singlecell_plotter import ScatterPlotter
+
     return ScatterPlotter().set_source(data)
 
 
@@ -56,8 +74,11 @@ def plotter(data):
     Requires scikit-image for boundary computation.  Tests using this fixture
     are automatically skipped when scikit-image is not installed.
     """
-    pytest.importorskip("skimage", reason="scikit-image required for boundary computation")
+    pytest.importorskip(
+        "skimage", reason="scikit-image required for boundary computation"
+    )
     from mbf_singlecell_plotter import ScatterPlotter
+
     return (
         ScatterPlotter()
         .set_source(data)
@@ -72,6 +93,7 @@ def assert_image(request):
     The reference image name is derived automatically from the test class and
     function: ``ClassName__test_function_name``.  No manual name string needed.
     """
+
     def _assert(p_or_array, **kwargs):
         cls = request.node.cls.__name__ if request.node.cls else None
         fn = request.node.originalname or request.node.name
@@ -79,9 +101,11 @@ def assert_image(request):
 
         if isinstance(p_or_array, np.ndarray):
             from image_comparison import assert_array_matches
+
             assert_array_matches(p_or_array, name, **kwargs)
         else:
             from image_comparison import assert_plotnine_matches
+
             assert_plotnine_matches(p_or_array, name, **kwargs)
 
     return _assert

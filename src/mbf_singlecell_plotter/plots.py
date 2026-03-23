@@ -1021,12 +1021,14 @@ class ScatterPlotter:
         of ``_cat_colors``.
         """
         if isinstance(self._cat_colors, dict):
-            missing = sorted([str(c) for c in cats if str(c) not in self._cat_colors])
+            # Normalize keys to str so {True: 'red'} and {'True': 'red'} both work
+            normalized = {str(k): v for k, v in self._cat_colors.items()}
+            missing = sorted([str(c) for c in cats if str(c) not in normalized])
             if missing:
                 raise ValueError(
                     f"not enough colors: dict is missing entries for: {missing}"
                 )
-            return [self._cat_colors[str(c)] for c in cats]
+            return [normalized[str(c)] for c in cats]
         colors = self._cat_colors or DEFAULT_COLORS_CATEGORIES
         if len(colors) < len(cats):
             raise ValueError(
@@ -1247,6 +1249,12 @@ class ScatterPlotter:
         df = df.sort_values("_sort_key", ascending=not self._flip_order).drop(
             columns=["_sort_key"]
         )
+
+        # Convert to str-Categorical so plotnine matches the string-keyed color_values
+        # dict (needed for non-string dtypes such as bool).  Categorical avoids
+        # allocating a full object array of strings for every row.
+        cats = [str(c) for c in cats]
+        df["expression"] = pd.Categorical(df["expression"].astype(str), categories=cats)
 
         p = p9.ggplot(df, p9.aes("x", "y", color="expression"))
 

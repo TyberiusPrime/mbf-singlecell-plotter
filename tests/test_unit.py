@@ -261,6 +261,26 @@ class TestConstructor:
         sp = ScatterPlotter().colormap_discrete(colors)
         assert sp._cat_colors == colors
 
+    def _make_bool_ad(self):
+        """Minimal AnnData with a boolean obs column and UMAP coords."""
+        n = 20
+        ad = anndata.AnnData(X=np.zeros((n, 2)))
+        ad.obs["flag"] = [i % 2 == 0 for i in range(n)]
+        ad.obsm["X_umap"] = np.column_stack([
+            np.linspace(0, 1, n), np.linspace(0, 1, n)
+        ])
+        return ad
+
+    def test_bool_column_expression_is_categorical_str(self):
+        """After _build_categorical the expression column must be a string Categorical."""
+        ad = self._make_bool_ad()
+        sp = ScatterPlotter(ad)
+        # Access the built dataframe indirectly via the ggplot data
+        p = sp.plot("flag")
+        expr = p.data["expression"]
+        assert hasattr(expr, "cat"), "expression should be Categorical"
+        assert all(isinstance(c, str) for c in expr.cat.categories)
+
 
 # ---------------------------------------------------------------------------
 # panel_size
