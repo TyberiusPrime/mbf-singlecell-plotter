@@ -548,6 +548,20 @@ class TestPlotEmbeddingColor:
         )
         assert_image(p)
 
+    def test_region_float(self, plotter_no_boundary, assert_image):
+        """2-tuple bounding-box shorthand: gradient restricted to a centred box in PCA space."""
+        ad = plotter_no_boundary._data.ad
+        pca = ad.obsm["X_pca"][:, :2]
+        cx = float(pca[:, 0].mean())
+        cy = float(pca[:, 1].mean())
+        hw_x = float((pca[:, 0].max() - pca[:, 0].min()) * 0.25)
+        hw_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.25)
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca",
+            region=((cx - hw_x, cy + hw_y), (cx + hw_x, cy - hw_y)),
+        )
+        assert_image(p)
+
     def test_region_rect(self, plotter_no_boundary, assert_image):
         """Rectangular 4-corner region in PCA space (axis-aligned box)."""
         ad = plotter_no_boundary._data.ad

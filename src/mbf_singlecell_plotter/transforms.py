@@ -270,12 +270,17 @@ def prepare_embedding_color_df(
         current_data:   EmbeddingData supplying x, y plot coordinates.
         reference_data: EmbeddingData whose coordinates drive the color mapping.
         corner_colors:  4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
-        region:         Optional 4-tuple of ``(x, y)`` float pairs
-                        ``(top_left, top_right, bottom_left, bottom_right)``
-                        defining a (possibly non-rectangular) quadrilateral in
-                        reference-embedding coordinates.  The full colour spectrum
-                        is mapped to the quad interior; cells outside receive
-                        *outside_color*.
+        region:         Restricts which cells receive the gradient.  Two forms:
+
+                        * **2-tuple** ``((x0, y0), (x1, y1))`` — axis-aligned
+                          bounding box (any two opposite corners).
+                        * **4-tuple** ``(top_left, top_right, bottom_left,
+                          bottom_right)`` — arbitrary (possibly non-rectangular)
+                          quadrilateral.
+
+                        In both cases coordinates are ``(x, y)`` float pairs in
+                        reference-embedding space.  The full colour spectrum maps
+                        to the region interior; cells outside receive *outside_color*.
         outside_color:  Hex color for cells outside *region* (default ``"#C0C0C0"``).
 
     Returns:
@@ -289,6 +294,17 @@ def prepare_embedding_color_df(
     rx, ry = ref_coords["x"], ref_coords["y"]
 
     if region is not None:
+        if len(region) == 2:
+            # 2-corner bounding box shorthand: (top_left, bottom_right)
+            (x0, y0), (x1, y1) = region
+            xlo, xhi = min(x0, x1), max(x0, x1)
+            ylo, yhi = min(y0, y1), max(y0, y1)
+            region = (
+                (xlo, yhi),  # top_left
+                (xhi, yhi),  # top_right
+                (xlo, ylo),  # bottom_left
+                (xhi, ylo),  # bottom_right
+            )
         # 4-corner quad: (top_left, top_right, bottom_left, bottom_right)
         # Bilinear basis: p00=bottom_left(lr=0,bt=0), p10=bottom_right(lr=1,bt=0),
         #                 p01=top_left(lr=0,bt=1),     p11=top_right(lr=1,bt=1)
