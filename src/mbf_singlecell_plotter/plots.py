@@ -1090,8 +1090,17 @@ class ScatterPlotter:
 
         return p
 
-    def plot_grid_histogram(self, column: str, min_cell_count: int = 10) -> p9.ggplot:
-        """Build a grid-local category frequency heatmap (plotnine)."""
+    def plot_grid_histogram(
+        self, column: str, min_cell_count: int = 10, vertical: bool = False
+    ) -> p9.ggplot:
+        """Build a grid-local category frequency heatmap (plotnine).
+
+        Parameters
+        ----------
+        vertical:
+            If True, bars stack vertically within each cell instead of
+            horizontally (the default).
+        """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_grid_histogram()")
 
@@ -1106,15 +1115,26 @@ class ScatterPlotter:
         factor = 0.8
         hdf["frequency"] = hdf["frequency"] * factor
 
-        x_offset = []
+        offset = []
         for _ignored, group in hdf.groupby(["x", "y"]):
-            x_offset.extend(group["frequency"].cumsum().shift(fill_value=0))
-        hdf["x_offset"] = x_offset
+            offset.extend(group["frequency"].cumsum().shift(fill_value=0))
 
-        hdf["x_plot"] = (
-            hdf["x"] - hdf["frequency"] / 2 - hdf["x_offset"] - (1 - factor) / 2
-        )
-        hdf["y_plot"] = hdf["y"] + 0.5
+        if vertical:
+            hdf["y_offset"] = offset
+            hdf["x_plot"] = hdf["x"] - 0.5
+            hdf["y_plot"] = (
+                hdf["y"] + (1 - factor) / 2 + hdf["y_offset"] + hdf["frequency"] / 2
+            )
+            tile_width = factor
+            tile_height = "frequency"
+        else:
+            hdf["x_offset"] = offset
+            hdf["x_plot"] = (
+                hdf["x"] - hdf["frequency"] / 2 - hdf["x_offset"] - (1 - factor) / 2
+            )
+            hdf["y_plot"] = hdf["y"] + 0.5
+            tile_width = "frequency"
+            tile_height = factor
 
         grid_size = self._data._grid_size
         _x_ticks, _y_ticks, x_labels, y_labels = self._data.grid_labels()
@@ -1131,8 +1151,8 @@ class ScatterPlotter:
                 p9.aes(
                     x="x",
                     y="y",
-                    width="frequency",
-                    height=factor,
+                    width=tile_width,
+                    height=tile_height,
                     fill="category",
                 ),
             )

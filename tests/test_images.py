@@ -391,6 +391,13 @@ class TestPlotGridLocalHistogram:
         )
         assert_image(p)
 
+    def test_vertical_stacking(self, plotter_no_boundary, assert_image):
+        """Grid histogram with bars stacked vertically instead of horizontally."""
+        p = plotter_no_boundary.plot_grid_histogram(
+            CAT_COL, min_cell_count=10, vertical=True
+        )
+        assert_image(p)
+
 
 # ---------------------------------------------------------------------------
 # panel_size — fixed scatter-panel dimensions
