@@ -257,8 +257,27 @@ def prepare_embedding_color_df(
     ref_coords = reference_data.coordinates().loc[current_coords.index]
 
     rx, ry = ref_coords["x"], ref_coords["y"]
-    t = (rx - rx.min()) / (rx.max() - rx.min() + 1e-12)  # [0,1] left → right
-    s = (ry - ry.min()) / (ry.max() - ry.min() + 1e-12)  # [0,1] bottom → top
+
+    # Determine the normalisation bounds — use region extents when given so the
+    # full colour spectrum maps to the region, not the whole embedding.
+    if region is not None:
+        c1 = _corner_to_bounds(region[0], reference_data)
+        c2 = _corner_to_bounds(region[1], reference_data)
+        x_min = min(c1[0], c1[1], c2[0], c2[1])
+        x_max = max(c1[0], c1[1], c2[0], c2[1])
+        y_min = min(c1[2], c1[3], c2[2], c2[3])
+        y_max = max(c1[2], c1[3], c2[2], c2[3])
+        in_region = (
+            (rx >= x_min) & (rx <= x_max)
+            & (ry >= y_min) & (ry <= y_max)
+        )
+    else:
+        x_min, x_max = rx.min(), rx.max()
+        y_min, y_max = ry.min(), ry.max()
+        in_region = None
+
+    t = (rx - x_min) / (x_max - x_min + 1e-12)  # [0,1] left → right
+    s = (ry - y_min) / (y_max - y_min + 1e-12)  # [0,1] bottom → top
 
     tl = np.array(mcolors.to_rgb(corner_colors[0]))
     tr = np.array(mcolors.to_rgb(corner_colors[1]))
@@ -280,17 +299,7 @@ def prepare_embedding_color_df(
         for r, g, b in rgb
     ]
 
-    if region is not None:
-        c1 = _corner_to_bounds(region[0], reference_data)
-        c2 = _corner_to_bounds(region[1], reference_data)
-        mask_x_min = min(c1[0], c1[1], c2[0], c2[1])
-        mask_x_max = max(c1[0], c1[1], c2[0], c2[1])
-        mask_y_min = min(c1[2], c1[3], c2[2], c2[3])
-        mask_y_max = max(c1[2], c1[3], c2[2], c2[3])
-        in_region = (
-            (rx >= mask_x_min) & (rx <= mask_x_max)
-            & (ry >= mask_y_min) & (ry <= mask_y_max)
-        )
+    if in_region is not None:
         hex_colors = [
             hc if flag else outside_color
             for hc, flag in zip(hex_colors, in_region)
