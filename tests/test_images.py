@@ -398,6 +398,13 @@ class TestPlotGridLocalHistogram:
         )
         assert_image(p)
 
+    def test_scale_by_count(self, plotter_no_boundary, assert_image):
+        """Grid histogram where tile size reflects cell observation count."""
+        p = plotter_no_boundary.plot_grid_histogram(
+            CAT_COL, min_cell_count=10, scale_by_count=True
+        )
+        assert_image(p)
+
 
 # ---------------------------------------------------------------------------
 # panel_size — fixed scatter-panel dimensions

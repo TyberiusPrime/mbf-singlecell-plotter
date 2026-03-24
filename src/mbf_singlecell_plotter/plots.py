@@ -1091,7 +1091,12 @@ class ScatterPlotter:
         return p
 
     def plot_grid_histogram(
-        self, column: str, min_cell_count: int = 10, vertical: bool = False
+        self,
+        column: str,
+        min_cell_count: int = 10,
+        vertical: bool = False,
+        scale_by_count: bool = False,
+        fill_fraction: float | None = None,
     ) -> p9.ggplot:
         """Build a grid-local category frequency heatmap (plotnine).
 
@@ -1100,6 +1105,14 @@ class ScatterPlotter:
         vertical:
             If True, bars stack vertically within each cell instead of
             horizontally (the default).
+        scale_by_count:
+            If True, scale each cell's tile area proportionally to the number
+            of observations in that cell (sqrt scaling so area ∝ count).
+            Cells with fewer observations appear as smaller tiles.
+        fill_fraction:
+            Fraction of each grid square covered by the tiles at full size
+            (0 < fill_fraction ≤ 1).  Defaults to 1.0 when ``scale_by_count``
+            is True, 0.8 otherwise.
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_grid_histogram()")
@@ -1112,8 +1125,18 @@ class ScatterPlotter:
         cats = list(hdf["category"].cat.categories)
         colors = self._colors_as_list(cats)
 
-        factor = 0.8
-        hdf["frequency"] = hdf["frequency"] * factor
+        if fill_fraction is None:
+            fill_fraction = 1.0 if scale_by_count else 0.8
+        factor = fill_fraction
+        if scale_by_count:
+            # sqrt so that linear dimension ∝ sqrt(count) and area ∝ count
+            hdf["cell_factor"] = factor * np.sqrt(
+                hdf["total"] / hdf["total"].max()
+            )
+        else:
+            hdf["cell_factor"] = factor
+
+        hdf["frequency"] = hdf["frequency"] * hdf["cell_factor"]
 
         offset = []
         for _ignored, group in hdf.groupby(["x", "y"]):
@@ -1122,19 +1145,35 @@ class ScatterPlotter:
         if vertical:
             hdf["y_offset"] = offset
             hdf["x_plot"] = hdf["x"] - 0.5
+            # vertical: bars stack bottom→top; x is fixed at cell centre
             hdf["y_plot"] = (
-                hdf["y"] + (1 - factor) / 2 + hdf["y_offset"] + hdf["frequency"] / 2
+                hdf["y"]
+                + (1 - hdf["cell_factor"]) / 2
+                + hdf["y_offset"]
+                + hdf["frequency"] / 2
             )
-            tile_width = factor
-            tile_height = "frequency"
+            hdf["xmin"] = hdf["x"] - 0.5 - hdf["cell_factor"] / 2
+            hdf["xmax"] = hdf["x"] - 0.5 + hdf["cell_factor"] / 2
+            hdf["ymin"] = hdf["y_plot"] - hdf["frequency"] / 2
+            hdf["ymax"] = hdf["y_plot"] + hdf["frequency"] / 2
         else:
+            # horizontal: bars stack left→right; y is fixed at cell centre
             hdf["x_offset"] = offset
             hdf["x_plot"] = (
-                hdf["x"] - hdf["frequency"] / 2 - hdf["x_offset"] - (1 - factor) / 2
+                hdf["x"]
+                - hdf["frequency"] / 2
+                - hdf["x_offset"]
+                - (1 - hdf["cell_factor"]) / 2
             )
-            hdf["y_plot"] = hdf["y"] + 0.5
-            tile_width = "frequency"
-            tile_height = factor
+            hdf["xmin"] = hdf["x_plot"] - hdf["frequency"] / 2
+            hdf["xmax"] = hdf["x_plot"] + hdf["frequency"] / 2
+            hdf["ymin"] = hdf["y"] + (1 - hdf["cell_factor"]) / 2
+            hdf["ymax"] = hdf["y"] + 1 - (1 - hdf["cell_factor"]) / 2
+
+        bar_geom = p9.geom_rect(
+            p9.aes(xmin="xmin", xmax="xmax", ymin="ymin", ymax="ymax", fill="category")
+        )
+        global_aes = p9.aes()
 
         grid_size = self._data._grid_size
         _x_ticks, _y_ticks, x_labels, y_labels = self._data.grid_labels()
@@ -1146,16 +1185,7 @@ class ScatterPlotter:
         hdf = hdf[::-1]
 
         p = (
-            p9.ggplot(
-                hdf,
-                p9.aes(
-                    x="x",
-                    y="y",
-                    width=tile_width,
-                    height=tile_height,
-                    fill="category",
-                ),
-            )
+            p9.ggplot(hdf, global_aes)
             + embedding_theme(base_size=self.base_size, show_spines=True)
             + p9.geom_hline(
                 p9.aes(yintercept="xx"),
@@ -1167,7 +1197,7 @@ class ScatterPlotter:
                 data=pd.DataFrame({"xx": [x - 1 for x in range(grid_size + 1)]}),
                 color="#D0D0D0",
             )
-            + p9.geom_tile(p9.aes(x="x_plot", y="y_plot"))
+            + bar_geom
             + p9.coord_fixed()
             + p9.scale_x_continuous(
                 expand=(0, 0.5, 0, 0.5),
