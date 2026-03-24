@@ -410,7 +410,7 @@ class BorderConfig:
 
 @dataclass(frozen=True)
 class GridConfig:
-    labels: bool = False
+    labels: object = False  # False/None = off, True/"letters" = A1 labels, "coords" = (x,y) labels
     coords: bool = False
     vertical_letters: bool = False
     grid_size: int = 12
@@ -484,6 +484,10 @@ class ScatterPlotter:
         self._facet_variable: Optional[str] = None
         self._n_col: int = 2
         self._title_override = _UNSET
+
+        # embedding label
+        self._embedding_label: bool = False
+        self._embedding_label_size: Optional[float] = None
 
         if ad_or_data is not None:
             if isinstance(ad_or_data, EmbeddingData):
@@ -722,16 +726,22 @@ class ScatterPlotter:
     def with_grid(
         self,
         *,
-        labels: Optional[bool] = None,
+        labels=None,
         coords: Optional[bool] = None,
         vertical_letters: Optional[bool] = None,
         grid_size: Optional[int] = None,
         color: Optional[str] = None,
         label_color: Optional[str] = None,
     ) -> "ScatterPlotter":
-        """
-        labels: show "A1", "B2" text labels inside each grid cell
-        coords: use grid coords as axis tick labels
+        """Configure the grid overlay.
+
+        Args:
+            labels:   Cell-interior labels.  ``False``/``None`` = off;
+                      ``True``/``"letters"`` = grid-label strings (e.g. ``"A1"``);\
+                      ``"coords"`` = ``(x, y)`` embedding-coordinate strings.
+            coords:   Replace axis tick labels with grid-cell identifiers.
+            vertical_letters: Put letters on the vertical axis (default: horizontal).
+            grid_size, color, label_color: passed through unchanged if ``None``.
 
         Only supplied arguments are changed; unspecified ones inherit from the
         current grid config (or GridConfig defaults if no grid is set yet).
@@ -854,6 +864,22 @@ class ScatterPlotter:
         new._title_override = t
         return new
 
+    # ── embedding label ───────────────────────────────────────────────────────
+
+    def with_embedding_label(
+        self, show: bool = True, size: Optional[float] = None
+    ) -> "ScatterPlotter":
+        """Show the embedding name in the lower-left corner of each plot.
+
+        Args:
+            show: Whether to show the label (default True).
+            size: Font size in points. Defaults to half the base font size.
+        """
+        new = copy.copy(self)
+        new._embedding_label = show
+        new._embedding_label_size = size
+        return new
+
     # ── terminal ─────────────────────────────────────────────────────────────
 
     def plot(self, column: str) -> p9.ggplot:
@@ -917,6 +943,10 @@ class ScatterPlotter:
             p = p + p9.labs(title=self._title_override)
         else:
             p = p + p9.labs(title=expr_name)
+
+        # Embedding label
+        if self._embedding_label:
+            p = self._add_embedding_label(p, data)
 
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = p + embedding_theme(
@@ -1003,6 +1033,9 @@ class ScatterPlotter:
                     size=border_pt,
                     inherit_aes=False,
                 )
+
+        if self._embedding_label:
+            p = self._add_embedding_label(p, self._data)
 
         p = p + embedding_theme(
             base_size=self.base_size,
@@ -1205,7 +1238,11 @@ class ScatterPlotter:
         if self._title_override is not _UNSET:
             p = p + p9.labs(title=self._title_override)
         else:
-            p = p + p9.labs(title=f"position in {ref_name}")
+            p = p + p9.labs(title=ref_name)
+
+        # Embedding label
+        if self._embedding_label:
+            p = self._add_embedding_label(p, data)
 
         # Theme
         p = p + embedding_theme(
@@ -1239,6 +1276,29 @@ class ScatterPlotter:
         return p
 
     # ── internals ────────────────────────────────────────────────────────────
+
+    def _add_embedding_label(self, p: p9.ggplot, data: "EmbeddingData") -> p9.ggplot:
+        x_min, x_max, y_min, y_max = data.bounds()
+        label = data.embedding
+        if label.startswith("X_"):
+            label = label[2:]
+        fontsize = (
+            self._embedding_label_size
+            if self._embedding_label_size is not None
+            else self.base_size * 0.5
+        )
+        lx = x_min + (x_max - x_min) * 0.02
+        ly = y_min + (y_max - y_min) * 0.02
+        return p + p9.annotate(
+            "text",
+            x=lx,
+            y=ly,
+            label=label,
+            ha="left",
+            va="bottom",
+            size=fontsize,
+            color="#777777",
+        )
 
     def _colors_as_list(self, cats: list) -> list:
         """Return an ordered color list for *cats*.
@@ -1566,9 +1626,12 @@ class ScatterPlotter:
                 for j in range(gc.grid_size):
                     cell_x = x_min + (i + 0.5) * cell_width
                     cell_y = y_min + (j + 0.5) * cell_height
-                    label = self._point_to_grid_label(
-                        gc, x_min, x_max, y_min, y_max, cell_x, cell_y
-                    )
+                    if gc.labels == "coords":
+                        label = f"{cell_x:.2f}\n{cell_y:.2f}"
+                    else:
+                        label = self._point_to_grid_label(
+                            gc, x_min, x_max, y_min, y_max, cell_x, cell_y
+                        )
                     rows.append({"x": cell_x, "y": cell_y, "label": label})
             labels_df = pd.DataFrame(rows)
             p = p + p9.geom_text(

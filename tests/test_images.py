@@ -244,6 +244,15 @@ class TestGridOverlays:
         )
         assert_image(p)
 
+    def test_grid_coord_labels(self, plotter_no_boundary, assert_image):
+        """Grid with embedding-coordinate (x, y) labels instead of letter strings."""
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .with_grid(labels="coords")
+            .plot("S100A8")
+        )
+        assert_image(p)
+
     def test_categorical_with_grid(self, plotter_no_boundary, assert_image):
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
@@ -539,15 +548,8 @@ class TestPlotEmbeddingColor:
         )
         assert_image(p)
 
-    def test_region_grid(self, plotter_no_boundary, assert_image):
-        """Grid-label region: only cells in C3–J9 of PCA space get the gradient."""
-        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
-            "pca", region=("C3", "J9")
-        )
-        assert_image(p)
-
-    def test_region_float(self, plotter_no_boundary, assert_image):
-        """Float-coordinate region: gradient restricted to a centred box in PCA space."""
+    def test_region_rect(self, plotter_no_boundary, assert_image):
+        """Rectangular 4-corner region in PCA space (axis-aligned box)."""
         ad = plotter_no_boundary._data.ad
         pca = ad.obsm["X_pca"][:, :2]
         cx = float(pca[:, 0].mean())
@@ -556,12 +558,36 @@ class TestPlotEmbeddingColor:
         hw_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.25)
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
-            region=((cx - hw_x, cy + hw_y), (cx + hw_x, cy - hw_y)),
+            region=(
+                (cx - hw_x, cy + hw_y),   # top_left
+                (cx + hw_x, cy + hw_y),   # top_right
+                (cx - hw_x, cy - hw_y),   # bottom_left
+                (cx + hw_x, cy - hw_y),   # bottom_right
+            ),
         )
         assert_image(p)
 
-    def test_region_float_same_embedding(self, plotter_no_boundary, assert_image):
-        """Float-coordinate region: gradient restricted to a centred box in PCA space."""
+    def test_region_quad(self, plotter_no_boundary, assert_image):
+        """Non-rectangular quad region in PCA space — tilted parallelogram."""
+        ad = plotter_no_boundary._data.ad
+        pca = ad.obsm["X_pca"][:, :2]
+        cx = float(pca[:, 0].mean())
+        cy = float(pca[:, 1].mean())
+        rng_x = float((pca[:, 0].max() - pca[:, 0].min()) * 0.3)
+        rng_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.3)
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca",
+            region=(
+                (cx - rng_x * 0.3, cy + rng_y),     # top_left
+                (cx + rng_x,        cy + rng_y * 0.4),  # top_right
+                (cx - rng_x,        cy - rng_y * 0.4),  # bottom_left
+                (cx + rng_x * 0.3, cy - rng_y),     # bottom_right
+            ),
+        )
+        assert_image(p)
+
+    def test_region_rect_same_embedding(self, plotter_no_boundary, assert_image):
+        """Rectangular region in PCA space, plotted in UMAP embedding."""
         ad = plotter_no_boundary._data.ad
         pca = ad.obsm["X_pca"][:, :2]
         cx = float(pca[:, 0].mean())
@@ -570,6 +596,11 @@ class TestPlotEmbeddingColor:
         hw_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.25)
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "umap",
-            region=((cx - hw_x, cy + hw_y), (cx + hw_x, cy - hw_y)),
+            region=(
+                (cx - hw_x, cy + hw_y),
+                (cx + hw_x, cy + hw_y),
+                (cx - hw_x, cy - hw_y),
+                (cx + hw_x, cy - hw_y),
+            ),
         )
         assert_image(p)

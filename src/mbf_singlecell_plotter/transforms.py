@@ -193,34 +193,63 @@ def compute_boundaries(
     return bdf
 
 
-def _corner_to_bounds(corner, ref_data):
-    """Return ``(xl, xr, yb, yt)`` for a region corner in reference embedding space.
+def _cross2d(a, b):
+    """2D cross product ax*by - ay*bx. Broadcasts over leading batch dims."""
+    return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
 
-    *corner* is either:
 
-    - a **string** grid label (e.g. ``"A1"``) — returns the full cell edges using
-      the reference embedding's grid settings.
-    - a **2-tuple of floats** ``(x, y)`` — treated as an exact data point
-      (``xl == xr``, ``yb == yt``).
+def _inverse_bilinear(pts, p00, p10, p01, p11):
+    """Inverse bilinear: compute (lr, bt) ∈ [0,1]² for each point in *pts*.
+
+    Args:
+        pts:  (N, 2) ndarray of query points.
+        p00:  (2,) bottom-left  corner  (lr=0, bt=0).
+        p10:  (2,) bottom-right corner  (lr=1, bt=0).
+        p01:  (2,) top-left     corner  (lr=0, bt=1).
+        p11:  (2,) top-right    corner  (lr=1, bt=1).
+
+    Returns:
+        lr, bt — (N,) arrays.  Points inside the quad have lr, bt ∈ [0, 1].
     """
-    if isinstance(corner, str):
-        from .data import _parse_grid_label
+    E = p10 - p00        # (2,)
+    F = p01 - p00        # (2,)
+    G = p00 - p10 - p01 + p11   # (2,)  zero for rectangles
+    H = pts - p00        # (N, 2)
 
-        gs = ref_data._grid_size
-        glv = ref_data._grid_letters_on_vertical
-        col, row = _parse_grid_label(corner, gs, glv)
-        x_min_d, x_max_d, y_min_d, y_max_d = ref_data.full_bounds()
-        cell_w = (x_max_d - x_min_d) / gs
-        cell_h = (y_max_d - y_min_d) / gs
-        return (
-            x_min_d + col * cell_w,         # xl: left edge of this column
-            x_min_d + (col + 1) * cell_w,   # xr: right edge of this column
-            y_max_d - (row + 1) * cell_h,   # yb: bottom edge of this row
-            y_max_d - row * cell_h,          # yt: top edge of this row
-        )
+    EcG = _cross2d(E, G)   # scalar
+    EcF = _cross2d(E, F)   # scalar
+    HcG = _cross2d(H, G)   # (N,)
+    HcF = _cross2d(H, F)   # (N,)
+
+    a = -EcG              # scalar
+    b = HcG - EcF         # (N,)
+    c = HcF               # (N,)
+
+    def _bt_from_lr(lr):
+        dx = F[0] + lr * G[0]
+        dy = F[1] + lr * G[1]
+        bt_x = np.where(dx != 0, (H[:, 0] - lr * E[0]) / np.where(dx != 0, dx, 1.0), 0.0)
+        bt_y = np.where(dy != 0, (H[:, 1] - lr * E[1]) / np.where(dy != 0, dy, 1.0), 0.0)
+        return np.where(np.abs(dx) >= np.abs(dy), bt_x, bt_y)
+
+    def _penalty(s, t):
+        return (np.maximum(0, np.maximum(-s, s - 1))
+                + np.maximum(0, np.maximum(-t, t - 1)))
+
+    if abs(a) < 1e-10:
+        # Degenerate / rectangular — linear equation
+        lr = np.where(np.abs(b) > 1e-10, -c / b, 0.0)
     else:
-        x, y = float(corner[0]), float(corner[1])
-        return (x, x, y, y)
+        disc = np.maximum(b ** 2 - 4 * a * c, 0.0)
+        sd = np.sqrt(disc)
+        lr0 = (-b + sd) / (2 * a)
+        lr1 = (-b - sd) / (2 * a)
+        bt0 = _bt_from_lr(lr0)
+        bt1 = _bt_from_lr(lr1)
+        lr = np.where(_penalty(lr0, bt0) <= _penalty(lr1, bt1), lr0, lr1)
+
+    bt = _bt_from_lr(lr)
+    return lr, bt
 
 
 def prepare_embedding_color_df(
@@ -233,19 +262,20 @@ def prepare_embedding_color_df(
     """Assign 2D gradient colors to cells based on their position in reference_data.
 
     Each cell is colored by bilinear interpolation between four corner colors at
-    its normalized (x, y) position in the reference embedding.  The returned
-    DataFrame carries x, y coordinates from current_data and a ``color`` column
-    of hex strings ready for ``scale_color_identity()``.
+    its (lr, bt) position in the reference embedding.  The returned DataFrame
+    carries x, y coordinates from current_data and a ``color`` column of hex
+    strings ready for ``scale_color_identity()``.
 
     Args:
         current_data:   EmbeddingData supplying x, y plot coordinates.
         reference_data: EmbeddingData whose coordinates drive the color mapping.
         corner_colors:  4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
-        region:         Optional 2-tuple ``(corner1, corner2)`` that restricts which
-                        cells receive the gradient.  Each corner is either a grid
-                        label string (e.g. ``"A1"``) or an ``(x, y)`` float tuple
-                        in reference-embedding data coordinates.  Cells outside the
-                        resulting bounding box receive *outside_color* instead.
+        region:         Optional 4-tuple of ``(x, y)`` float pairs
+                        ``(top_left, top_right, bottom_left, bottom_right)``
+                        defining a (possibly non-rectangular) quadrilateral in
+                        reference-embedding coordinates.  The full colour spectrum
+                        is mapped to the quad interior; cells outside receive
+                        *outside_color*.
         outside_color:  Hex color for cells outside *region* (default ``"#C0C0C0"``).
 
     Returns:
@@ -258,39 +288,35 @@ def prepare_embedding_color_df(
 
     rx, ry = ref_coords["x"], ref_coords["y"]
 
-    # Determine the normalisation bounds — use region extents when given so the
-    # full colour spectrum maps to the region, not the whole embedding.
     if region is not None:
-        c1 = _corner_to_bounds(region[0], reference_data)
-        c2 = _corner_to_bounds(region[1], reference_data)
-        x_min = min(c1[0], c1[1], c2[0], c2[1])
-        x_max = max(c1[0], c1[1], c2[0], c2[1])
-        y_min = min(c1[2], c1[3], c2[2], c2[3])
-        y_max = max(c1[2], c1[3], c2[2], c2[3])
-        in_region = (
-            (rx >= x_min) & (rx <= x_max)
-            & (ry >= y_min) & (ry <= y_max)
-        )
+        # 4-corner quad: (top_left, top_right, bottom_left, bottom_right)
+        # Bilinear basis: p00=bottom_left(lr=0,bt=0), p10=bottom_right(lr=1,bt=0),
+        #                 p01=top_left(lr=0,bt=1),     p11=top_right(lr=1,bt=1)
+        tl, tr, bl, br = [np.array(c, dtype=float) for c in region]
+        pts = np.column_stack([rx.values, ry.values])
+        lr_arr, bt_arr = _inverse_bilinear(pts, p00=bl, p10=br, p01=tl, p11=tr)
+        in_region = (lr_arr >= 0) & (lr_arr <= 1) & (bt_arr >= 0) & (bt_arr <= 1)
+        t = pd.Series(lr_arr, index=rx.index)   # left → right
+        s = pd.Series(bt_arr, index=rx.index)   # bottom → top
     else:
         x_min, x_max = rx.min(), rx.max()
         y_min, y_max = ry.min(), ry.max()
         in_region = None
+        t = (rx - x_min) / (x_max - x_min + 1e-12)   # [0,1] left → right
+        s = (ry - y_min) / (y_max - y_min + 1e-12)   # [0,1] bottom → top
 
-    t = (rx - x_min) / (x_max - x_min + 1e-12)  # [0,1] left → right
-    s = (ry - y_min) / (y_max - y_min + 1e-12)  # [0,1] bottom → top
-
-    tl = np.array(mcolors.to_rgb(corner_colors[0]))
-    tr = np.array(mcolors.to_rgb(corner_colors[1]))
-    bl = np.array(mcolors.to_rgb(corner_colors[2]))
-    br = np.array(mcolors.to_rgb(corner_colors[3]))
+    tl_c = np.array(mcolors.to_rgb(corner_colors[0]))
+    tr_c = np.array(mcolors.to_rgb(corner_colors[1]))
+    bl_c = np.array(mcolors.to_rgb(corner_colors[2]))
+    br_c = np.array(mcolors.to_rgb(corner_colors[3]))
 
     t_arr = t.values[:, None]
     s_arr = s.values[:, None]
     rgb = (
-        (1 - t_arr) * s_arr * tl
-        + t_arr * s_arr * tr
-        + (1 - t_arr) * (1 - s_arr) * bl
-        + t_arr * (1 - s_arr) * br
+        (1 - t_arr) * s_arr * tl_c
+        + t_arr * s_arr * tr_c
+        + (1 - t_arr) * (1 - s_arr) * bl_c
+        + t_arr * (1 - s_arr) * br_c
     )
     rgb = np.clip(rgb, 0, 1)
 
