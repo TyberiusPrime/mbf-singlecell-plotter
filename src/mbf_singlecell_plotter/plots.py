@@ -111,33 +111,60 @@ def _make_2d_color_image(corner_colors, size: int = 64) -> np.ndarray:
     return np.clip(img, 0, 1).astype(np.float32)
 
 
-def _draw_embedding_color_legend(fig, *, corner_colors, ref_name: str, size: int = 64):
-    """Add a 2D color-gradient legend inset anchored to the main scatter axes."""
+def _draw_embedding_color_legend(
+    fig, *, corner_colors, ref_name: str, base_size: float = 12, size: int = 64
+):
+    """Add a 2D colour-gradient square to the right of the main scatter axes."""
+    # Execute layout and freeze — same pattern as _draw_numerical_legend
     le = fig.get_layout_engine()
     if le is not None:
         le.execute(fig)
+        fig.set_layout_engine(None)
 
-    ax = fig.get_axes()[0]
-    pos = ax.get_position()  # (left, bottom, width, height) in figure coords
+    legend_fontsize = base_size * 0.9
 
-    frac = 0.18
-    pad = 0.02
-    lw = pos.width * frac
-    lh = pos.height * frac
-    lx = pos.x1 - lw - pos.width * pad
-    ly = pos.y1 - lh - pos.height * pad
+    fig_w, fig_h = fig.get_size_inches()
+    all_axes = fig.axes
+    grid_x1 = max(ax.get_position().x1 for ax in all_axes)
+    grid_y0 = min(ax.get_position().y0 for ax in all_axes)
+    grid_height = max(ax.get_position().y1 for ax in all_axes) - grid_y0
 
-    ax_leg = fig.add_axes([lx, ly, lw, lh])
+    # Square sized at 35 % of the grid height; convert to equal inches for width
+    side_h = grid_height * 0.35
+    side_w = side_h * fig_h / fig_w  # same size in inches → different fig fraction
+
+    gap = 0.015
+    legend_total_w = gap + side_w + 0.06  # gap + square + right-side tick labels
+
+    # Shrink data axes proportionally if the legend would overflow the figure
+    needed_right = grid_x1 + legend_total_w
+    if needed_right > 0.99:
+        target_x1 = 0.99 - legend_total_w
+        scale = target_x1 / grid_x1
+        for ax in all_axes:
+            p = ax.get_position()
+            ax.set_position([p.x0 * scale, p.y0, p.width * scale, p.height])
+        grid_x1 = max(ax.get_position().x1 for ax in all_axes)
+
+    # Centre the square vertically on the grid
+    lx = grid_x1 + gap
+    ly = grid_y0 + (grid_height - side_h) / 2
+
+    ax_leg = fig.add_axes([lx, ly, side_w, side_h])
     img = _make_2d_color_image(corner_colors, size=size)
     ax_leg.imshow(img, aspect="auto", origin="upper")
 
+    ax_leg.set_title(ref_name, fontsize=legend_fontsize, pad=3, color="#333333")
+
     ax_leg.set_xticks([0, size - 1])
-    ax_leg.set_xticklabels(["←", "→"], fontsize=6, color="#333333")
+    ax_leg.set_xticklabels(["←", "→"], fontsize=legend_fontsize, color="#333333")
     ax_leg.xaxis.tick_top()
+
     ax_leg.set_yticks([0, size - 1])
-    ax_leg.set_yticklabels(["↑", "↓"], fontsize=6, color="#333333")
-    ax_leg.tick_params(length=1, pad=1)
-    ax_leg.set_title(ref_name, fontsize=6, pad=2, color="#333333")
+    ax_leg.set_yticklabels(["↑", "↓"], fontsize=legend_fontsize, color="#333333")
+    ax_leg.yaxis.tick_right()
+
+    ax_leg.tick_params(length=2, pad=2)
     for sp in ax_leg.spines.values():
         sp.set_linewidth(0.5)
         sp.set_color("#777777")
@@ -1200,12 +1227,13 @@ class ScatterPlotter:
             p.__class__ = _PlotWithFixedPanel
             p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
 
-        # 2D colour legend inset
+        # 2D colour legend (to the right of the figure)
         if show_legend:
             p.__class__ = _PlotWithEmbeddingColorLegend
             p._embedding_legend_config = {
                 "corner_colors": corner_colors,
                 "ref_name": ref_name,
+                "base_size": self.base_size,
             }
 
         return p
