@@ -341,7 +341,13 @@ def prepare_embedding_color_df(
         # 4-corner quad: (top_left, top_right, bottom_left, bottom_right)
         # Bilinear basis: p00=bottom_left(lr=0,bt=0), p10=bottom_right(lr=1,bt=0),
         #                 p01=top_left(lr=0,bt=1),     p11=top_right(lr=1,bt=1)
-        tl, tr, bl, br = [np.array(c, dtype=float) for c in region]
+        # Accept any ordering: sort into tl/tr/bl/br automatically.
+        # Top two = highest y; within each pair, left = lower x.
+        pts4 = sorted([np.array(c, dtype=float) for c in region], key=lambda p: -p[1])
+        top_two = sorted(pts4[:2], key=lambda p: p[0])
+        bot_two = sorted(pts4[2:], key=lambda p: p[0])
+        tl, tr = top_two[0], top_two[1]
+        bl, br = bot_two[0], bot_two[1]
         pts = np.column_stack([rx.values, ry.values])
         lr_arr, bt_arr = _inverse_bilinear(pts, p00=bl, p10=br, p01=tl, p11=tr)
         in_region = (lr_arr >= 0) & (lr_arr <= 1) & (bt_arr >= 0) & (bt_arr <= 1)
