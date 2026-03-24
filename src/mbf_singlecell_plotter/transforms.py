@@ -193,6 +193,31 @@ def compute_boundaries(
     return bdf
 
 
+def _corner_to_bounds(corner, ref_data):
+    """Return ``(xl, xr, yb, yt)`` for a region corner in reference embedding space.
+
+    *corner* is either a grid label string (e.g. ``"A1"``) or an ``(x, y)`` float tuple.
+    """
+    if isinstance(corner, str):
+        from .data import _parse_grid_label
+
+        gs = ref_data._grid_size
+        glv = ref_data._grid_letters_on_vertical
+        col, row = _parse_grid_label(corner, gs, glv)
+        x_min_d, x_max_d, y_min_d, y_max_d = ref_data.full_bounds()
+        cell_w = (x_max_d - x_min_d) / gs
+        cell_h = (y_max_d - y_min_d) / gs
+        return (
+            x_min_d + col * cell_w,
+            x_min_d + (col + 1) * cell_w,
+            y_max_d - (row + 1) * cell_h,
+            y_max_d - row * cell_h,
+        )
+    else:
+        x, y = float(corner[0]), float(corner[1])
+        return (x, x, y, y)
+
+
 def _cross2d(a, b):
     """2D cross product ax*by - ay*bx. Broadcasts over leading batch dims."""
     return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
@@ -272,15 +297,15 @@ def prepare_embedding_color_df(
         corner_colors:  4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
         region:         Restricts which cells receive the gradient.  Two forms:
 
-                        * **2-tuple** ``((x0, y0), (x1, y1))`` — axis-aligned
-                          bounding box (any two opposite corners).
+                        * **2-tuple** ``(corner1, corner2)`` — axis-aligned bounding
+                          box.  Each corner is either a grid-label string
+                          (e.g. ``"A1"``) or an ``(x, y)`` float pair.
                         * **4-tuple** ``(top_left, top_right, bottom_left,
                           bottom_right)`` — arbitrary (possibly non-rectangular)
-                          quadrilateral.
+                          quadrilateral; each element is an ``(x, y)`` float pair.
 
-                        In both cases coordinates are ``(x, y)`` float pairs in
-                        reference-embedding space.  The full colour spectrum maps
-                        to the region interior; cells outside receive *outside_color*.
+                        The full colour spectrum maps to the region interior;
+                        cells outside receive *outside_color*.
         outside_color:  Hex color for cells outside *region* (default ``"#C0C0C0"``).
 
     Returns:
@@ -295,10 +320,18 @@ def prepare_embedding_color_df(
 
     if region is not None:
         if len(region) == 2:
-            # 2-corner bounding box shorthand: (top_left, bottom_right)
-            (x0, y0), (x1, y1) = region
-            xlo, xhi = min(x0, x1), max(x0, x1)
-            ylo, yhi = min(y0, y1), max(y0, y1)
+            # 2-corner bounding box: grid strings or (x, y) float tuples
+            if isinstance(region[0], str) or isinstance(region[1], str):
+                c1 = _corner_to_bounds(region[0], reference_data)
+                c2 = _corner_to_bounds(region[1], reference_data)
+                xlo = min(c1[0], c1[1], c2[0], c2[1])
+                xhi = max(c1[0], c1[1], c2[0], c2[1])
+                ylo = min(c1[2], c1[3], c2[2], c2[3])
+                yhi = max(c1[2], c1[3], c2[2], c2[3])
+            else:
+                (x0, y0), (x1, y1) = region
+                xlo, xhi = min(x0, x1), max(x0, x1)
+                ylo, yhi = min(y0, y1), max(y0, y1)
             region = (
                 (xlo, yhi),  # top_left
                 (xhi, yhi),  # top_right

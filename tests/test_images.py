@@ -548,6 +548,13 @@ class TestPlotEmbeddingColor:
         )
         assert_image(p)
 
+    def test_region_grid(self, plotter_no_boundary, assert_image):
+        """Grid-label region: only cells in A1–I12 of PCA space get the gradient."""
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca", region=("A1", "I12")
+        )
+        assert_image(p)
+
     def test_region_float(self, plotter_no_boundary, assert_image):
         """2-tuple bounding-box shorthand: gradient restricted to a centred box in PCA space."""
         ad = plotter_no_boundary._data.ad
