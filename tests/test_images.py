@@ -580,10 +580,10 @@ class TestPlotEmbeddingColor:
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
             region=(
-                (cx - hw_x, cy + hw_y),   # top_left
-                (cx + hw_x, cy + hw_y),   # top_right
-                (cx - hw_x, cy - hw_y),   # bottom_left
-                (cx + hw_x, cy - hw_y),   # bottom_right
+                (cx - hw_x, cy + hw_y),  # top_left
+                (cx + hw_x, cy + hw_y),  # top_right
+                (cx - hw_x, cy - hw_y),  # bottom_left
+                (cx + hw_x, cy - hw_y),  # bottom_right
             ),
         )
         assert_image(p)
@@ -599,10 +599,10 @@ class TestPlotEmbeddingColor:
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
             region=(
-                (cx - rng_x * 0.3, cy + rng_y),     # top_left
-                (cx + rng_x,        cy + rng_y * 0.4),  # top_right
-                (cx - rng_x,        cy - rng_y * 0.4),  # bottom_left
-                (cx + rng_x * 0.3, cy - rng_y),     # bottom_right
+                (cx - rng_x * 0.3, cy + rng_y),  # top_left
+                (cx + rng_x, cy + rng_y * 0.4),  # top_right
+                (cx - rng_x, cy - rng_y * 0.4),  # bottom_left
+                (cx + rng_x * 0.3, cy - rng_y),  # bottom_right
             ),
         )
         assert_image(p)
@@ -615,13 +615,17 @@ class TestPlotEmbeddingColor:
         cy = float(pca[:, 1].mean())
         hw_x = float((pca[:, 0].max() - pca[:, 0].min()) * 0.25)
         hw_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.25)
-        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
-            "umap",
-            region=(
-                (cx - hw_x, cy + hw_y),
-                (cx + hw_x, cy + hw_y),
-                (cx - hw_x, cy - hw_y),
-                (cx + hw_x, cy - hw_y),
-            ),
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .with_embedding_label("umap")
+            .plot_embedding_color(
+                "umap",
+                region=(
+                    (cx - hw_x, cy + hw_y),
+                    (cx + hw_x, cy + hw_y),
+                    (cx - hw_x, cy - hw_y),
+                    (cx + hw_x, cy - hw_y),
+                ),
+            )
         )
         assert_image(p)

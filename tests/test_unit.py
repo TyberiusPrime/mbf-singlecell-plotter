@@ -289,10 +289,11 @@ class TestConstructor:
 
 class TestPanelSize:
     def test_attributes_set(self, plotter_no_boundary):
-        """panel_size() stores the desired dimensions on the ggplot object."""
+        """panel_size() registers a fixed-panel post-draw hook on the ggplot."""
+        from mbf_singlecell_plotter.plots import _PlotWithPostDraw
         p = plotter_no_boundary.panel_size(2.0, 3.0).plot("S100A8")
-        assert p._fixed_panel_w == 2.0
-        assert p._fixed_panel_h == 3.0
+        assert isinstance(p, _PlotWithPostDraw)
+        assert len(p._post_draw_fns) == 1
 
     def test_larger_panel_produces_larger_image(self, plotter_no_boundary):
         """A bigger panel_size yields a bigger rendered figure."""

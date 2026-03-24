@@ -17,67 +17,54 @@ from .colorbar import sc_guide_colorbar
 # ── Custom matplotlib colorbar legend ────────────────────────────────────────
 
 
-class _PlotWithFixedPanel(p9.ggplot):
-    """ggplot subclass that enforces a fixed panel (scatter-area) size in inches.
+class _PlotWithPostDraw(p9.ggplot):
+    """ggplot subclass that runs accumulated post-draw hooks on the figure.
 
-    After the first draw the decoration sizes (margins, legend, title) are
-    measured in inches using plotnine's own LayoutSpaces.  The figure is then
-    resized to ``desired_panel + decorations`` and the layout engine is
-    re-executed so every artist is repositioned correctly for the new size.
+    Use ``_ensure_post_draw(p)`` to promote any ggplot to this class, then
+    append callables ``fn(fig)`` to ``p._post_draw_fns``.
     """
 
-    _fixed_panel_w: float = 0.0
-    _fixed_panel_h: float = 0.0
-
     def save_helper(self, **kwargs):
-        from plotnine._mpl.layout_manager._spaces import LayoutSpaces
-
         sv = super().save_helper(**kwargs)
-        fig = sv.figure
-        fw, fh = fig.get_size_inches()
-
-        # Measure decoration sizes in inches (independent of figure size).
-        le = fig.get_layout_engine()
-        spaces = LayoutSpaces(le.plot)
-        l_in = spaces.l.total * fw
-        r_in = spaces.r.total * fw
-        b_in = spaces.b.total * fh
-        t_in = spaces.t.total * fh
-
-        new_fw = l_in + self._fixed_panel_w + r_in
-        new_fh = b_in + self._fixed_panel_h + t_in
-
-        fig.set_size_inches(new_fw, new_fh)
-        le.execute(fig)          # recompute gridspec positions
-        fig.canvas.draw()        # re-render artists at new positions
-
-        # Correction passes: the LayoutSpaces fractions shift slightly at the
-        # new figure size (and coord_fixed adds its own constraint), so the
-        # actual panel may differ from the target by a small amount.
-        # Two iterations based on the measured axes bbox are enough to converge.
-        for _ in range(3):
-            ax = fig.get_axes()[0]
-            pos = ax.get_position()
-            cur_fw, cur_fh = fig.get_size_inches()
-            actual_w = pos.width * cur_fw
-            actual_h = pos.height * cur_fh
-            fig.set_size_inches(
-                cur_fw + (self._fixed_panel_w - actual_w),
-                cur_fh + (self._fixed_panel_h - actual_h),
-            )
-            le.execute(fig)
-            fig.canvas.draw()
-
+        for fn in self._post_draw_fns:
+            fn(sv.figure)
         return sv
 
 
-class _PlotWithCustomLegend(p9.ggplot):
-    """ggplot subclass that replaces the auto color guide with a custom matplotlib colorbar."""
+def _ensure_post_draw(p: p9.ggplot) -> "_PlotWithPostDraw":
+    """Promote *p* to _PlotWithPostDraw (idempotent); initialise _post_draw_fns."""
+    if not isinstance(p, _PlotWithPostDraw):
+        p.__class__ = _PlotWithPostDraw
+        p._post_draw_fns = []
+    return p
 
-    def save_helper(self, **kwargs):
-        sv = super().save_helper(**kwargs)
-        _draw_numerical_legend(sv.figure, **self._legend_config)
-        return sv
+
+def _apply_fixed_panel(fig, panel_w: float, panel_h: float) -> None:
+    """Resize *fig* so the scatter panel is exactly panel_w × panel_h inches."""
+    from plotnine._mpl.layout_manager._spaces import LayoutSpaces
+
+    fw, fh = fig.get_size_inches()
+    le = fig.get_layout_engine()
+    spaces = LayoutSpaces(le.plot)
+    l_in = spaces.l.total * fw
+    r_in = spaces.r.total * fw
+    b_in = spaces.b.total * fh
+    t_in = spaces.t.total * fh
+    fig.set_size_inches(l_in + panel_w + r_in, b_in + panel_h + t_in)
+    le.execute(fig)
+    fig.canvas.draw()
+    for _ in range(3):
+        ax = fig.get_axes()[0]
+        pos = ax.get_position()
+        cur_fw, cur_fh = fig.get_size_inches()
+        actual_w = pos.width * cur_fw
+        actual_h = pos.height * cur_fh
+        fig.set_size_inches(
+            cur_fw + (panel_w - actual_w),
+            cur_fh + (panel_h - actual_h),
+        )
+        le.execute(fig)
+        fig.canvas.draw()
 
 
 # ── 2-D embedding colour legend ──────────────────────────────────────────────
@@ -170,15 +157,34 @@ def _draw_embedding_color_legend(
         sp.set_color("#777777")
 
 
-class _PlotWithEmbeddingColorLegend(p9.ggplot):
-    """ggplot subclass that draws a 2D colour legend inset."""
+def _draw_embedding_label(fig, *, label: str, fontsize: float, color: str = "#777777") -> None:
+    """Place a small label outside the panel in the lower-left corner.
 
-    _embedding_legend_config: dict = {}
+    x aligns with the left edge of the y-axis tick labels (via tight bbox);
+    the top of the text aligns with the bottom of the panel frame.
+    """
+    if not fig.axes:
+        return
+    ax = fig.axes[0]
 
-    def save_helper(self, **kwargs):
-        sv = super().save_helper(**kwargs)
-        _draw_embedding_color_legend(sv.figure, **self._embedding_legend_config)
-        return sv
+    # x: left edge of tight bbox (includes y-axis tick labels)
+    # y: bottom of tight bbox (includes x-axis tick labels)
+    fig_w, fig_h = fig.get_size_inches()
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        tight = ax.get_tightbbox(renderer)
+        if tight is None:
+            raise ValueError("no tight bbox")
+        x_frac = tight.x0 / (fig_w * fig.dpi)
+        y_frac = tight.y0 / (fig_h * fig.dpi)
+        if not (0 <= x_frac <= 1) or not (0 <= y_frac <= 1):
+            raise ValueError(f"fracs out of range: x={x_frac}, y={y_frac}")
+    except Exception:
+        x_frac = ax.get_position().x0
+        y_frac = ax.get_position().y0
+
+    fig.text(x_frac, y_frac, label, ha="left", va="bottom", fontsize=fontsize, color=color)
 
 
 def _draw_numerical_legend(
@@ -949,10 +955,6 @@ class ScatterPlotter:
         else:
             p = p + p9.labs(title=expr_name)
 
-        # Embedding label
-        if self._embedding_label:
-            p = self._add_embedding_label(p, data)
-
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = p + embedding_theme(
             base_size=self.base_size,
@@ -968,10 +970,15 @@ class ScatterPlotter:
         elif self._grid_config is None:
             p = self._add_plain_axis_ticks(p)
 
-        # Fixed panel size: promote p to _PlotWithFixedPanel
+        # Fixed panel size
         if self._fixed_panel_size is not None:
-            p.__class__ = _PlotWithFixedPanel
-            p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
+            w, h = self._fixed_panel_size
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h))
+
+        # Embedding label (after fixed-panel so tight-bbox reflects final size)
+        if self._embedding_label:
+            p = self._add_embedding_label(p, data)
 
         return p
 
@@ -1039,9 +1046,6 @@ class ScatterPlotter:
                     inherit_aes=False,
                 )
 
-        if self._embedding_label:
-            p = self._add_embedding_label(p, self._data)
-
         p = p + embedding_theme(
             base_size=self.base_size,
             show_spines=self._panel_border,
@@ -1067,8 +1071,11 @@ class ScatterPlotter:
                 labels=labels,
                 base_size=self.base_size,
             )
-            p.__class__ = _PlotWithCustomLegend
-            p._legend_config = legend_config
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(lambda fig, _c=legend_config: _draw_numerical_legend(fig, **_c))
+
+        if self._embedding_label:
+            p = self._add_embedding_label(p, self._data)
 
         return p
 
@@ -1152,8 +1159,9 @@ class ScatterPlotter:
         )
 
         if self._fixed_panel_size is not None:
-            p.__class__ = _PlotWithFixedPanel
-            p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
+            w, h = self._fixed_panel_size
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h))
 
         return p
 
@@ -1245,10 +1253,6 @@ class ScatterPlotter:
         else:
             p = p + p9.labs(title=ref_name)
 
-        # Embedding label
-        if self._embedding_label:
-            p = self._add_embedding_label(p, data)
-
         # Theme
         p = p + embedding_theme(
             base_size=self.base_size,
@@ -1266,44 +1270,38 @@ class ScatterPlotter:
 
         # Fixed panel size
         if self._fixed_panel_size is not None:
-            p.__class__ = _PlotWithFixedPanel
-            p._fixed_panel_w, p._fixed_panel_h = self._fixed_panel_size
+            w, h = self._fixed_panel_size
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h))
 
         # 2D colour legend (to the right of the figure)
         if show_legend:
-            p.__class__ = _PlotWithEmbeddingColorLegend
-            p._embedding_legend_config = {
-                "corner_colors": corner_colors,
-                "ref_name": ref_name,
-                "base_size": self.base_size,
-            }
+            _cfg = {"corner_colors": corner_colors, "ref_name": ref_name, "base_size": self.base_size}
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(lambda fig, _c=_cfg: _draw_embedding_color_legend(fig, **_c))
+
+        # Embedding label — runs after legend so tight-bbox is stable
+        if self._embedding_label:
+            p = self._add_embedding_label(p, data)
 
         return p
 
     # ── internals ────────────────────────────────────────────────────────────
 
     def _add_embedding_label(self, p: p9.ggplot, data: "EmbeddingData") -> p9.ggplot:
-        x_min, x_max, y_min, y_max = data.bounds()
         label = data.embedding
         if label.startswith("X_"):
             label = label[2:]
         fontsize = (
             self._embedding_label_size
             if self._embedding_label_size is not None
-            else self.base_size * 0.5
+            else self.base_size  
         )
-        lx = x_min + (x_max - x_min) * 0.02
-        ly = y_min + (y_max - y_min) * 0.02
-        return p + p9.annotate(
-            "text",
-            x=lx,
-            y=ly,
-            label=label,
-            ha="left",
-            va="bottom",
-            size=fontsize,
-            color="#777777",
+        p = _ensure_post_draw(p)
+        p._post_draw_fns.append(
+            lambda fig, _l=label, _fs=fontsize: _draw_embedding_label(fig, label=_l, fontsize=_fs)
         )
+        return p
 
     def _colors_as_list(self, cats: list) -> list:
         """Return an ordered color list for *cats*.
