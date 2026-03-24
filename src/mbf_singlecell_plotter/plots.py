@@ -416,6 +416,7 @@ class GridConfig:
     grid_size: int = 12
     color: str = "#777777"
     label_color: str = "#777777"
+    label_size: Optional[float] = None  # None → 5 for "coords", 8 for letters
 
 
 class ScatterPlotter:
@@ -732,14 +733,17 @@ class ScatterPlotter:
         grid_size: Optional[int] = None,
         color: Optional[str] = None,
         label_color: Optional[str] = None,
+        label_size: Optional[float] = None,
     ) -> "ScatterPlotter":
         """Configure the grid overlay.
 
         Args:
-            labels:   Cell-interior labels.  ``False``/``None`` = off;
-                      ``True``/``"letters"`` = grid-label strings (e.g. ``"A1"``);\
-                      ``"coords"`` = ``(x, y)`` embedding-coordinate strings.
-            coords:   Replace axis tick labels with grid-cell identifiers.
+            labels:     Cell-interior labels.  ``False``/``None`` = off;
+                        ``True``/``"letters"`` = grid-label strings (e.g. ``"A1"``);\
+                        ``"coords"`` = ``(x, y)`` embedding-coordinate strings.
+            coords:     Replace axis tick labels with grid-cell identifiers.
+            label_size: Font size for cell-interior labels.  Defaults to 5 for
+                        ``"coords"`` and 8 for letter labels.
             vertical_letters: Put letters on the vertical axis (default: horizontal).
             grid_size, color, label_color: passed through unchanged if ``None``.
 
@@ -761,6 +765,7 @@ class ScatterPlotter:
             grid_size=resolved_grid_size,
             color=color if color is not None else cur.color,
             label_color=label_color if label_color is not None else cur.label_color,
+            label_size=label_size if label_size is not None else cur.label_size,
         )
         # Sync EmbeddingData grid settings if needed
         if new._data is not None and (
@@ -1634,11 +1639,13 @@ class ScatterPlotter:
                         )
                     rows.append({"x": cell_x, "y": cell_y, "label": label})
             labels_df = pd.DataFrame(rows)
+            default_size = 5 if gc.labels == "coords" else 8
+            lsize = gc.label_size if gc.label_size is not None else default_size
             p = p + p9.geom_text(
                 data=labels_df,
                 mapping=p9.aes("x", "y", label="label"),
                 color=gc.label_color,
-                size=8,
+                size=lsize,
                 alpha=0.7,
                 inherit_aes=False,
             )
