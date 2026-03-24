@@ -752,17 +752,24 @@ class ScatterPlotter:
 
     # ── viewport ─────────────────────────────────────────────────────────────
 
-    def focus_on(self, *, x: tuple, y: tuple) -> "ScatterPlotter":
+    def focus_on(self, *args, x: tuple = None, y: tuple = None) -> "ScatterPlotter":
         """Restrict viewport to a coordinate window.
 
-        Args:
-            x: (x_min, x_max)
-            y: (y_min, y_max)
+        Accepts either two grid label strings::
+
+            plotter.focus_on("A1", "C5")
+
+        or explicit coordinate ranges (keyword-only)::
+
+            plotter.focus_on(x=(x_min, x_max), y=(y_min, y_max))
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .focus_on()")
         new = copy.copy(self)
-        new._data = self._data.focus_on(x=x, y=y)
+        if args:
+            new._data = self._data.focus_on(*args)
+        else:
+            new._data = self._data.focus_on(x=x, y=y)
         return new
 
     def focus_on_grid(self, cell_min: str, cell_max: str) -> "ScatterPlotter":
@@ -770,7 +777,6 @@ class ScatterPlotter:
 
         Raises RuntimeError if no source has been set.
         Raises ValueError if the grid has been disabled with without_grid().
-        See EmbeddingData.focus_on_grid() for label format conventions.
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .focus_on_grid()")
@@ -780,7 +786,7 @@ class ScatterPlotter:
                 "or remove .without_grid()"
             )
         new = copy.copy(self)
-        new._data = self._data.focus_on_grid(cell_min, cell_max)
+        new._data = self._data._focus_on_grid(cell_min, cell_max)
         return new
 
     def unfocus(self) -> "ScatterPlotter":

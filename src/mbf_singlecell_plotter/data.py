@@ -140,23 +140,39 @@ class EmbeddingData:
 
     def focus_on(
         self,
-        *,
-        x: tuple,
-        y: tuple,
+        *args,
+        x: tuple = None,
+        y: tuple = None,
     ) -> "EmbeddingData":
         """Return a new EmbeddingData restricted to the given coordinate window.
 
-        Args:
-            x: (x_min, x_max)
-            y: (y_min, y_max)
+        Accepts either two grid label strings::
+
+            data.focus_on("A1", "C5")
+
+        or explicit coordinate ranges (keyword-only)::
+
+            data.focus_on(x=(x_min, x_max), y=(y_min, y_max))
+
+        Grid labels use the same format as :meth:`grid_coordinate` (e.g. ``"G3"``
+        for the default orientation, ``"3G"`` for vertical-letters).  Swapped
+        corners are silently corrected.
         """
+        if args:
+            if len(args) == 2 and isinstance(args[0], str) and isinstance(args[1], str):
+                return self._focus_on_grid(args[0], args[1])
+            raise TypeError(
+                f"positional arguments must be two grid label strings "
+                f"(e.g. focus_on('A1', 'C5')), got {args!r}"
+            )
         new = copy.copy(self)
         new._focus = (x[0], x[1], y[0], y[1])
         return new
 
-    def focus_on_grid(self, cell_min: str, cell_max: str) -> "EmbeddingData":
+    def _focus_on_grid(self, cell_min: str, cell_max: str) -> "EmbeddingData":
         """Restrict viewport to the rectangle from cell_min (top-left) to cell_max (bottom-right).
 
+        Internal implementation called by :meth:`focus_on` when given string arguments.
         Uses the same label format as grid_coordinate(): e.g. 'G3' for default
         orientation, '3G' for vertical-letters orientation.  The focus spans
         from the left/top edge of cell_min to the right/bottom edge of cell_max,
