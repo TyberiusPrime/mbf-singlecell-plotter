@@ -193,10 +193,42 @@ def compute_boundaries(
     return bdf
 
 
+def _corner_to_bounds(corner, ref_data):
+    """Return ``(xl, xr, yb, yt)`` for a region corner in reference embedding space.
+
+    *corner* is either:
+
+    - a **string** grid label (e.g. ``"A1"``) — returns the full cell edges using
+      the reference embedding's grid settings.
+    - a **2-tuple of floats** ``(x, y)`` — treated as an exact data point
+      (``xl == xr``, ``yb == yt``).
+    """
+    if isinstance(corner, str):
+        from .data import _parse_grid_label
+
+        gs = ref_data._grid_size
+        glv = ref_data._grid_letters_on_vertical
+        col, row = _parse_grid_label(corner, gs, glv)
+        x_min_d, x_max_d, y_min_d, y_max_d = ref_data.full_bounds()
+        cell_w = (x_max_d - x_min_d) / gs
+        cell_h = (y_max_d - y_min_d) / gs
+        return (
+            x_min_d + col * cell_w,         # xl: left edge of this column
+            x_min_d + (col + 1) * cell_w,   # xr: right edge of this column
+            y_max_d - (row + 1) * cell_h,   # yb: bottom edge of this row
+            y_max_d - row * cell_h,          # yt: top edge of this row
+        )
+    else:
+        x, y = float(corner[0]), float(corner[1])
+        return (x, x, y, y)
+
+
 def prepare_embedding_color_df(
     current_data,
     reference_data,
     corner_colors=_EMBEDDING_COLOR_DEFAULTS,
+    region=None,
+    outside_color: str = "#C0C0C0",
 ) -> pd.DataFrame:
     """Assign 2D gradient colors to cells based on their position in reference_data.
 
@@ -209,6 +241,12 @@ def prepare_embedding_color_df(
         current_data:   EmbeddingData supplying x, y plot coordinates.
         reference_data: EmbeddingData whose coordinates drive the color mapping.
         corner_colors:  4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
+        region:         Optional 2-tuple ``(corner1, corner2)`` that restricts which
+                        cells receive the gradient.  Each corner is either a grid
+                        label string (e.g. ``"A1"``) or an ``(x, y)`` float tuple
+                        in reference-embedding data coordinates.  Cells outside the
+                        resulting bounding box receive *outside_color* instead.
+        outside_color:  Hex color for cells outside *region* (default ``"#C0C0C0"``).
 
     Returns:
         DataFrame with columns: x, y, color (hex string).
@@ -241,6 +279,22 @@ def prepare_embedding_color_df(
         f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
         for r, g, b in rgb
     ]
+
+    if region is not None:
+        c1 = _corner_to_bounds(region[0], reference_data)
+        c2 = _corner_to_bounds(region[1], reference_data)
+        mask_x_min = min(c1[0], c1[1], c2[0], c2[1])
+        mask_x_max = max(c1[0], c1[1], c2[0], c2[1])
+        mask_y_min = min(c1[2], c1[3], c2[2], c2[3])
+        mask_y_max = max(c1[2], c1[3], c2[2], c2[3])
+        in_region = (
+            (rx >= mask_x_min) & (rx <= mask_x_max)
+            & (ry >= mask_y_min) & (ry <= mask_y_max)
+        )
+        hex_colors = [
+            hc if flag else outside_color
+            for hc, flag in zip(hex_colors, in_region)
+        ]
 
     df = current_coords.copy()
     df["color"] = hex_colors

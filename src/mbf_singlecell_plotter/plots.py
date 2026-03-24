@@ -1091,6 +1091,8 @@ class ScatterPlotter:
         reference_embedding,
         *,
         corner_colors=_EMBEDDING_COLOR_DEFAULTS,
+        region=None,
+        outside_color: str = "#C0C0C0",
         show_legend: bool = False,
         dot_size: Optional[float] = None,
     ) -> p9.ggplot:
@@ -1104,7 +1106,15 @@ class ScatterPlotter:
             reference_embedding: Embedding name (str) or EmbeddingData for color assignment.
             corner_colors:        4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
                                   Default: red / blue / yellow / green.
-            show_legend:          Add a small 2D color legend inset (default True).
+            region:               Optional ``(corner1, corner2)`` restricting which cells
+                                  receive the gradient.  Each corner is a grid label string
+                                  (e.g. ``"A1"``) or an ``(x, y)`` float tuple in reference-
+                                  embedding coordinates.  ``corner1`` is the top-left (>=)
+                                  and ``corner2`` the bottom-right (<=), matching the
+                                  ``focus_on_grid`` convention.  Cells outside the box get
+                                  *outside_color*.
+            outside_color:        Color for cells outside *region* (default ``"#C0C0C0"``).
+            show_legend:          Add a small 2D color legend inset (default False).
             dot_size:             Point size; defaults to the plotter's dot_size.
         """
         if self._data is None:
@@ -1124,7 +1134,13 @@ class ScatterPlotter:
         else:
             raise ValueError("reference_embedding must be a str or EmbeddingData")
 
-        df = prepare_embedding_color_df(data, ref_data, corner_colors=corner_colors)
+        df = prepare_embedding_color_df(
+            data,
+            ref_data,
+            corner_colors=corner_colors,
+            region=region,
+            outside_color=outside_color,
+        )
 
         dot = dot_size if dot_size is not None else self._dot_size
 
