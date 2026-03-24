@@ -607,6 +607,26 @@ class TestPlotEmbeddingColor:
         )
         assert_image(p)
 
+    def test_region_quad_show_region(self, plotter_no_boundary, assert_image):
+        """show_region=True draws the region corners and connecting lines."""
+        ad = plotter_no_boundary._data.ad
+        pca = ad.obsm["X_pca"][:, :2]
+        cx = float(pca[:, 0].mean())
+        cy = float(pca[:, 1].mean())
+        rng_x = float((pca[:, 0].max() - pca[:, 0].min()) * 0.3)
+        rng_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.3)
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca",
+            region=(
+                (cx - rng_x * 0.3, cy + rng_y),
+                (cx + rng_x, cy + rng_y * 0.4),
+                (cx - rng_x, cy - rng_y * 0.4),
+                (cx + rng_x * 0.3, cy - rng_y),
+            ),
+            show_region=True,
+        )
+        assert_image(p)
+
     def test_region_rect_same_embedding(self, plotter_no_boundary, assert_image):
         """Rectangular region in PCA space, plotted in UMAP embedding."""
         ad = plotter_no_boundary._data.ad

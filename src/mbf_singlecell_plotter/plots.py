@@ -530,6 +530,17 @@ class ScatterPlotter:
         new._boundary_cache = {"df": None}
         return new
 
+    def get_column(self, name: str):
+        """Return ``(series, column_name)`` for an obs column or gene.
+
+        Delegates to :meth:`EmbeddingData.get_column` — useful for downstream
+        callers who want to inspect expression or metadata without reaching
+        into the internal data layer.
+        """
+        if self._data is None:
+            raise RuntimeError("No data source set — call set_source() first.")
+        return self._data.get_column(name)
+
     # ── dot appearance ───────────────────────────────────────────────────────
 
     def style(
@@ -1173,6 +1184,7 @@ class ScatterPlotter:
         region=None,
         outside_color: str = "#C0C0C0",
         show_legend: bool = False,
+        show_region: bool = False,
         dot_size: Optional[float] = None,
     ) -> p9.ggplot:
         """Plot cells in the current embedding colored by 2D position in another embedding.
@@ -1242,6 +1254,51 @@ class ScatterPlotter:
             p = p + p9.geom_point(size=dot)
 
         p = p + p9.scale_color_identity(guide=None)
+
+        # Region outline overlay (in reference-embedding coordinates)
+        if show_region and region is not None:
+            from .transforms import _corner_to_bounds
+            import numpy as _np
+            if len(region) == 2:
+                if isinstance(region[0], str) or isinstance(region[1], str):
+                    c1 = _corner_to_bounds(region[0], ref_data)
+                    c2 = _corner_to_bounds(region[1], ref_data)
+                    xlo = min(c1[0], c1[1], c2[0], c2[1])
+                    xhi = max(c1[0], c1[1], c2[0], c2[1])
+                    ylo = min(c1[2], c1[3], c2[2], c2[3])
+                    yhi = max(c1[2], c1[3], c2[2], c2[3])
+                else:
+                    (x0, y0), (x1, y1) = region
+                    xlo, xhi = min(x0, x1), max(x0, x1)
+                    ylo, yhi = min(y0, y1), max(y0, y1)
+                # polygon order: tl → tr → br → bl
+                corners = [(xlo, yhi), (xhi, yhi), (xhi, ylo), (xlo, ylo)]
+            else:
+                pts4 = sorted([_np.array(c, dtype=float) for c in region], key=lambda p: -p[1])
+                top_two = sorted(pts4[:2], key=lambda pt: pt[0])
+                bot_two = sorted(pts4[2:], key=lambda pt: pt[0])
+                tl_, tr_ = top_two[0], top_two[1]
+                bl_, br_ = bot_two[0], bot_two[1]
+                corners = [tl_, tr_, br_, bl_]
+            # closed polygon + corner markers
+            cx = [c[0] for c in corners] + [corners[0][0]]
+            cy = [c[1] for c in corners] + [corners[0][1]]
+            region_path_df = pd.DataFrame({"x": cx, "y": cy})
+            region_pts_df = pd.DataFrame({"x": [c[0] for c in corners], "y": [c[1] for c in corners]})
+            p = p + p9.geom_path(
+                data=region_path_df,
+                mapping=p9.aes(x="x", y="y"),
+                color="#000000",
+                size=0.6,
+                inherit_aes=False,
+            )
+            p = p + p9.geom_point(
+                data=region_pts_df,
+                mapping=p9.aes(x="x", y="y"),
+                color="#000000",
+                size=1.5,
+                inherit_aes=False,
+            )
 
         # Focus viewport
         if data.has_focus:
