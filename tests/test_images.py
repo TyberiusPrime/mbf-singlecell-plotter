@@ -15,6 +15,8 @@ Image names are derived automatically from the test class + function name via th
 """
 
 import pytest
+import numpy as np
+import pandas as pd
 import matplotlib
 
 matplotlib.use("Agg")
@@ -663,3 +665,71 @@ class TestPlotEmbeddingColor:
             )
         )
         assert_image(p)
+
+
+# ---------------------------------------------------------------------------
+# Reproducer: categorical legend overflow with many categories
+# ---------------------------------------------------------------------------
+
+
+class TestCategoricalLegendFit:
+    """Reproducer: categorical legend should fit within the canvas when there
+    are ~13 categories plotted at a small panel size and saved at a fixed
+    width×height."""
+
+    def test_13_categories_panel_3x3(self, ad, assert_image):
+        """13-category legend with panel_size(3,3) saved at width=5, height=4."""
+        from mbf_singlecell_plotter import EmbeddingData, ScatterPlotter
+
+        # 13 distinct colors to go with 13 categories
+        colors_13 = [
+            "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
+            "#911eb4", "#42d4f4", "#f032e6", "#bfef45", "#fabed4",
+            "#469990", "#dcbeff", "#9A6324",
+        ]
+
+        n = len(ad.obs)
+        ad.obs["cat13"] = pd.Categorical(
+            [f"CellType_{i:02d}" for i in np.arange(n) % 13]
+        )
+        data = EmbeddingData(ad, "umap")
+        p = (
+            ScatterPlotter()
+            .set_source(data)
+            .with_grid(labels=False, coords=True, grid_size=12)
+            .without_borders()
+            .style(dot_size=0.1)
+            .zeros(dot_size=0.1)
+            .panel_size(3, 3)
+            .colormap_discrete(colors_13)
+            .plot("cat13")
+        )
+        assert_image(p, width=5, height=4, dpi=300)
+
+    def test_14_categories_panel_3x3(self, ad, assert_image):
+        """14-category legend with panel_size(3,3) saved at width=5, height=4 — triggers overflow."""
+        from mbf_singlecell_plotter import EmbeddingData, ScatterPlotter
+
+        colors_14 = [
+            "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
+            "#911eb4", "#42d4f4", "#f032e6", "#bfef45", "#fabed4",
+            "#469990", "#dcbeff", "#9A6324", "#800000",
+        ]
+
+        n = len(ad.obs)
+        ad.obs["cat14"] = pd.Categorical(
+            [f"CellType_{i:02d}" for i in np.arange(n) % 14]
+        )
+        data = EmbeddingData(ad, "umap")
+        p = (
+            ScatterPlotter()
+            .set_source(data)
+            .with_grid(labels=False, coords=True, grid_size=12)
+            .without_borders()
+            .style(dot_size=0.1)
+            .zeros(dot_size=0.1)
+            .panel_size(3, 3)
+            .colormap_discrete(colors_14)
+            .plot("cat14")
+        )
+        assert_image(p, width=5, height=4, dpi=300)

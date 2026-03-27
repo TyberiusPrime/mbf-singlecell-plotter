@@ -214,13 +214,21 @@ def assert_plotnine_matches(
     tolerance: float = DEFAULT_TOLERANCE,
     pixel_threshold: int = DEFAULT_PIXEL_THRESHOLD,
     dpi: int = 100,
+    width: float = None,
+    height: float = None,
 ) -> None:
     """Same as assert_image_matches but for a plotnine plot object."""
     import io
     from PIL import Image
 
+    save_kwargs = dict(format="png", dpi=dpi, verbose=False)
+    if width is not None:
+        save_kwargs["width"] = width
+    if height is not None:
+        save_kwargs["height"] = height
+
     buf = io.BytesIO()
-    p.save(buf, format="png", dpi=dpi, verbose=False)
+    p.save(buf, **save_kwargs)
     buf.seek(0)
     actual = np.array(Image.open(buf).convert("RGB"))
 
