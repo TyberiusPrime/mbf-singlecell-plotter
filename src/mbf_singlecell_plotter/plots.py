@@ -1187,6 +1187,38 @@ class ScatterPlotter:
 
         return p
 
+    def save_interactive_moran(
+        self,
+        column: str,
+        output_path,
+        n_bins: int = 40,
+        min_cells: int = 3,
+        k: int = 20,
+        min_moran: float = 0.2,
+    ) -> None:
+        """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
+
+        Renders the scatter for *column*, then overlays an invisible grid.
+        Hovering over a cell highlights it and shows its top-k spatially coherent
+        marker genes in a panel below.  Clicking locks the selection; clicking
+        the same cell deactivates it; clicking another cell switches to it.
+
+        Args:
+            column:      Gene or obs column to plot.
+            output_path: Destination ``.html`` file path.
+            n_bins:      Moran's I grid resolution (default 40).
+            min_cells:   Minimum cells per bin (default 3).
+            k:           Marker genes stored per region (default 20).
+            min_moran:   Minimum Moran's I threshold (default 0.2).
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .save_interactive_moran()")
+        from .interactive import save_interactive_moran as _impl
+        _impl(
+            self, column, output_path,
+            n_bins=n_bins, min_cells=min_cells, k=k, min_moran=min_moran,
+        )
+
     def plot_grid_histogram(
         self,
         column: str,
