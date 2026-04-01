@@ -1695,22 +1695,27 @@ class ScatterPlotter:
                     **extra,
                 )
 
+        # When panel height is fixed, switch to multi-column legend if the
+        # categories would overflow the available vertical space.
+        ncol = 1
+        if self._fixed_panel_size is not None:
+            panel_h = self._fixed_panel_size[1]
+            n_cats = len(cats)
+            title_pt = self.base_size * 2.5
+            available_pt = panel_h * 72 - title_pt
+            default_key_h = self.base_size * 1.2  # plotnine default ≈ 14.4 pt
+            max_per_col = max(1, int(available_pt / default_key_h))
+            if n_cats > max_per_col:
+                ncol = -(-n_cats // max_per_col)  # ceiling division
+
         p = p + p9.scale_color_manual(
             values=color_values,
             name=expr_name,
             guide=p9.guide_legend(
-                override_aes={"size": self._legend_dot_size, "shape": "o"}
+                override_aes={"size": self._legend_dot_size, "shape": "o"},
+                ncol=ncol,
             ),
         )
-
-        if self._fixed_panel_size is not None:
-            panel_h = self._fixed_panel_size[1]
-            n_cats = len(cats)
-            # Budget: panel height minus ~2.5 lines for legend title + padding
-            title_pt = self.base_size * 2.5
-            available_pt = panel_h * 72 - title_pt
-            key_h = max(6.0, min(self.base_size * 1.2, available_pt / n_cats))
-            p = p + p9.theme(legend_key_height=key_h)
 
         return p
 
