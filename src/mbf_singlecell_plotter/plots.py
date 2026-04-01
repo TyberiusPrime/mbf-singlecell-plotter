@@ -1703,6 +1703,15 @@ class ScatterPlotter:
             ),
         )
 
+        if self._fixed_panel_size is not None:
+            panel_h = self._fixed_panel_size[1]
+            n_cats = len(cats)
+            # Budget: panel height minus ~2.5 lines for legend title + padding
+            title_pt = self.base_size * 2.5
+            available_pt = panel_h * 72 - title_pt
+            key_h = max(6.0, min(self.base_size * 1.2, available_pt / n_cats))
+            p = p + p9.theme(legend_key_height=key_h)
+
         return p
 
     def _add_grid_layers(self, p: p9.ggplot) -> p9.ggplot:
