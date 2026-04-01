@@ -1090,6 +1090,103 @@ class ScatterPlotter:
 
         return p
 
+    def plot_moran_markers(
+        self,
+        n_bins: int = 40,
+        min_cells: int = 3,
+        k: int = 20,
+        min_moran: float = 0.2,
+        genes_shown: int = 3,
+        density_bins: int = 100,
+        label_size: float = 7.0,
+    ) -> p9.ggplot:
+        """Build a density heatmap annotated with Moran's I marker genes per region.
+
+        Bins cells into an ``n_bins × n_bins`` grid, computes Moran's I for every
+        gene, and overlays the top-*genes_shown* spatially coherent markers as text
+        labels at each region's bin centre.
+
+        Args:
+            n_bins:        Grid resolution for Moran's I binning (default 40).
+            min_cells:     Minimum cells per bin (default 3).
+            k:             Marker genes computed per region (default 20).
+            min_moran:     Minimum Moran's I to qualify as a marker (default 0.2).
+            genes_shown:   How many gene names to show per label (default 3).
+            density_bins:  Resolution of the density background (default 100).
+            label_size:    Font size for the gene labels (default 7).
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .plot_moran_markers()")
+
+        from .transforms import compute_grid_moran, marker_genes_by_region, prepare_density_df
+
+        data = self._data
+        gene_df = compute_grid_moran(data, n_bins=n_bins, min_cells=min_cells)
+        markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
+
+        # Build per-region label DataFrame (one row per occupied region with markers)
+        if markers:
+            # Use the first gene in each bin to look up the bin centre coordinates
+            first_gene_per_bin = (
+                gene_df[gene_df["top_bin"].isin(markers.keys())]
+                .groupby("top_bin", group_keys=False)
+                .apply(lambda g: g.nlargest(1, "moran_i"))
+            )
+            label_rows = []
+            for _, row in first_gene_per_bin.iterrows():
+                genes = markers[row["top_bin"]][:genes_shown]
+                label_rows.append({
+                    "x":     row["top_bin_x"],
+                    "y":     row["top_bin_y"],
+                    "label": "\n".join(genes),
+                })
+            label_df = pd.DataFrame(label_rows)
+        else:
+            label_df = pd.DataFrame({"x": [], "y": [], "label": []})
+
+        density_df = prepare_density_df(data, bins=density_bins)
+
+        p = (
+            p9.ggplot(density_df, p9.aes("x", "y", fill="density"))
+            + p9.geom_tile(p9.aes(width="x_width", height="y_width"))
+            + p9.scale_fill_gradientn(
+                colors=["#FFFFFF", "#BFBFFF", "#0000FF"],
+                na_value="#FFFFFF",
+                name="density",
+            )
+            + p9.guides(fill="none")
+        )
+
+        if len(label_df) > 0:
+            p = p + p9.geom_label(
+                data=label_df,
+                mapping=p9.aes("x", "y", label="label"),
+                size=label_size,
+                color="#111111",
+                fill="#FFFFFFCC",
+                label_size=0.2,
+                inherit_aes=False,
+            )
+
+        p = p + embedding_theme(
+            base_size=self.base_size,
+            show_spines=self._panel_border,
+            bg_color=self._bg_color,
+            spine_color=self._spine_color,
+        )
+        p = p + p9.theme(figure_size=(7, 6))
+
+        if self._grid_config is not None:
+            p = self._add_grid_layers(p)
+            p = self._add_grid_axis_ticks(p)
+        else:
+            p = self._add_plain_axis_ticks(p)
+
+        if self._embedding_label:
+            p = self._add_embedding_label(p, data)
+
+        return p
+
     def plot_grid_histogram(
         self,
         column: str,

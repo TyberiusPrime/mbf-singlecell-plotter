@@ -193,6 +193,145 @@ def compute_boundaries(
     return bdf
 
 
+def compute_grid_moran(
+    data,
+    n_bins: int = 40,
+    min_cells: int = 3,
+) -> pd.DataFrame:
+    """Compute Moran's I spatial autocorrelation for every gene over a binned UMAP grid.
+
+    Each gene is also assigned a *top bin* — the bin with the highest weighted
+    mean expression score ``mean_expr * log1p(cell_count)``, which balances
+    expression level against bin reliability.
+
+    Args:
+        data:      EmbeddingData instance.
+        n_bins:    Number of equal-width bins per axis (default 40).
+        min_cells: Minimum cells required for a bin to be included (default 3).
+
+    Returns:
+        DataFrame with columns:
+
+        * ``gene``          — gene name
+        * ``moran_i``       — Moran's I statistic (higher → more spatially clustered)
+        * ``top_bin``       — ``(xi, yi)`` integer bin-index tuple of the top bin
+        * ``top_bin_score`` — weighted score of the top bin
+        * ``top_bin_x``     — x coordinate (embedding space) of the top bin centre
+        * ``top_bin_y``     — y coordinate (embedding space) of the top bin centre
+    """
+    from scipy import sparse as sp
+
+    coords = data.coordinates()
+    x = coords["x"].values
+    y = coords["y"].values
+
+    x_edges = np.linspace(x.min(), x.max(), n_bins + 1)
+    y_edges = np.linspace(y.min(), y.max(), n_bins + 1)
+    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
+
+    # 0-indexed bin assignments; clip to [0, n_bins-1]
+    x_bin = np.clip(np.searchsorted(x_edges[1:-1], x), 0, n_bins - 1)
+    y_bin = np.clip(np.searchsorted(y_edges[1:-1], y), 0, n_bins - 1)
+
+    # ── aggregate per occupied bin ────────────────────────────────────────────
+    ad = data.ad
+    X = ad.X  # (n_cells, n_genes) — may be sparse
+
+    cell_df = pd.DataFrame({"xi": x_bin, "yi": y_bin, "ci": np.arange(len(x))})
+    groups = cell_df.groupby(["xi", "yi"])
+
+    bins_xy, counts, grid_expr_rows = [], [], []
+    for (xi, yi), grp in groups:
+        if len(grp) < min_cells:
+            continue
+        bins_xy.append((int(xi), int(yi)))
+        counts.append(len(grp))
+        block = X[grp["ci"].values]
+        row_mean = np.asarray(block.mean(axis=0)).ravel()
+        grid_expr_rows.append(row_mean)
+
+    if len(bins_xy) < 4:
+        raise ValueError(
+            f"Only {len(bins_xy)} occupied bins with min_cells={min_cells}. "
+            "Reduce min_cells or increase n_bins."
+        )
+
+    grid_expr = np.vstack(grid_expr_rows)   # (B, G)
+    counts = np.array(counts)
+    B = len(bins_xy)
+    bin_index = {b: i for i, b in enumerate(bins_xy)}
+
+    # ── queen-contiguity weights among occupied bins ──────────────────────────
+    rows_w, cols_w = [], []
+    for i, (xi, yi) in enumerate(bins_xy):
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                j = bin_index.get((xi + dx, yi + dy))
+                if j is not None:
+                    rows_w.append(i)
+                    cols_w.append(j)
+
+    W = sp.csr_matrix(
+        (np.ones(len(rows_w)), (rows_w, cols_w)), shape=(B, B)
+    )
+    row_sums = np.asarray(W.sum(axis=1)).ravel()
+    row_sums[row_sums == 0] = 1.0
+    W = W.multiply(1.0 / row_sums[:, None])
+    S0 = float(W.sum())
+
+    # ── Moran's I, all genes simultaneously ──────────────────────────────────
+    Z = grid_expr - grid_expr.mean(axis=0)   # (B, G)
+    WZ = W @ Z                                # (B, G)
+    numerator = (Z * WZ).sum(axis=0)
+    denominator = (Z ** 2).sum(axis=0)
+    moran_i = (B / S0) * numerator / np.maximum(denominator, 1e-12)
+
+    # ── top bin per gene (weighted by log1p cell count) ───────────────────────
+    score = grid_expr * np.log1p(counts)[:, None]   # (B, G)
+    top_idx = score.argmax(axis=0)                  # (G,)
+
+    gene_names = list(ad.var_names)
+    G = len(gene_names)
+    top_bins = [bins_xy[i] for i in top_idx]
+    top_bin_xs = [x_centers[b[0]] for b in top_bins]
+    top_bin_ys = [y_centers[b[1]] for b in top_bins]
+
+    return pd.DataFrame({
+        "gene":          gene_names,
+        "moran_i":       moran_i,
+        "top_bin":       top_bins,
+        "top_bin_score": score[top_idx, np.arange(G)],
+        "top_bin_x":     top_bin_xs,
+        "top_bin_y":     top_bin_ys,
+    })
+
+
+def marker_genes_by_region(
+    gene_df: pd.DataFrame,
+    k: int = 20,
+    min_moran: float = 0.2,
+) -> dict:
+    """Group genes by their top bin and return the top-k by Moran's I per region.
+
+    Args:
+        gene_df:   Output of :func:`compute_grid_moran`.
+        k:         Maximum number of marker genes per region.
+        min_moran: Minimum Moran's I threshold (genes below this are excluded).
+
+    Returns:
+        Dict mapping ``(xi, yi)`` bin-index tuple → list of gene names (descending
+        Moran's I order, up to *k* entries).
+    """
+    filtered = gene_df[gene_df["moran_i"] >= min_moran]
+    result = {}
+    for bin_key, grp in filtered.groupby("top_bin"):
+        result[bin_key] = grp.nlargest(k, "moran_i")["gene"].tolist()
+    return result
+
+
 def _corner_to_bounds(corner, ref_data):
     """Return ``(xl, xr, yb, yt)`` for a region corner in reference embedding space.
 

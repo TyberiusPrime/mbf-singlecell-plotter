@@ -393,6 +393,33 @@ class EmbeddingData:
         centers.index.name = col_name
         return centers
 
+    def moran_markers(
+        self,
+        n_bins: int = 40,
+        min_cells: int = 3,
+        k: int = 20,
+        min_moran: float = 0.2,
+    ) -> dict:
+        """Identify marker genes per UMAP region using Moran's I spatial autocorrelation.
+
+        Bins cells into an ``n_bins × n_bins`` grid, computes Moran's I for every
+        gene across occupied bins, and returns the top-*k* spatially coherent genes
+        for each region.
+
+        Args:
+            n_bins:    Grid resolution per axis (default 40).
+            min_cells: Minimum cells per bin (default 3).
+            k:         Maximum marker genes per region (default 20).
+            min_moran: Minimum Moran's I to qualify as a marker (default 0.2).
+
+        Returns:
+            Dict mapping ``(xi, yi)`` bin-index tuple → list of gene names.
+        """
+        from .transforms import compute_grid_moran, marker_genes_by_region
+
+        gene_df = compute_grid_moran(self, n_bins=n_bins, min_cells=min_cells)
+        return marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
+
     def grid_local_histogram(
         self,
         key: str,
