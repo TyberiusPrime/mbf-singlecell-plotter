@@ -471,7 +471,7 @@ h1 {{
     panel.querySelectorAll('.copy-btn').forEach(btn => {{
       btn.addEventListener('click', () => {{
         const names = c.genes.map(g => g.name);
-        const text = btn.dataset.copy === 'newline' ? names.join('\n') : names.join(', ');
+        const text = btn.dataset.copy === 'newline' ? names.join('\\n') : names.join(', ');
         navigator.clipboard.writeText(text).then(() => flashBtn(btn));
       }});
     }});
