@@ -493,6 +493,11 @@ class ScatterPlotter:
         self._zero_dot_size: float = 3
         self._zero_value: Optional[float] = None
 
+        # background layer (all cells, fixed colour, behind data)
+        self._background_enabled: bool = False
+        self._background_color: str = "#D0D0D0"
+        self._background_dot_size: float = 1
+
         # categorical colormap
         self._cat_colors: Optional[list] = None  # None → DEFAULT_COLORS_CATEGORIES
         self._cat_colors_title: Optional[str] = None  # None → auto from column name
@@ -699,6 +704,28 @@ class ScatterPlotter:
             new._zero_dot_size = dot_size
         if max_zero_value is not DoNotUpdate:
             new._zero_value = max_zero_value
+        return new
+
+    def background(
+        self,
+        *,
+        enabled: bool = True,
+        color=DoNotUpdate,
+        dot_size=DoNotUpdate,
+    ) -> "ScatterPlotter":
+        """Add a background layer plotting all cells in a fixed colour behind the data.
+
+        Args:
+            enabled:   Turn the background layer on (True) or off (False).
+            color:     Dot colour for all background cells (default ``"#D0D0D0"``).
+            dot_size:  Dot size for background cells (default 1).
+        """
+        new = copy.copy(self)
+        new._background_enabled = enabled
+        if color is not DoNotUpdate:
+            new._background_color = color
+        if dot_size is not DoNotUpdate:
+            new._background_dot_size = dot_size
         return new
 
     # ── borders ──────────────────────────────────────────────────────────────
@@ -1750,6 +1777,10 @@ class ScatterPlotter:
         ):
             p = self._add_border_layers(p)
 
+        # Background layer (all cells, fixed colour, behind data)
+        if self._background_enabled:
+            p = self._add_background_layer(p, df)
+
         # Zero underlay
         if self._layer_zeros and len(df_zeros) > 0:
             p = p + p9.geom_point(
@@ -1858,6 +1889,10 @@ class ScatterPlotter:
         ):
             p = self._add_border_layers(p)
 
+        # Background layer (all cells, fixed colour, behind data)
+        if self._background_enabled:
+            p = self._add_background_layer(p, df)
+
         # Scatter
         if self._layer_data:
             p = p + p9.geom_point(size=self._dot_size)
@@ -1910,6 +1945,18 @@ class ScatterPlotter:
         )
 
         return p
+
+    def _add_background_layer(self, p: p9.ggplot, df: pd.DataFrame) -> p9.ggplot:
+        """Add a fixed-colour layer of all cells behind the data layers."""
+        bg_df = df[["x", "y"]].copy()
+        return p + p9.geom_point(
+            data=bg_df,
+            mapping=p9.aes("x", "y"),
+            color=self._background_color,
+            size=self._background_dot_size,
+            inherit_aes=False,
+            show_legend=False,
+        )
 
     def _add_grid_layers(self, p: p9.ggplot) -> p9.ggplot:
         gc = self._grid_config
