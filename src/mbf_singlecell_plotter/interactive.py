@@ -107,7 +107,7 @@ def save_interactive_moran(
 
     # ── Set up grid (bins match EmbeddingData grid cells 1:1) ────────────────
     from collections import defaultdict, Counter
-    from .data import _parse_grid_label
+    from .data import _LETTERS
 
     data_full = data.unfocus()
     gs  = data_full._grid_size
@@ -115,8 +115,22 @@ def save_interactive_moran(
     x_min_d, x_max_d, y_min_d, y_max_d = data_full.full_bounds()
     cell_w = (x_max_d - x_min_d) / gs
     cell_h = (y_max_d - y_min_d) / gs
-    x_centers = np.array([x_min_d + (i + 0.5) * cell_w for i in range(gs)])
-    y_centers = np.array([y_min_d + (i + 0.5) * cell_h for i in range(gs)])
+
+    # Use the same searchsorted binning as compute_grid_moran so counts are
+    # consistent with which bin each cell actually falls into.
+    all_coords = data_full.coordinates()
+    x_edges = np.linspace(x_min_d, x_max_d, gs + 1)
+    y_edges = np.linspace(y_min_d, y_max_d, gs + 1)
+    xi_all = np.clip(np.searchsorted(x_edges[1:-1], all_coords["x"].values), 0, gs - 1)
+    yi_all = np.clip(np.searchsorted(y_edges[1:-1], all_coords["y"].values), 0, gs - 1)
+    bin_cell_counts: Counter = Counter(zip(xi_all.tolist(), yi_all.tolist()))
+
+    def _bin_to_label(xi: int, yi: int) -> str:
+        """Convert (xi, yi) bin indices directly to a grid label."""
+        row_from_top = gs - 1 - yi   # yi=0 is bottom → last row from top
+        if glv:
+            return f"{_LETTERS[row_from_top]}{xi + 1}"
+        return f"{_LETTERS[xi]}{row_from_top + 1}"
 
     # ── Compute marker genes ──────────────────────────────────────────────────
     gene_df = compute_grid_moran(
@@ -125,33 +139,28 @@ def save_interactive_moran(
     markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
     gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
 
-    # ── Count cells per EmbeddingData grid cell ───────────────────────────────
-    label_cell_counts = Counter(data_full.grid_coordinates().values)
-
-    # ── Map bin (xi, yi) → grid label ────────────────────────────────────────
-    grid_cell_genes: dict = defaultdict(list)   # label → [(gene, moran_i)]
+    # ── Map bin (xi, yi) → gene list (index arithmetic, no coordinate lookup) ─
+    grid_cell_genes: dict = defaultdict(list)   # (xi,yi) → [(gene, score)]
     for (xi, yi), genes in markers.items():
-        cx = float(x_centers[int(xi)])
-        cy = float(y_centers[int(yi)])
-        try:
-            label = data_full.grid_coordinate(cx, cy)
-        except Exception:
-            continue
         for g in genes:
-            grid_cell_genes[label].append((g, float(gene_moran.get(g, 0.0))))
+            grid_cell_genes[(int(xi), int(yi))].append(
+                (g, float(gene_moran.get(g, 0.0)))
+            )
 
-    # ── Build overlay cells (one rect per EmbeddingData grid cell) ────────────
+    # ── Build overlay cells for ALL occupied bins ─────────────────────────────
     cells = []
-    for label, gene_list in grid_cell_genes.items():
-        col_idx, row_from_top = _parse_grid_label(label, gs, glv)
+    for (xi, yi), n_cells in sorted(bin_cell_counts.items()):
+        label = _bin_to_label(xi, yi)
+        row_from_top = gs - 1 - yi
 
         # Data-space bounds of this grid cell
-        x0_d = x_min_d + col_idx * cell_w
+        x0_d = x_min_d + xi * cell_w
         x1_d = x0_d + cell_w
-        y1_d = y_max_d - row_from_top * cell_h       # top edge in data coords
-        y0_d = y1_d - cell_h                          # bottom edge
+        y1_d = y_max_d - row_from_top * cell_h   # top edge in data coords
+        y0_d = y1_d - cell_h                      # bottom edge
 
-        # Deduplicate genes, sort by Moran's I descending, cap at k
+        # Genes (may be empty if none pass the threshold)
+        gene_list = grid_cell_genes.get((xi, yi), [])
         seen: set = set()
         deduped = []
         for gene, mi in sorted(gene_list, key=lambda t: -t[1]):
@@ -170,7 +179,7 @@ def save_interactive_moran(
             "x": round(svg_x, 1), "y": round(svg_y, 1),
             "w": round(svg_rect_w, 1), "h": round(svg_rect_h, 1),
             "genes": deduped,
-            "n_cells": label_cell_counts.get(label, 0),
+            "n_cells": n_cells,
         })
 
     # ── Debug overlay elements ────────────────────────────────────────────────
@@ -248,10 +257,9 @@ def _build_html(
     overlay_rects = "\n    ".join(rect_tags)
 
     placeholder = (
-        "No regions with Moran&#8217;s I above threshold &mdash; "
-        "try lowering <code>min_moran</code> or <code>min_cells</code>."
+        "No cells found in embedding."
         if not cells
-        else "Hover over a highlighted region to see marker genes."
+        else "Hover over a region to see its cell count and marker genes."
     )
 
     return f"""<!DOCTYPE html>
@@ -407,25 +415,29 @@ h1 {{
     const c = CELLS[idx];
     const n = c.genes.length;
     const nc = c.n_cells || 0;
-    const chips = c.genes.map(g => {{
-      const url = geneUrl(g.name);
-      const cls = url ? 'chip link' : 'chip';
-      const data = url ? ` data-gene="${{g.name}}" data-url="${{url}}"` : '';
-      return `<span class="${{cls}}"${{data}}><span>${{g.name}}</span>` +
-             `<span class="mi">I\u202f=\u202f${{g.mi.toFixed(3)}}</span></span>`;
-    }}).join('');
     const cellPart = nc > 0
-      ? `${{nc.toLocaleString()}}\u202fcell${{nc === 1 ? '' : 's'}} \u00b7 `
+      ? `${{nc.toLocaleString()}}\u202fcell${{nc === 1 ? '' : 's'}}`
+      : '';
+    const genePart = n > 0
+      ? `${{n}}\u202fmarker gene${{n === 1 ? '' : 's'}}`
+      : 'no marker genes above threshold';
+    const sep = cellPart && n > 0 ? ' \u00b7 ' : '';
+    const body = n > 0
+      ? `<div class="chips">${{c.genes.map(g => {{
+          const url = geneUrl(g.name);
+          const cls = url ? 'chip link' : 'chip';
+          const da = url ? ` data-gene="${{g.name}}" data-url="${{url}}"` : '';
+          return `<span class="${{cls}}"${{da}}><span>${{g.name}}</span>` +
+                 `<span class="mi">I\u202f=\u202f${{g.mi.toFixed(3)}}</span></span>`;
+        }}).join('')}}</div>`
       : '';
     panel.innerHTML =
-      `<div class="hdr">Region ${{c.label}} \u2014 ${{cellPart}}` +
-      `${{n}}\u202fmarker gene${{n === 1 ? '' : 's'}}</div>` +
-      `<div class="chips">${{chips}}</div>`;
+      `<div class="hdr">Region ${{c.label}} \u2014 ${{cellPart}}${{sep}}${{genePart}}</div>${{body}}`;
   }}
 
   function clearPanel() {{
     panel.innerHTML =
-      '<span class="ph">Hover over a highlighted region to see marker genes.</span>';
+      '<span class="ph">Hover over a region to see its cell count and marker genes.</span>';
     imgWrap.style.display = 'none';
   }}
 
