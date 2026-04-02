@@ -4,6 +4,24 @@ import copy
 from dataclasses import dataclass, field
 from typing import Optional
 
+
+class _DoNotUpdateType:
+    """Sentinel type — distinguishes 'not supplied' from explicit None."""
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self):
+        return "DoNotUpdate"
+
+
+#: Pass this as a default argument value to mean "leave the existing setting unchanged".
+DoNotUpdate = _DoNotUpdateType()
+
 import numpy as np
 import pandas as pd
 import plotnine as p9
@@ -477,6 +495,7 @@ class ScatterPlotter:
 
         # categorical colormap
         self._cat_colors: Optional[list] = None  # None → DEFAULT_COLORS_CATEGORIES
+        self._cat_colors_title: Optional[str] = None  # None → auto from column name
 
         # layer visibility
         self._layer_borders: bool = True
@@ -588,21 +607,21 @@ class ScatterPlotter:
     def outlier(
         self,
         *,
-        shape: Optional[str] = None,
-        quantile: Optional[float] = None,
+        shape=DoNotUpdate,
+        quantile=DoNotUpdate,
     ) -> "ScatterPlotter":
         """Configure the categorical outlier replot pass.
 
         Args:
             shape:    Marker shape for outlier points (e.g. ``"^"``, ``"D"``).
-                      None keeps the same shape as the main scatter dots.
+                      ``None`` resets to the same shape as main scatter dots.
             quantile: Distance quantile above which a point is an outlier
                       (default 0.95).
         """
         new = copy.copy(self)
-        if shape is not None:
+        if shape is not DoNotUpdate:
             new._outlier_shape = shape
-        if quantile is not None:
+        if quantile is not DoNotUpdate:
             new._outlier_quantile = quantile
         return new
 
@@ -610,40 +629,57 @@ class ScatterPlotter:
 
     def colormap(
         self,
-        cmap=None,
+        cmap=DoNotUpdate,
         *,
-        max_quantile: float = 0.95,
-        upper_clip_color: str = "#FF0000",
-        title: Optional[str] = None,
+        max_quantile=DoNotUpdate,
+        upper_clip_color=DoNotUpdate,
+        title=DoNotUpdate,
     ) -> "ScatterPlotter":
         """Configure the continuous colormap.
 
         cmap may be a list of color strings, a matplotlib colormap, or None
-        (default: black→blue→magenta).
+        (default: black→blue→magenta).  Pass ``None`` explicitly to reset to
+        the default palette.  Unspecified arguments are left unchanged.
         """
         new = copy.copy(self)
-        new._cmap = cmap
-        new._max_quantile = max_quantile
-        new._upper_clip_color = upper_clip_color
-        new._cbar_title = title
+        if cmap is not DoNotUpdate:
+            new._cmap = cmap
+        if max_quantile is not DoNotUpdate:
+            new._max_quantile = max_quantile
+        if upper_clip_color is not DoNotUpdate:
+            new._upper_clip_color = upper_clip_color
+        if title is not DoNotUpdate:
+            new._cbar_title = title
         return new
 
     # ── categorical colors ───────────────────────────────────────────────────
 
-    def colormap_discrete(self, cmap_or_list_or_dict) -> "ScatterPlotter":
-        """Set the discrete color palette for categorical data.
+    def colormap_discrete(
+        self,
+        cmap_or_list_or_dict=DoNotUpdate,
+        *,
+        title=DoNotUpdate,
+    ) -> "ScatterPlotter":
+        """Set the discrete color palette and/or legend title for categorical data.
 
-        Accepts:
+        cmap_or_list_or_dict accepts:
         - A list of hex color strings (positional, cycling).
         - A dict mapping category name → hex color string.
         - A matplotlib ``ListedColormap`` or similar (uses ``.colors``).
+        - ``DoNotUpdate`` (default) — leave the palette unchanged.
+
+        title: Legend title for the color scale.  ``None`` resets to the
+        auto-derived column name; ``DoNotUpdate`` leaves the current title.
         """
         new = copy.copy(self)
-        if isinstance(cmap_or_list_or_dict, (dict, list)):
-            new._cat_colors = cmap_or_list_or_dict
-        else:
-            # Assume matplotlib ListedColormap or similar
-            new._cat_colors = list(cmap_or_list_or_dict.colors)
+        if cmap_or_list_or_dict is not DoNotUpdate:
+            if isinstance(cmap_or_list_or_dict, (dict, list)):
+                new._cat_colors = cmap_or_list_or_dict
+            else:
+                # Assume matplotlib ListedColormap or similar
+                new._cat_colors = list(cmap_or_list_or_dict.colors)
+        if title is not DoNotUpdate:
+            new._cat_colors_title = title
         return new
 
     # ── zero handling ────────────────────────────────────────────────────────
@@ -651,17 +687,17 @@ class ScatterPlotter:
     def zeros(
         self,
         *,
-        color: Optional[str] = None,
-        dot_size: Optional[float] = None,
-        max_zero_value: Optional[float] = None,
+        color=DoNotUpdate,
+        dot_size=DoNotUpdate,
+        max_zero_value=DoNotUpdate,
     ) -> "ScatterPlotter":
         """Configure zero-value rendering (appearance only; use layers(zeros=) to toggle visibility)."""
         new = copy.copy(self)
-        if color is not None:
+        if color is not DoNotUpdate:
             new._zero_color = color
-        if dot_size is not None:
+        if dot_size is not DoNotUpdate:
             new._zero_dot_size = dot_size
-        if max_zero_value is not None:
+        if max_zero_value is not DoNotUpdate:
             new._zero_value = max_zero_value
         return new
 
@@ -713,10 +749,10 @@ class ScatterPlotter:
     def layers(
         self,
         *,
-        borders: Optional[bool] = None,
-        zeros: Optional[bool] = None,
-        data: Optional[bool] = None,
-        outliers: Optional[bool] = None,
+        borders=DoNotUpdate,
+        zeros=DoNotUpdate,
+        data=DoNotUpdate,
+        outliers=DoNotUpdate,
     ) -> "ScatterPlotter":
         """Toggle individual rendering layers.
 
@@ -729,13 +765,13 @@ class ScatterPlotter:
             outliers: Show/hide the categorical outlier replot pass.
         """
         new = copy.copy(self)
-        if borders is not None:
+        if borders is not DoNotUpdate:
             new._layer_borders = borders
-        if zeros is not None:
+        if zeros is not DoNotUpdate:
             new._layer_zeros = zeros
-        if data is not None:
+        if data is not DoNotUpdate:
             new._layer_data = data
-        if outliers is not None:
+        if outliers is not DoNotUpdate:
             new._layer_outliers = outliers
         return new
 
@@ -889,17 +925,19 @@ class ScatterPlotter:
     # ── embedding label ───────────────────────────────────────────────────────
 
     def with_embedding_label(
-        self, show: bool = True, size: Optional[float] = None
+        self, show: bool = True, size=DoNotUpdate
     ) -> "ScatterPlotter":
         """Show the embedding name in the lower-left corner of each plot.
 
         Args:
             show: Whether to show the label (default True).
             size: Font size in points. Defaults to half the base font size.
+                  ``DoNotUpdate`` leaves the current size unchanged.
         """
         new = copy.copy(self)
         new._embedding_label = show
-        new._embedding_label_size = size
+        if size is not DoNotUpdate:
+            new._embedding_label_size = size
         return new
 
     # ── terminal ─────────────────────────────────────────────────────────────
@@ -1864,7 +1902,7 @@ class ScatterPlotter:
 
         p = p + p9.scale_color_manual(
             values=color_values,
-            name=expr_name,
+            name=self._cat_colors_title if self._cat_colors_title is not None else expr_name,
             guide=p9.guide_legend(
                 override_aes={"size": self._legend_dot_size, "shape": "o"},
                 ncol=ncol,

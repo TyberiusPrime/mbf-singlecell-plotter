@@ -342,6 +342,27 @@ h1 {{
   margin-bottom: 8px;
   font-size: 13px;
 }}
+#panel .hdr-row {{
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}}
+#panel .hdr-row .hdr {{ margin-bottom: 0; }}
+.copy-btn {{
+  font-size: 11px;
+  padding: 1px 7px;
+  border: 1px solid #b0b8d8;
+  border-radius: 3px;
+  background: #eef2ff;
+  color: #2244aa;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.6;
+  transition: background .1s;
+}}
+.copy-btn:hover {{ background: #dde6ff; }}
+.copy-btn.ok {{ background: #d4f0d4; border-color: #7bc47b; color: #1a6e1a; }}
 #panel .chips {{
   display: flex;
   flex-wrap: wrap;
@@ -411,6 +432,13 @@ h1 {{
     return GENE_URL ? GENE_URL.replace('{{gene}}', encodeURIComponent(name)) : null;
   }}
 
+  function flashBtn(btn) {{
+    btn.classList.add('ok');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => {{ btn.textContent = orig; btn.classList.remove('ok'); }}, 1200);
+  }}
+
   function renderGenes(idx) {{
     const c = CELLS[idx];
     const n = c.genes.length;
@@ -422,6 +450,10 @@ h1 {{
       ? `${{n}}\u202fmarker gene${{n === 1 ? '' : 's'}}`
       : 'no marker genes above threshold';
     const sep = cellPart && n > 0 ? ' \u00b7 ' : '';
+    const copyBtns = n > 0
+      ? `<button class="copy-btn" data-copy="newline">Copy \u21b5</button>` +
+        `<button class="copy-btn" data-copy="comma">Copy ,</button>`
+      : '';
     const body = n > 0
       ? `<div class="chips">${{c.genes.map(g => {{
           const url = geneUrl(g.name);
@@ -432,7 +464,17 @@ h1 {{
         }}).join('')}}</div>`
       : '';
     panel.innerHTML =
-      `<div class="hdr">Region ${{c.label}} \u2014 ${{cellPart}}${{sep}}${{genePart}}</div>${{body}}`;
+      `<div class="hdr-row">` +
+        `<span class="hdr">Region ${{c.label}} \u2014 ${{cellPart}}${{sep}}${{genePart}}</span>` +
+        copyBtns +
+      `</div>${{body}}`;
+    panel.querySelectorAll('.copy-btn').forEach(btn => {{
+      btn.addEventListener('click', () => {{
+        const names = c.genes.map(g => g.name);
+        const text = btn.dataset.copy === 'newline' ? names.join('\n') : names.join(', ');
+        navigator.clipboard.writeText(text).then(() => flashBtn(btn));
+      }});
+    }});
   }}
 
   function clearPanel() {{
