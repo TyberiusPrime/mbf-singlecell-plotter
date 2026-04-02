@@ -1196,6 +1196,9 @@ class ScatterPlotter:
         k: int = 20,
         min_moran: float = 0.2,
         dpi: int = 150,
+        debug: bool = False,
+        gene_url: str | None = None,
+        gene_url_inline: bool = False,
     ) -> None:
         """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
 
@@ -1209,20 +1212,28 @@ class ScatterPlotter:
         :meth:`panel_size` has already been called on this plotter.
 
         Args:
-            column:      Gene or obs column to plot.
-            output_path: Destination ``.html`` file path.
-            n_bins:      Moran's I grid resolution (default 40).
-            min_cells:   Minimum cells per bin (default 3).
-            k:           Marker genes stored per region (default 20).
-            min_moran:   Minimum Moran's I threshold (default 0.2).
-            dpi:         PNG resolution for the scatter image (default 150).
+            column:           Gene or obs column to plot.
+            output_path:      Destination ``.html`` file path.
+            n_bins:           Moran's I grid resolution (default 40).
+            min_cells:        Minimum cells per bin (default 3).
+            k:                Marker genes stored per region (default 20).
+            min_moran:        Minimum Moran's I threshold (default 0.2).
+            dpi:              PNG resolution for the scatter image (default 150).
+            gene_url:         URL template for gene links.  ``{gene}`` is
+                              replaced with the gene name.  When ``None``
+                              (default) genes are plain text.
+            gene_url_inline:  If ``True`` the linked resource is displayed in
+                              an ``<img>`` panel below rather than opened in a
+                              new browser tab (default ``False``).
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .save_interactive_moran()")
         from .interactive import save_interactive_moran as _impl
         _impl(
             self, column, output_path,
-            n_bins=n_bins, min_cells=min_cells, k=k, min_moran=min_moran, dpi=dpi,
+            n_bins=n_bins, min_cells=min_cells, k=k, min_moran=min_moran,
+            dpi=dpi, debug=debug,
+            gene_url=gene_url, gene_url_inline=gene_url_inline,
         )
 
     def plot_grid_histogram(

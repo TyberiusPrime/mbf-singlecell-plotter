@@ -18,6 +18,9 @@ def save_interactive_moran(
     k: int = 20,
     min_moran: float = 0.2,
     dpi: int = 150,
+    debug: bool = False,
+    gene_url: str | None = None,
+    gene_url_inline: bool = False,
 ) -> None:
     """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
 
@@ -109,41 +112,109 @@ def save_interactive_moran(
     markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
     gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
 
-    # Grid labels use the EmbeddingData grid system (unfocused for full coverage)
+    # ── Map Moran's I results onto EmbeddingData grid cells ───────────────────
+    # Each Moran's I bin maps to a grid cell label (e.g. "A3").  Multiple bins
+    # can share the same label; we aggregate and deduplicate their genes.
+    from collections import defaultdict
+    from .data import _parse_grid_label
+
     data_full = data.unfocus()
+    gs  = data_full._grid_size
+    glv = data_full._grid_letters_on_vertical
+    x_min_d, x_max_d, y_min_d, y_max_d = data_full.full_bounds()
+    cell_w = (x_max_d - x_min_d) / gs
+    cell_h = (y_max_d - y_min_d) / gs
 
-    # ── Build per-cell overlay data ───────────────────────────────────────────
-    cells = []
+    grid_cell_genes: dict = defaultdict(list)   # label → [(gene, moran_i)]
     for (xi, yi), genes in markers.items():
-        xi, yi = int(xi), int(yi)
-        x0_d, x1_d = x_edges[xi], x_edges[xi + 1]
-        y0_d, y1_d = y_edges[yi], y_edges[yi + 1]
-        cx, cy = float(x_centers[xi]), float(y_centers[yi])
-
+        cx = float(x_centers[int(xi)])
+        cy = float(y_centers[int(yi)])
         try:
-            grid_label = data_full.grid_coordinate(cx, cy)
+            label = data_full.grid_coordinate(cx, cy)
         except Exception:
-            grid_label = f"{xi},{yi}"
+            continue
+        for g in genes:
+            grid_cell_genes[label].append((g, float(gene_moran.get(g, 0.0))))
 
-        # SVG rect: x/y is top-left corner; higher data-y → smaller SVG y
+    # ── Build overlay cells (one rect per EmbeddingData grid cell) ────────────
+    cells = []
+    for label, gene_list in grid_cell_genes.items():
+        col_idx, row_from_top = _parse_grid_label(label, gs, glv)
+
+        # Data-space bounds of this grid cell
+        x0_d = x_min_d + col_idx * cell_w
+        x1_d = x0_d + cell_w
+        y1_d = y_max_d - row_from_top * cell_h       # top edge in data coords
+        y0_d = y1_d - cell_h                          # bottom edge
+
+        # Deduplicate genes, sort by Moran's I descending, cap at k
+        seen: set = set()
+        deduped = []
+        for gene, mi in sorted(gene_list, key=lambda t: -t[1]):
+            if gene not in seen:
+                seen.add(gene)
+                deduped.append({"name": gene, "mi": round(mi, 3)})
+        deduped = deduped[:k]
+
         svg_x = _dx(x0_d)
         svg_y = _dy(y1_d)
         svg_rect_w = _dx(x1_d) - svg_x
-        svg_rect_h = _dy(y0_d) - svg_y   # positive: y0_d < y1_d ⟹ _dy(y0_d) > _dy(y1_d)
+        svg_rect_h = _dy(y0_d) - svg_y
 
-        gene_entries = [
-            {"name": g, "mi": round(float(gene_moran.get(g, 0.0)), 3)}
-            for g in genes
-        ]
         cells.append({
-            "label": grid_label,
-            "xi": xi, "yi": yi,
+            "label": label,
             "x": round(svg_x, 1), "y": round(svg_y, 1),
             "w": round(svg_rect_w, 1), "h": round(svg_rect_h, 1),
-            "genes": gene_entries,
+            "genes": deduped,
         })
 
-    html = _build_html(img_b64, css_w, css_h, cells, column)
+    # ── Debug overlay elements ────────────────────────────────────────────────
+    debug_svg = ""
+    if debug:
+        # 1. Red dashed rect: computed axes bounding box
+        debug_svg += (
+            f'<!-- axes bbox -->'
+            f'<rect x="{ax_left:.1f}" y="{ax_top:.1f}"'
+            f' width="{ax_right - ax_left:.1f}" height="{ax_bottom - ax_top:.1f}"'
+            f' fill="none" stroke="red" stroke-width="2"'
+            f' stroke-dasharray="6 3" pointer-events="none"/>'
+        )
+        # Corner labels: data coords at the four corners of the axes
+        corners = [
+            (ax_left,  ax_top,    f"{xlim[0]:.2f},{ylim[1]:.2f}", "start", "hanging"),
+            (ax_right, ax_top,    f"{xlim[1]:.2f},{ylim[1]:.2f}", "end",   "hanging"),
+            (ax_left,  ax_bottom, f"{xlim[0]:.2f},{ylim[0]:.2f}", "start", "auto"),
+            (ax_right, ax_bottom, f"{xlim[1]:.2f},{ylim[0]:.2f}", "end",   "auto"),
+        ]
+        for cx2, cy2, lbl, anchor, baseline in corners:
+            debug_svg += (
+                f'<text x="{cx2:.1f}" y="{cy2:.1f}" font-size="9"'
+                f' fill="red" text-anchor="{anchor}"'
+                f' dominant-baseline="{baseline}"'
+                f' pointer-events="none">{lbl}</text>'
+            )
+
+        # 2. Blue outlines for ALL EmbeddingData grid cells — these should
+        #    align exactly with the visible grid lines in the scatter plot.
+        for col_idx in range(gs):
+            for row_from_top in range(gs):
+                x0_d = x_min_d + col_idx * cell_w
+                x1_d = x0_d + cell_w
+                y1_d = y_max_d - row_from_top * cell_h
+                y0_d = y1_d - cell_h
+                rx = _dx(x0_d)
+                ry = _dy(y1_d)
+                rw = _dx(x1_d) - rx
+                rh = _dy(y0_d) - ry
+                debug_svg += (
+                    f'<rect x="{rx:.1f}" y="{ry:.1f}"'
+                    f' width="{rw:.1f}" height="{rh:.1f}"'
+                    f' fill="none" stroke="rgba(0,80,220,.35)"'
+                    f' stroke-width="0.6" pointer-events="none"/>'
+                )
+
+    html = _build_html(img_b64, css_w, css_h, cells, column, debug_svg,
+                       gene_url=gene_url, gene_url_inline=gene_url_inline)
     Path(output_path).write_text(html, encoding="utf-8")
 
 
@@ -153,8 +224,14 @@ def _build_html(
     css_h: int,
     cells: list,
     column: str,
+    debug_svg: str = "",
+    *,
+    gene_url: str | None = None,
+    gene_url_inline: bool = False,
 ) -> str:
     cells_json = json.dumps(cells, separators=(",", ":"))
+    gene_url_js = json.dumps(gene_url or "")
+    gene_url_inline_js = "true" if (gene_url and gene_url_inline) else "false"
 
     rect_tags = []
     for i, c in enumerate(cells):
@@ -273,6 +350,24 @@ h1 {{
   color: #778;
   letter-spacing: -.3px;
 }}
+.chip.link {{
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}}
+.chip.link:hover {{
+  background: #dde6ff;
+  border-color: #99b;
+}}
+#img-wrap {{
+  margin-top: 10px;
+  display: none;
+}}
+#img-wrap img {{
+  max-width: 100%;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}}
 </style>
 </head>
 <body>
@@ -282,24 +377,37 @@ h1 {{
   <svg id="overlay" xmlns="http://www.w3.org/2000/svg"
        viewBox="0 0 {css_w} {css_h}">
     {overlay_rects}
+    {debug_svg}
   </svg>
 </div>
 <div id="panel"><span class="ph">{placeholder}</span></div>
+<div id="img-wrap"><img id="img-el" src="" alt="gene image"></div>
 
 <script>
 (function () {{
   const CELLS = {cells_json};
+  const GENE_URL = {gene_url_js};
+  const GENE_URL_INLINE = {gene_url_inline_js};
   const panel = document.getElementById('panel');
+  const imgWrap = document.getElementById('img-wrap');
+  const imgEl  = document.getElementById('img-el');
   const rects = [...document.querySelectorAll('#overlay .gc')];
   let active = null;   // index into rects / CELLS, or null
+
+  function geneUrl(name) {{
+    return GENE_URL ? GENE_URL.replace('{{gene}}', encodeURIComponent(name)) : null;
+  }}
 
   function renderGenes(idx) {{
     const c = CELLS[idx];
     const n = c.genes.length;
-    const chips = c.genes.map(g =>
-      `<span class="chip"><span>${{g.name}}</span>` +
-      `<span class="mi">I\u202f=\u202f${{g.mi.toFixed(3)}}</span></span>`
-    ).join('');
+    const chips = c.genes.map(g => {{
+      const url = geneUrl(g.name);
+      const cls = url ? 'chip link' : 'chip';
+      const data = url ? ` data-gene="${{g.name}}" data-url="${{url}}"` : '';
+      return `<span class="${{cls}}"${{data}}><span>${{g.name}}</span>` +
+             `<span class="mi">I\u202f=\u202f${{g.mi.toFixed(3)}}</span></span>`;
+    }}).join('');
     panel.innerHTML =
       `<div class="hdr">Region ${{c.label}} \u2014 ` +
       `${{n}}\u202fmarker gene${{n === 1 ? '' : 's'}}</div>` +
@@ -309,7 +417,22 @@ h1 {{
   function clearPanel() {{
     panel.innerHTML =
       '<span class="ph">Hover over a highlighted region to see marker genes.</span>';
+    imgWrap.style.display = 'none';
   }}
+
+  // Gene chip clicks (event delegation on panel)
+  panel.addEventListener('click', (e) => {{
+    const chip = e.target.closest('.chip.link');
+    if (!chip) return;
+    const url = chip.dataset.url;
+    if (!url) return;
+    if (GENE_URL_INLINE) {{
+      imgEl.src = url;
+      imgWrap.style.display = 'block';
+    }} else {{
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }}
+  }});
 
   rects.forEach((el, i) => {{
     el.addEventListener('mouseenter', () => {{
