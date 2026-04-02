@@ -179,6 +179,17 @@ class TestPlotScatterCategorical:
         )
         assert_image(p)
 
+    def test_background_categorical_facet(self, plotter_no_boundary, assert_image):
+        p = (
+            plotter_no_boundary.style(dot_size=.1)
+            .background(color="#CCCCCC", dot_size=DOT_SIZE)
+            .facet('leiden')
+            #.layerz(zeros=False)
+            .plot(CAT_COL)
+        )
+        assert_image(p)
+
+
 
 # ---------------------------------------------------------------------------
 # plot_density
