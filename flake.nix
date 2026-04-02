@@ -100,6 +100,25 @@
         }
       );
 
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          venv = pythonSets.${system}.mkVirtualEnv "mbf-singlecell-plotter-test-env" workspace.deps.all;
+        in
+        {
+          pytest = pkgs.stdenv.mkDerivation {
+            name = "mbf-singlecell-plotter-tests";
+            src = ./.;
+            buildInputs = [ venv ];
+            buildPhase = ''
+              ${venv}/bin/pytest tests/ -x -v 2>&1
+            '';
+            installPhase = "touch $out";
+          };
+        }
+      );
+
       packages = forAllSystems (system: {
         default =
           let

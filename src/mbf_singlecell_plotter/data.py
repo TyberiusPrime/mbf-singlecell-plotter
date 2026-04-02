@@ -6,6 +6,7 @@ from typing import NamedTuple, Optional
 
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 from natsort import natsorted
 
 from .util import map_to_integers, unmap
@@ -222,26 +223,31 @@ class EmbeddingData:
         ad = self.ad
         if name in ad.obs:
             return ColumnData(ad.obs[name], name)
+
+        def _extract(mask, col_name=None):
+            idx = np.nonzero(mask)[0][0]
+            if col_name is None:
+                col_name = ad.var.index[idx]
+            col = ad.X[:, idx]
+            if sp.issparse(col):
+                col = col.toarray().ravel()
+            else:
+                col = np.asarray(col).ravel()
+            return ColumnData(pd.Series(col, index=ad.obs_names), col_name)
+
         if name in ad.var.index:
-            pdf = ad[:, ad.var.index == name].to_df()
-            return ColumnData(pdf[name], name)
+            return _extract(ad.var.index == name, name)
         if self._alternative_id_column is not None and self._alternative_id_column in ad.var.columns:
             alt_hits = ad.var[self._alternative_id_column] == name
             if alt_hits.sum() == 1:
-                pdf = ad[:, alt_hits].to_df()
-                col = pdf.columns[0]
-                return ColumnData(pdf[col], col)
+                return _extract(alt_hits)
         if self._has_name_and_id:
             name_hits = ad.var.index.str.startswith(name + " ")
             if name_hits.sum() == 1:
-                pdf = ad[:, name_hits].to_df()
-                col = pdf.columns[0]
-                return ColumnData(pdf[col], col)
+                return _extract(name_hits)
             id_hits = ad.var.index.str.endswith(" " + name)
             if id_hits.sum() == 1:
-                pdf = ad[:, id_hits].to_df()
-                col = pdf.columns[0]
-                return ColumnData(pdf[col], col)
+                return _extract(id_hits)
         raise KeyError(f"Column or gene {name!r} not found")
 
     def coordinates(self) -> pd.DataFrame:
