@@ -1191,22 +1191,24 @@ class ScatterPlotter:
         self,
         column: str,
         output_path,
-        n_bins: int = 40,
         min_cells: int = 3,
         k: int = 20,
         min_moran: float = 0.2,
+        var_score_column: str | None = None,
         dpi: int = 150,
         debug: bool = False,
         gene_url: str | None = None,
         gene_url_inline: bool = False,
     ) -> None:
-        """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
+        """Save an interactive HTML scatter plot with marker gene tooltips.
 
         Renders the scatter for *column* as a PNG, then overlays an invisible
         grid.  Hovering over a cell highlights it (yellow tint) and shows its
-        top-k spatially coherent marker genes in a panel below.  Clicking locks
-        the selection; clicking the same cell deactivates it; clicking another
-        cell switches to it.
+        top-k marker genes in a panel below.  Clicking locks the selection;
+        clicking the same cell deactivates it; clicking another cell switches.
+
+        The spatial binning resolution is taken from the plotter's grid size so
+        that bins align exactly with the visible grid cells.
 
         The data panel defaults to 5 × 5 in (square) unless
         :meth:`panel_size` has already been called on this plotter.
@@ -1214,10 +1216,15 @@ class ScatterPlotter:
         Args:
             column:           Gene or obs column to plot.
             output_path:      Destination ``.html`` file path.
-            n_bins:           Moran's I grid resolution (default 40).
             min_cells:        Minimum cells per bin (default 3).
             k:                Marker genes stored per region (default 20).
-            min_moran:        Minimum Moran's I threshold (default 0.2).
+            min_moran:        Minimum score to qualify as a marker (default 0.2).
+                              Applied to Moran's I or to *var_score_column* values.
+            var_score_column: Column in ``adata.var`` to use as the gene score
+                              instead of computing Moran's I on the fly (e.g.
+                              ``"moranI"`` or ``"highly_variable_rank"``).
+                              Must be numeric; higher = more informative.
+                              When ``None`` (default), Moran's I is computed.
             dpi:              PNG resolution for the scatter image (default 150).
             gene_url:         URL template for gene links.  ``{gene}`` is
                               replaced with the gene name.  When ``None``
@@ -1231,7 +1238,8 @@ class ScatterPlotter:
         from .interactive import save_interactive_moran as _impl
         _impl(
             self, column, output_path,
-            n_bins=n_bins, min_cells=min_cells, k=k, min_moran=min_moran,
+            min_cells=min_cells, k=k, min_moran=min_moran,
+            var_score_column=var_score_column,
             dpi=dpi, debug=debug,
             gene_url=gene_url, gene_url_inline=gene_url_inline,
         )

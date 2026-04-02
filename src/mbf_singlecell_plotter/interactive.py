@@ -13,7 +13,6 @@ def save_interactive_moran(
     column: str,
     output_path,
     *,
-    n_bins: int = 40,
     min_cells: int = 3,
     k: int = 20,
     min_moran: float = 0.2,
@@ -37,7 +36,6 @@ def save_interactive_moran(
         plotter:          Configured :class:`~mbf_singlecell_plotter.ScatterPlotter`.
         column:           Gene or obs column passed to :meth:`~ScatterPlotter.plot`.
         output_path:      Destination ``.html`` path (string or Path).
-        n_bins:           Moran's I grid resolution (default 40).
         min_cells:        Minimum cells per bin (default 3).
         k:                Marker genes stored per region (default 20).
         min_moran:        Minimum score threshold to qualify as a marker (default 0.2).
@@ -107,24 +105,7 @@ def save_interactive_moran(
     plt.close(fig)
     img_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-    # ── Compute Moran's I marker genes ────────────────────────────────────────
-    coords = data.coordinates()
-    x_vals = coords["x"].values
-    y_vals = coords["y"].values
-    x_edges = np.linspace(x_vals.min(), x_vals.max(), n_bins + 1)
-    y_edges = np.linspace(y_vals.min(), y_vals.max(), n_bins + 1)
-    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
-    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
-
-    gene_df = compute_grid_moran(
-        data, n_bins=n_bins, min_cells=min_cells, var_score_column=var_score_column
-    )
-    markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
-    gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
-
-    # ── Map Moran's I results onto EmbeddingData grid cells ───────────────────
-    # Each Moran's I bin maps to a grid cell label (e.g. "A3").  Multiple bins
-    # can share the same label; we aggregate and deduplicate their genes.
+    # ── Set up grid (bins match EmbeddingData grid cells 1:1) ────────────────
     from collections import defaultdict, Counter
     from .data import _parse_grid_label
 
@@ -134,10 +115,20 @@ def save_interactive_moran(
     x_min_d, x_max_d, y_min_d, y_max_d = data_full.full_bounds()
     cell_w = (x_max_d - x_min_d) / gs
     cell_h = (y_max_d - y_min_d) / gs
+    x_centers = np.array([x_min_d + (i + 0.5) * cell_w for i in range(gs)])
+    y_centers = np.array([y_min_d + (i + 0.5) * cell_h for i in range(gs)])
+
+    # ── Compute marker genes ──────────────────────────────────────────────────
+    gene_df = compute_grid_moran(
+        data, n_bins=gs, min_cells=min_cells, var_score_column=var_score_column
+    )
+    markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
+    gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
 
     # ── Count cells per EmbeddingData grid cell ───────────────────────────────
     label_cell_counts = Counter(data_full.grid_coordinates().values)
 
+    # ── Map bin (xi, yi) → grid label ────────────────────────────────────────
     grid_cell_genes: dict = defaultdict(list)   # label → [(gene, moran_i)]
     for (xi, yi), genes in markers.items():
         cx = float(x_centers[int(xi)])
