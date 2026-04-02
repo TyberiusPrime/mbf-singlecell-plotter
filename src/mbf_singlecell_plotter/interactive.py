@@ -17,6 +17,7 @@ def save_interactive_moran(
     min_cells: int = 3,
     k: int = 20,
     min_moran: float = 0.2,
+    var_score_column: str | None = None,
     dpi: int = 150,
     debug: bool = False,
     gene_url: str | None = None,
@@ -33,15 +34,22 @@ def save_interactive_moran(
     already has a fixed panel size set via :meth:`~ScatterPlotter.panel_size`.
 
     Args:
-        plotter:     Configured :class:`~mbf_singlecell_plotter.ScatterPlotter`.
-        column:      Gene or obs column passed to :meth:`~ScatterPlotter.plot`.
-        output_path: Destination ``.html`` path (string or Path).
-        n_bins:      Moran's I grid resolution (default 40).
-        min_cells:   Minimum cells per bin (default 3).
-        k:           Marker genes stored per region (default 20).
-        min_moran:   Minimum Moran's I to qualify as marker (default 0.2).
-        dpi:         PNG resolution (default 150).  Display size is always
-                     fixed at 96 dpi CSS pixels regardless of this value.
+        plotter:          Configured :class:`~mbf_singlecell_plotter.ScatterPlotter`.
+        column:           Gene or obs column passed to :meth:`~ScatterPlotter.plot`.
+        output_path:      Destination ``.html`` path (string or Path).
+        n_bins:           Moran's I grid resolution (default 40).
+        min_cells:        Minimum cells per bin (default 3).
+        k:                Marker genes stored per region (default 20).
+        min_moran:        Minimum score threshold to qualify as a marker (default 0.2).
+                          Applied to Moran's I or to *var_score_column* values.
+        var_score_column: Column in ``adata.var`` to use as the gene score instead
+                          of computing Moran's I on the fly.  Pass the column name
+                          (e.g. ``"moranI"`` or ``"highly_variable_rank"``).  The
+                          column must be numeric; higher values = more informative
+                          genes.  When ``None`` (default), Moran's I is computed
+                          from the embedding.
+        dpi:              PNG resolution (default 150).  Display size is always
+                          fixed at 96 dpi CSS pixels regardless of this value.
     """
     from .transforms import compute_grid_moran, marker_genes_by_region
     from .plots import _PlotWithPostDraw
@@ -108,14 +116,16 @@ def save_interactive_moran(
     x_centers = (x_edges[:-1] + x_edges[1:]) / 2
     y_centers = (y_edges[:-1] + y_edges[1:]) / 2
 
-    gene_df = compute_grid_moran(data, n_bins=n_bins, min_cells=min_cells)
+    gene_df = compute_grid_moran(
+        data, n_bins=n_bins, min_cells=min_cells, var_score_column=var_score_column
+    )
     markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
     gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
 
     # ── Map Moran's I results onto EmbeddingData grid cells ───────────────────
     # Each Moran's I bin maps to a grid cell label (e.g. "A3").  Multiple bins
     # can share the same label; we aggregate and deduplicate their genes.
-    from collections import defaultdict
+    from collections import defaultdict, Counter
     from .data import _parse_grid_label
 
     data_full = data.unfocus()
@@ -124,6 +134,9 @@ def save_interactive_moran(
     x_min_d, x_max_d, y_min_d, y_max_d = data_full.full_bounds()
     cell_w = (x_max_d - x_min_d) / gs
     cell_h = (y_max_d - y_min_d) / gs
+
+    # ── Count cells per EmbeddingData grid cell ───────────────────────────────
+    label_cell_counts = Counter(data_full.grid_coordinates().values)
 
     grid_cell_genes: dict = defaultdict(list)   # label → [(gene, moran_i)]
     for (xi, yi), genes in markers.items():
@@ -166,6 +179,7 @@ def save_interactive_moran(
             "x": round(svg_x, 1), "y": round(svg_y, 1),
             "w": round(svg_rect_w, 1), "h": round(svg_rect_h, 1),
             "genes": deduped,
+            "n_cells": label_cell_counts.get(label, 0),
         })
 
     # ── Debug overlay elements ────────────────────────────────────────────────
@@ -401,6 +415,7 @@ h1 {{
   function renderGenes(idx) {{
     const c = CELLS[idx];
     const n = c.genes.length;
+    const nc = c.n_cells || 0;
     const chips = c.genes.map(g => {{
       const url = geneUrl(g.name);
       const cls = url ? 'chip link' : 'chip';
@@ -408,8 +423,11 @@ h1 {{
       return `<span class="${{cls}}"${{data}}><span>${{g.name}}</span>` +
              `<span class="mi">I\u202f=\u202f${{g.mi.toFixed(3)}}</span></span>`;
     }}).join('');
+    const cellPart = nc > 0
+      ? `${{nc.toLocaleString()}}\u202fcell${{nc === 1 ? '' : 's'}} \u00b7 `
+      : '';
     panel.innerHTML =
-      `<div class="hdr">Region ${{c.label}} \u2014 ` +
+      `<div class="hdr">Region ${{c.label}} \u2014 ${{cellPart}}` +
       `${{n}}\u202fmarker gene${{n === 1 ? '' : 's'}}</div>` +
       `<div class="chips">${{chips}}</div>`;
   }}

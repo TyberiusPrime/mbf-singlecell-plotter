@@ -197,6 +197,7 @@ def compute_grid_moran(
     data,
     n_bins: int = 40,
     min_cells: int = 3,
+    var_score_column: str | None = None,
 ) -> pd.DataFrame:
     """Compute Moran's I spatial autocorrelation for every gene over a binned UMAP grid.
 
@@ -205,15 +206,20 @@ def compute_grid_moran(
     expression level against bin reliability.
 
     Args:
-        data:      EmbeddingData instance.
-        n_bins:    Number of equal-width bins per axis (default 40).
-        min_cells: Minimum cells required for a bin to be included (default 3).
+        data:             EmbeddingData instance.
+        n_bins:           Number of equal-width bins per axis (default 40).
+        min_cells:        Minimum cells required for a bin to be included (default 3).
+        var_score_column: If given, use ``adata.var[var_score_column]`` as the gene
+                          score instead of computing Moran's I on the fly.  The
+                          column must be numeric; higher values mean more spatially
+                          informative.  Top-bin spatial assignment is still derived
+                          from the embedding.
 
     Returns:
         DataFrame with columns:
 
         * ``gene``          — gene name
-        * ``moran_i``       — Moran's I statistic (higher → more spatially clustered)
+        * ``moran_i``       — score (Moran's I or the var column values)
         * ``top_bin``       — ``(xi, yi)`` integer bin-index tuple of the top bin
         * ``top_bin_score`` — weighted score of the top bin
         * ``top_bin_x``     — x coordinate (embedding space) of the top bin centre
@@ -260,34 +266,39 @@ def compute_grid_moran(
     grid_expr = np.vstack(grid_expr_rows)   # (B, G)
     counts = np.array(counts)
     B = len(bins_xy)
-    bin_index = {b: i for i, b in enumerate(bins_xy)}
 
-    # ── queen-contiguity weights among occupied bins ──────────────────────────
-    rows_w, cols_w = [], []
-    for i, (xi, yi) in enumerate(bins_xy):
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                if dx == 0 and dy == 0:
-                    continue
-                j = bin_index.get((xi + dx, yi + dy))
-                if j is not None:
-                    rows_w.append(i)
-                    cols_w.append(j)
+    if var_score_column is not None:
+        # Use pre-computed scores from adata.var — skip Moran's I computation
+        moran_i = np.asarray(ad.var[var_score_column].values, dtype=float)
+    else:
+        bin_index = {b: i for i, b in enumerate(bins_xy)}
 
-    W = sp.csr_matrix(
-        (np.ones(len(rows_w)), (rows_w, cols_w)), shape=(B, B)
-    )
-    row_sums = np.asarray(W.sum(axis=1)).ravel()
-    row_sums[row_sums == 0] = 1.0
-    W = W.multiply(1.0 / row_sums[:, None])
-    S0 = float(W.sum())
+        # ── queen-contiguity weights among occupied bins ──────────────────────
+        rows_w, cols_w = [], []
+        for i, (xi, yi) in enumerate(bins_xy):
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    j = bin_index.get((xi + dx, yi + dy))
+                    if j is not None:
+                        rows_w.append(i)
+                        cols_w.append(j)
 
-    # ── Moran's I, all genes simultaneously ──────────────────────────────────
-    Z = grid_expr - grid_expr.mean(axis=0)   # (B, G)
-    WZ = W @ Z                                # (B, G)
-    numerator = (Z * WZ).sum(axis=0)
-    denominator = (Z ** 2).sum(axis=0)
-    moran_i = (B / S0) * numerator / np.maximum(denominator, 1e-12)
+        W = sp.csr_matrix(
+            (np.ones(len(rows_w)), (rows_w, cols_w)), shape=(B, B)
+        )
+        row_sums = np.asarray(W.sum(axis=1)).ravel()
+        row_sums[row_sums == 0] = 1.0
+        W = W.multiply(1.0 / row_sums[:, None])
+        S0 = float(W.sum())
+
+        # ── Moran's I, all genes simultaneously ──────────────────────────────
+        Z = grid_expr - grid_expr.mean(axis=0)   # (B, G)
+        WZ = W @ Z                                # (B, G)
+        numerator = (Z * WZ).sum(axis=0)
+        denominator = (Z ** 2).sum(axis=0)
+        moran_i = (B / S0) * numerator / np.maximum(denominator, 1e-12)
 
     # ── top bin per gene (weighted by log1p cell count) ───────────────────────
     score = grid_expr * np.log1p(counts)[:, None]   # (B, G)
