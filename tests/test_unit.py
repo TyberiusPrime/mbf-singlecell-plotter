@@ -476,3 +476,33 @@ class TestFocusOn:
         assert grid2_data.focus_on("B2", "A1").bounds() == pytest.approx(
             grid2_data.focus_on("A1", "B2").bounds()
         )
+
+
+# ---------------------------------------------------------------------------
+# ScatterPlotter.background()
+# ---------------------------------------------------------------------------
+
+
+class TestBackground:
+    def test_default_off(self):
+        p = ScatterPlotter()
+        assert p._background_enabled is False
+
+    def test_enable(self):
+        p = ScatterPlotter().background()
+        assert p._background_enabled is True
+
+    def test_color_and_size(self):
+        p = ScatterPlotter().background(color="#AABBCC", dot_size=0.3)
+        assert p._background_color == "#AABBCC"
+        assert p._background_dot_size == pytest.approx(0.3)
+
+    def test_immutable(self):
+        original = ScatterPlotter()
+        updated = original.background(color="#FF0000")
+        assert original._background_enabled is False
+        assert updated._background_color == "#FF0000"
+
+    def test_disable(self):
+        p = ScatterPlotter().background().background(enabled=False)
+        assert p._background_enabled is False

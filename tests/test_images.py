@@ -109,6 +109,15 @@ class TestPlotScatterNumerical:
 
         assert_image(np.concatenate([pad_h(a), pad_h(b)], axis=1))
 
+    def test_background_numerical(self, plotter_no_boundary, assert_image):
+        p = (
+            plotter_no_boundary.style(dot_size=.1)
+            .background(color="#00FF00", dot_size=DOT_SIZE)
+            .layers(zeros=False)
+            .plot("S100A8")
+        )
+        assert_image(p)
+
     def test_returns_ggplot(self, plotter_no_boundary):
         import plotnine as p9
 
@@ -157,6 +166,15 @@ class TestPlotScatterCategorical:
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
             .flip_draw_order(True)
+            .plot(CAT_COL)
+        )
+        assert_image(p)
+
+    def test_background_categorical(self, plotter_no_boundary, assert_image):
+        p = (
+            plotter_no_boundary.style(dot_size=.1)
+            .background(color="#CCCCCC", dot_size=DOT_SIZE)
+            #.layerz(zeros=False)
             .plot(CAT_COL)
         )
         assert_image(p)
