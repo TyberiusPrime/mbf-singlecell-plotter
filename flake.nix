@@ -131,16 +131,17 @@
             venv = pythonSets.${system}.mkVirtualEnv "mbf-singlecell-plotter-env" workspace.deps.all;
             pkgs = nixpkgs.legacyPackages.${system};
           in
-            venv;
-          # pkgs.stdenv.mkDerivation {
-          #   name = "mbf-singlecell-plotter-${system}";
-          #   buildInputs = [ venv ];
-          #   unpackPhase = ":";
-          #   installPhase = ''
-          #     mkdir -p $out/bin
-          #     ln -s ${pythonSets.${system}.python.interpreter} $out/bin/mbf-singlecell-plotter
-          #   '';
-          # };
+          pkgs.stdenv.mkDerivation {
+            name = "mbf-singlecell-plotter-${system}";
+            buildInputs = [ venv ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            unpackPhase = ":";
+            installPhase = ''
+              mkdir -p $out/bin
+              makeWrapper ${venv}/bin/python $out/bin/mbf-singlecell-plotter \
+                --suffix PATH : ${lib.makeBinPath [ (h5ad_inspect.packages.${system}.h5ad-inspect) ]}
+            '';
+          };
       });
     };
 }

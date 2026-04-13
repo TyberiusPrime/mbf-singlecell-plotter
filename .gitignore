@@ -3,3 +3,4 @@ tests/failures/
 *.egg-info
 debug_interactive_debug.html
 debug_interactive_plain.html
+result
