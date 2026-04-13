@@ -1,0 +1,225 @@
+"""Tests for the h5ad-inspect backed data source.
+
+These tests exercise _H5adFacade + EmbeddingData (via set_source) against the
+same example file used by the rest of the test suite.  All tests are
+automatically skipped when h5ad-inspect is not on PATH.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+from pathlib import Path
+
+from mbf_singlecell_plotter import (
+    EmbeddingData,
+    ScatterPlotter,
+    is_h5ad_inspect_available,
+)
+from mbf_singlecell_plotter.h5ad_source import _H5adFacade
+
+EXAMPLE_H5AD = (
+    Path(__file__).parent.parent / "example_data" / "scanpy-pbmc3k_stripped.h5ad"
+)
+
+pytestmark = pytest.mark.skipif(
+    not is_h5ad_inspect_available(),
+    reason="h5ad-inspect not on PATH",
+)
+
+
+# ── fixtures ──────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def facade():
+    return _H5adFacade(EXAMPLE_H5AD)
+
+
+@pytest.fixture(scope="module")
+def ed(facade):
+    return EmbeddingData(facade, "umap")
+
+
+# ── is_h5ad_inspect_available ────────────────────────────────────────────────
+
+
+def test_availability_returns_bool():
+    assert isinstance(is_h5ad_inspect_available(), bool)
+
+
+def test_availability_true_when_binary_present():
+    # If we reach this point the marker hasn't skipped us, so it must be True.
+    assert is_h5ad_inspect_available() is True
+
+
+# ── facade basics ────────────────────────────────────────────────────────────
+
+
+class TestFacadeIndices:
+    def test_obs_names_length(self, facade):
+        assert len(facade.obs_names) == 2638
+
+    def test_obs_names_type(self, facade):
+        assert isinstance(facade.obs_names, pd.Index)
+
+    def test_obs_names_first_cell(self, facade):
+        assert facade.obs_names[0] == "AAACATACAACCAC-1"
+
+    def test_var_names_present(self, facade):
+        assert len(facade.var_names) > 0
+        assert isinstance(facade.var_names, pd.Index)
+
+    def test_obsm_keys_include_umap(self, facade):
+        assert "X_umap" in facade.obsm
+
+    def test_obsm_keys_include_pca(self, facade):
+        assert "X_pca" in facade.obsm
+
+
+# ── obs column types ──────────────────────────────────────────────────────────
+
+
+class TestObsColumns:
+    """Covers categorical, numeric, and (via ScatterPlotter) the full pathway."""
+
+    def test_categorical_column_dtype(self, facade):
+        s = facade.obs["leiden"]
+        assert isinstance(s.dtype, pd.CategoricalDtype), (
+            f"Expected CategoricalDtype, got {s.dtype}"
+        )
+
+    def test_categorical_column_length(self, facade):
+        s = facade.obs["leiden"]
+        assert len(s) == len(facade.obs_names)
+
+    def test_categorical_column_values_are_strings(self, facade):
+        s = facade.obs["leiden"]
+        # Each category label should be a string (e.g. '0', '1', ..., '8')
+        for cat in s.cat.categories:
+            assert isinstance(cat, str)
+
+    def test_numeric_column_dtype(self, facade):
+        s = facade.obs["n_genes"]
+        assert pd.api.types.is_numeric_dtype(s)
+
+    def test_numeric_column_positive(self, facade):
+        s = facade.obs["n_genes"]
+        assert (s > 0).all()
+
+    def test_numeric_column_total_counts(self, facade):
+        s = facade.obs["total_counts"]
+        assert pd.api.types.is_numeric_dtype(s)
+        assert (s > 0).all()
+
+    def test_obs_contains(self, facade):
+        assert "leiden" in facade.obs
+        assert "n_genes" in facade.obs
+        assert "__nonexistent__" not in facade.obs
+
+
+# ── obsm (embedding) ─────────────────────────────────────────────────────────
+
+
+class TestObsm:
+    def test_umap_shape(self, facade):
+        arr = facade.obsm["X_umap"]
+        assert arr.shape == (2638, 2)
+
+    def test_umap_dtype_float(self, facade):
+        arr = facade.obsm["X_umap"]
+        assert np.issubdtype(arr.dtype, np.floating)
+
+    def test_pca_has_many_components(self, facade):
+        arr = facade.obsm["X_pca"]
+        assert arr.shape[0] == 2638
+        assert arr.shape[1] >= 2
+
+    def test_missing_key_raises(self, facade):
+        with pytest.raises(KeyError):
+            facade.obsm["X_nonexistent"]
+
+
+# ── X matrix (binary gene-expression) ────────────────────────────────────────
+
+
+class TestXBinary:
+    def test_column_length(self, facade):
+        # First gene in var_index
+        col = facade.X[:, 0]
+        assert len(col) == len(facade.obs_names)
+
+    def test_column_dtype_float64(self, facade):
+        col = facade.X[:, 0]
+        assert col.dtype == np.float64
+
+    def test_column_writable(self, facade):
+        col = facade.X[:, 0]
+        # np.frombuffer produces read-only; the facade must return a copy
+        col[0] = col[0]  # should not raise ValueError
+
+
+# ── EmbeddingData integration ─────────────────────────────────────────────────
+
+
+class TestEmbeddingDataFromFacade:
+    def test_coordinates_shape(self, ed):
+        coords = ed.coordinates()
+        assert coords.shape == (2638, 2)
+        assert set(coords.columns) == {"x", "y"}
+
+    def test_get_categorical_column(self, ed):
+        series, name = ed.get_column("leiden")
+        assert name == "leiden"
+        assert isinstance(series.dtype, pd.CategoricalDtype)
+        assert len(series) == 2638
+
+    def test_get_numeric_column(self, ed):
+        series, name = ed.get_column("n_genes")
+        assert name == "n_genes"
+        assert pd.api.types.is_numeric_dtype(series)
+
+    def test_get_gene_expression(self, ed):
+        # CST3 is in the stripped example file
+        series, name = ed.get_column("CST3")
+        assert name == "CST3"
+        assert series.dtype == np.float64
+        assert len(series) == 2638
+
+    def test_missing_column_raises(self, ed):
+        with pytest.raises(KeyError):
+            ed.get_column("__definitely_not_there__")
+
+
+# ── ScatterPlotter.set_source with path ───────────────────────────────────────
+
+
+class TestSetSourcePath:
+    def test_string_path(self):
+        plotter = ScatterPlotter().set_source(
+            str(EXAMPLE_H5AD), embedding="umap"
+        )
+        series, name = plotter.get_column("leiden")
+        assert isinstance(series.dtype, pd.CategoricalDtype)
+
+    def test_pathlib_path(self):
+        plotter = ScatterPlotter().set_source(EXAMPLE_H5AD, embedding="umap")
+        series, name = plotter.get_column("n_genes")
+        assert pd.api.types.is_numeric_dtype(series)
+
+    def test_plot_categorical_runs(self):
+        plotter = (
+            ScatterPlotter()
+            .set_source(EXAMPLE_H5AD, embedding="umap")
+            .without_grid()
+        )
+        p = plotter.plot("leiden")
+        assert p is not None
+
+    def test_plot_numeric_runs(self):
+        plotter = (
+            ScatterPlotter()
+            .set_source(EXAMPLE_H5AD, embedding="umap")
+            .without_grid()
+        )
+        p = plotter.plot("n_genes")
+        assert p is not None

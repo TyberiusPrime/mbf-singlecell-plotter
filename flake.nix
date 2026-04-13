@@ -21,6 +21,9 @@
       inputs.uv2nix.follows = "uv2nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    h5ad_inspect = {
+      url = "github:tyberiusPrime/h5ad_inspect";
+    };
   };
 
   outputs =
@@ -29,6 +32,7 @@
       pyproject-nix,
       uv2nix,
       pyproject-build-systems,
+      h5ad_inspect,
       ...
     }:
     let
@@ -86,6 +90,7 @@
             packages = [
               virtualenv
               pkgs.uv
+              (h5ad_inspect.packages.${system}.h5ad-inspect)
             ];
             env = {
               UV_NO_SYNC = "1";
@@ -111,6 +116,7 @@
             name = "mbf-singlecell-plotter-tests";
             src = ./.;
             buildInputs = [ venv ];
+            nativeBuildInputs = [ (h5ad_inspect.packages.${system}.h5ad-inspect) ];
             buildPhase = ''
               ${venv}/bin/pytest tests/ -x -v 2>&1
             '';

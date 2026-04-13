@@ -2,6 +2,7 @@
 
 import copy
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 
@@ -523,6 +524,10 @@ class ScatterPlotter:
         if ad_or_data is not None:
             if isinstance(ad_or_data, EmbeddingData):
                 self._data = ad_or_data
+            elif isinstance(ad_or_data, (str, Path)):
+                from .h5ad_source import _require_h5ad_inspect, _H5adFacade
+                _require_h5ad_inspect()
+                self._data = EmbeddingData(_H5adFacade(Path(ad_or_data)), embedding)
             else:
                 self._data = EmbeddingData(ad_or_data, embedding)
 
@@ -533,7 +538,7 @@ class ScatterPlotter:
         ad_or_data,
         embedding: str = "umap",
     ) -> "ScatterPlotter":
-        """Attach data source. Accepts AnnData or an existing EmbeddingData."""
+        """Attach data source. Accepts AnnData, EmbeddingData, or a path to an .h5ad file."""
         new = copy.copy(self)
         if isinstance(ad_or_data, EmbeddingData):
             new._data = ad_or_data
@@ -545,6 +550,10 @@ class ScatterPlotter:
                 if self._data is not None
                 else False
             )
+            if isinstance(ad_or_data, (str, Path)):
+                from .h5ad_source import _require_h5ad_inspect, _H5adFacade
+                _require_h5ad_inspect()
+                ad_or_data = _H5adFacade(Path(ad_or_data))
             new._data = EmbeddingData(
                 ad_or_data,
                 embedding,
