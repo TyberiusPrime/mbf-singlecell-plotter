@@ -1021,8 +1021,9 @@ class ScatterPlotter:
                 fig_size = (8 if has_border_legend else 6, 5)
 
         # Build plot
+        is_gene = expr_name in data.ad.var.index
         if is_numerical:
-            p = self._build_numerical(df, expr_name)
+            p = self._build_numerical(df, expr_name, is_gene=is_gene)
         else:
             p = self._build_categorical(df, expr_name)
 
@@ -1746,6 +1747,7 @@ class ScatterPlotter:
         self,
         df: pd.DataFrame,
         expr_name: str,
+        is_gene: bool = False,
     ) -> p9.ggplot:
         zero_val = self._zero_value if self._zero_value is not None else 0.0
 
@@ -1816,10 +1818,17 @@ class ScatterPlotter:
 
         # Color scale
         cmap_colors = self._get_cmap_colors()
+        if is_gene:
+            if len(expr_name) <= 15:
+                default_cbar_name = expr_name + ": log2 expression"
+            else:
+                default_cbar_name = expr_name + ":\nlog2 expression"
+        else:
+            default_cbar_name = expr_name
         cbar_name = (
             self._cbar_title
             if self._cbar_title is not None
-            else (expr_name + ": log2 expression")
+            else default_cbar_name
         )
         has_zeros = self._layer_zeros and len(df_zeros) > 0
         has_clips = len(df_above) > 0
