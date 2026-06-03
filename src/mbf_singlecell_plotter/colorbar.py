@@ -28,7 +28,6 @@ class sc_guide_colorbar(guide_colorbar):
     key_height_pt: Optional[float] = None
 
     def draw(self):
-
         # theme + … drops the `targets` attr (set by setup(), not a dataclass
         # field).  Save and restore it so super().draw() can still write to it.
         saved_targets = getattr(self.theme, "targets", None)
@@ -99,15 +98,55 @@ class sc_guide_colorbar(guide_colorbar):
             return coll
 
         if self.zero_color is not None:
-            auxbox.add_artist(_make_box(self.zero_color, -ext_h, 0.0))
-            auxbox.add_artist(
-                Text(text_x, -ext_h / 2, self.zero_label,
-                     fontsize=fontsize, va="center", ha="left")
-            )
+            if self.reverse:
+                auxbox.add_artist(_make_box(self.zero_color, bar_h, bar_h + ext_h))
+                auxbox.add_artist(
+                    Text(
+                        text_x,
+                        bar_h + ext_h / 2,
+                        self.zero_label,
+                        fontsize=fontsize,
+                        va="center",
+                        ha="left",
+                    )
+                )
+            else:
+                auxbox.add_artist(_make_box(self.zero_color, -ext_h, 0.0))
+                auxbox.add_artist(
+                    Text(
+                        text_x,
+                        -ext_h / 2,
+                        self.zero_label,
+                        fontsize=fontsize,
+                        va="center",
+                        ha="left",
+                    )
+                )
 
         if self.upper_clip_color is not None:
-            auxbox.add_artist(_make_box(self.upper_clip_color, bar_h, bar_h + ext_h))
-            auxbox.add_artist(
-                Text(text_x, bar_h + ext_h / 2, self.clip_label,
-                     fontsize=fontsize, va="center", ha="left")
-            )
+            if self.reverse:
+                auxbox.add_artist(_make_box(self.upper_clip_color, -ext_h, 0))
+                auxbox.add_artist(
+                    Text(
+                        text_x,
+                        -ext_h / 2,
+                        self.clip_label,
+                        fontsize=fontsize,
+                        va="center",
+                        ha="left",
+                    )
+                )
+            else:
+                auxbox.add_artist(
+                    _make_box(self.upper_clip_color, bar_h, bar_h + ext_h)
+                )
+                auxbox.add_artist(
+                    Text(
+                        text_x,
+                        bar_h + ext_h / 2,
+                        self.clip_label,
+                        fontsize=fontsize,
+                        va="center",
+                        ha="left",
+                    )
+                )

@@ -123,6 +123,20 @@ plotter.outliers(
 ```
 
 ---
+### Overplotting/anti_overplot (numerical) 
+
+By default, we plot points in order of value, so high values end up on top.
+This allows you to disable the sorting, or reverse it's order.
+
+```python
+plotter.anti_overplot(
+    enabled = True, # True == default
+    ascending = True, # True == default
+)
+```
+
+
+---
 
 ### Layer visibility
 
@@ -208,7 +222,7 @@ plotter.unfocus()
 ### Faceting
 
 ```python
-plotter.facet("batch", n_col=3)
+plotter.facet("batch", n_col=3, dir='v')
 plotter.unfacet()
 ```
 

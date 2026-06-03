@@ -488,6 +488,7 @@ class ScatterPlotter:
         self._tick_color: str = "#555555"
         self._bg_color: str = "#FFFFFF"
         self._anti_overplot: bool = True
+        self._anti_overplot_ascending = True
         self._flip_order: bool = False
         self._outlier_quantile: float = 0.95
         self._outlier_shape: Optional[str] = None  # None → same shape as main dots
@@ -523,6 +524,7 @@ class ScatterPlotter:
         self._boundary_cache: dict = {"df": None}
         self._grid_config: Optional[GridConfig] = GridConfig(coords=True)
         self._facet_variable: Optional[str] = None
+        self._facet_direction: Optional[str] = 'h'
         self._n_col: int = 2
         self._title_override = _UNSET
 
@@ -751,6 +753,20 @@ class ScatterPlotter:
             new._background_dot_size = dot_size
         return new
 
+
+    # overplotting
+
+    def anti_overplot(self, enabled: bool = True, ascending: bool = True) -> "ScatterPlotter":
+        """Toggle anti-overplotting (random jitter + draw order).
+
+        When enabled (default), the values are plotted in order.
+        By default, highest on top, change with ascending=False.  
+        """
+        new = copy.copy(self)
+        new._anti_overplot = enabled
+        new._anti_overplot_ascending = ascending
+        return new
+
     # ── borders ──────────────────────────────────────────────────────────────
 
     def with_borders(
@@ -961,9 +977,12 @@ class ScatterPlotter:
 
     # ── faceting ─────────────────────────────────────────────────────────────
 
-    def facet(self, variable: str, n_col: int = 2) -> "ScatterPlotter":
+    def facet(self, variable: str, n_col: int = 2, dir: str = 'h') -> "ScatterPlotter":
         new = copy.copy(self)
         new._facet_variable = variable
+        if not dir in ('h', 'v'):
+            raise ValueError("dir must be 'h' or 'v'")
+        new._facet_direction = dir
         new._n_col = n_col
         return new
 
@@ -1071,7 +1090,7 @@ class ScatterPlotter:
 
         # Facet
         if self._facet_variable is not None:
-            p = p + p9.facet_wrap("~facet", ncol=self._n_col)
+            p = p + p9.facet_wrap("~facet", ncol=self._n_col, dir=self._facet_direction)
 
         # Title
         if self._title_override is not _UNSET:
@@ -1845,8 +1864,8 @@ class ScatterPlotter:
         df_normal = df_nonzero[df_nonzero["expression"] <= clip_val].copy()
         df_above = df_nonzero[df_nonzero["expression"] > clip_val].copy()
 
-        if self._anti_overplot:
-            df_normal = df_normal.sort_values("expression")
+        if self._anti_overplot is not None:
+            df_normal = df_normal.sort_values("expression", ascending=self._anti_overplot_ascending)
 
         df_normal["expression_plot"] = df_normal["expression"]
 
@@ -1938,6 +1957,7 @@ class ScatterPlotter:
                     if self._fixed_panel_size is not None
                     else None
                 ),
+                reverse = self._anti_overplot_ascending is False
             ),
         )
         return p
