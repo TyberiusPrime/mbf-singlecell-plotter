@@ -71,13 +71,17 @@ def _col_encoding(path: Path, group: str, key: str) -> str:
     return "numeric"
 
 
-def _parse_series(lines: list, name: str, index: pd.Index, encoding: str) -> pd.Series:
+def _parse_series(
+    lines: list, name: str, index: pd.Index, encoding: str, path: Path, h5_group
+) -> pd.Series:
     """Parse text lines from an ``export`` subcommand into a typed Series."""
     if not lines:
         return pd.Series([], index=index, name=name, dtype=object)
 
     if encoding == "categorical":
-        return pd.Series(pd.Categorical(lines), index=index, name=name)
+        # we need to get the categories...
+        cat_order = _run_lines(path, "export", f"{h5_group}_categories", name)
+        return pd.Series(pd.Categorical(lines, cat_order), index=index, name=name)
 
     if encoding == "bool":
         lower = [ln.lower() for ln in lines]
@@ -101,9 +105,7 @@ def _read_obsm(path: Path, key: str) -> np.ndarray:
         if isinstance(item, h5py.Dataset):
             return np.array(item)
         elif isinstance(item, h5py.Group):
-            col_order = list(
-                item.attrs.get("column-order", sorted(item.keys()))
-            )
+            col_order = list(item.attrs.get("column-order", sorted(item.keys())))
             return np.column_stack([np.array(item[c]) for c in col_order])
     raise KeyError(f"obsm key {key!r} not found")  # pragma: no cover
 
@@ -116,7 +118,7 @@ class _ColProxy:
 
     def __init__(self, path: Path, h5_group: str, row_index: pd.Index) -> None:
         self._path = path
-        self._h5_group = h5_group      # "obs" or "var"
+        self._h5_group = h5_group  # "obs" or "var"
         self._index = row_index
         self._available: Optional[set] = None
         self._cache: dict = {}
@@ -137,7 +139,9 @@ class _ColProxy:
         if key not in self._cache:
             lines = _run_lines(self._path, "export", self._h5_group, key)
             encoding = _col_encoding(self._path, self._h5_group, key)
-            self._cache[key] = _parse_series(lines, key, self._index, encoding)
+            self._cache[key] = _parse_series(
+                lines, key, self._index, encoding, self._path, self._h5_group
+            )
         return self._cache[key]
 
 
@@ -201,9 +205,7 @@ class _XProxy:
             _rows, col = idx
             if isinstance(col, (int, np.integer)):
                 gene = str(self._var_names[col])
-                raw = _run_inspect(
-                    self._path, "export", "--binary", "column", gene
-                )
+                raw = _run_inspect(self._path, "export", "--binary", "column", gene)
                 # little-endian float64 bytes → writable numpy array
                 return np.frombuffer(raw, dtype="<f8").copy()
         raise NotImplementedError(
@@ -239,17 +241,13 @@ class _H5adFacade:
     @property
     def obs_names(self) -> pd.Index:
         if self._obs_names is None:
-            self._obs_names = pd.Index(
-                _run_lines(self._path, "export", "obs_index")
-            )
+            self._obs_names = pd.Index(_run_lines(self._path, "export", "obs_index"))
         return self._obs_names
 
     @property
     def var_names(self) -> pd.Index:
         if self._var_names is None:
-            self._var_names = pd.Index(
-                _run_lines(self._path, "export", "var_index")
-            )
+            self._var_names = pd.Index(_run_lines(self._path, "export", "var_index"))
         return self._var_names
 
     @property

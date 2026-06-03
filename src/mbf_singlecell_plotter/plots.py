@@ -176,7 +176,9 @@ def _draw_embedding_color_legend(
         sp.set_color("#777777")
 
 
-def _draw_embedding_label(fig, *, label: str, fontsize: float, color: str = "#777777") -> None:
+def _draw_embedding_label(
+    fig, *, label: str, fontsize: float, color: str = "#777777"
+) -> None:
     """Place a small label outside the panel in the lower-left corner.
 
     x aligns with the left edge of the y-axis tick labels (via tight bbox);
@@ -203,7 +205,9 @@ def _draw_embedding_label(fig, *, label: str, fontsize: float, color: str = "#77
         x_frac = ax.get_position().x0
         y_frac = ax.get_position().y0
 
-    fig.text(x_frac, y_frac, label, ha="left", va="bottom", fontsize=fontsize, color=color)
+    fig.text(
+        x_frac, y_frac, label, ha="left", va="bottom", fontsize=fontsize, color=color
+    )
 
 
 def _draw_numerical_legend(
@@ -352,7 +356,8 @@ def _draw_numerical_legend(
     if border_cats:
         handles = [
             mpl.lines.Line2D(
-                [0], [0],
+                [0],
+                [0],
                 marker="o",
                 color="none",
                 markerfacecolor=color,
@@ -389,7 +394,9 @@ def _draw_numerical_legend(
             # Re-centre the vertical title
             for txt in fig.texts:
                 if txt.get_text() == cbar_title:
-                    txt.set_position((bar_left - title_half, grid_y0 + grid_height * 0.5))
+                    txt.set_position(
+                        (bar_left - title_half, grid_y0 + grid_height * 0.5)
+                    )
                     break
 
     # ── Title ─────────────────────────────────────────────────────────────────
@@ -435,7 +442,9 @@ class BorderConfig:
 
 @dataclass(frozen=True)
 class GridConfig:
-    labels: object = False  # False/None = off, True/"letters" = A1 labels, "coords" = (x,y) labels
+    labels: object = (
+        False  # False/None = off, True/"letters" = A1 labels, "coords" = (x,y) labels
+    )
     coords: bool = False
     vertical_letters: bool = False
     grid_size: int = 12
@@ -521,11 +530,15 @@ class ScatterPlotter:
         self._embedding_label: bool = False
         self._embedding_label_size: Optional[float] = None
 
+        # theme overwrites - passed to p9.theme()
+        self._theme_overwrites = {}
+
         if ad_or_data is not None:
             if isinstance(ad_or_data, EmbeddingData):
                 self._data = ad_or_data
             elif isinstance(ad_or_data, (str, Path)):
                 from .h5ad_source import _require_h5ad_inspect, _H5adFacade
+
                 _require_h5ad_inspect()
                 self._data = EmbeddingData(_H5adFacade(Path(ad_or_data)), embedding)
             else:
@@ -552,6 +565,7 @@ class ScatterPlotter:
             )
             if isinstance(ad_or_data, (str, Path)):
                 from .h5ad_source import _require_h5ad_inspect, _H5adFacade
+
                 _require_h5ad_inspect()
                 ad_or_data = _H5adFacade(Path(ad_or_data))
             new._data = EmbeddingData(
@@ -753,10 +767,17 @@ class ScatterPlotter:
         legend_title: Optional[str] = None,
     ) -> "ScatterPlotter":
         new = copy.copy(self)
-        resolved_colors = tuple(colors) if colors is not None else tuple(DEFAULT_COLORS_BORDERS)
+        resolved_colors = (
+            tuple(colors) if colors is not None else tuple(DEFAULT_COLORS_BORDERS)
+        )
         new._border_config = BorderConfig(
-            size=size, resolution=resolution, blur=blur, threshold=threshold,
-            colors=resolved_colors, legend=legend, legend_dot_size=legend_dot_size,
+            size=size,
+            resolution=resolution,
+            blur=blur,
+            threshold=threshold,
+            colors=resolved_colors,
+            legend=legend,
+            legend_dot_size=legend_dot_size,
             legend_title=legend_title,
         )
         if cell_type_column is not None:
@@ -976,6 +997,21 @@ class ScatterPlotter:
             new._embedding_label_size = size
         return new
 
+    # changing apperance via plotnine theming
+
+    def theme(self, **theme_args):
+        """Change plotnine theming args.
+
+        See https://plotnine.org/reference/#themeables
+        for a list of valid arguments.
+
+        example:
+        p = p.theme(strip_text=p9.element_text(size=24))
+        """
+        new = copy.copy(self)
+        new._theme_overwrites.update(theme_args)
+        return new
+
     # ── terminal ─────────────────────────────────────────────────────────────
 
     def plot(self, column: str) -> p9.ggplot:
@@ -1019,6 +1055,8 @@ class ScatterPlotter:
                 )
                 # Two legends on the right need more width
                 fig_size = (8 if has_border_legend else 6, 5)
+        else:
+            fig_size = self.fig_size
 
         # Build plot
         is_gene = expr_name in data.ad.var.index
@@ -1048,7 +1086,9 @@ class ScatterPlotter:
             bg_color=self._bg_color,
             spine_color=self._spine_color,
         )
-        p = p + p9.theme(figure_size=fig_size, legend_box="horizontal")
+        p = p + p9.theme(
+            figure_size=fig_size, legend_box="horizontal", **self._theme_overwrites
+        )
 
         # Grid axis tick labels (applied after theme so they survive theme_void)
         if self._grid_config is not None and self._grid_config.coords:
@@ -1060,7 +1100,9 @@ class ScatterPlotter:
         if self._fixed_panel_size is not None:
             w, h = self._fixed_panel_size
             p = _ensure_post_draw(p)
-            p._post_draw_fns.append(lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h))
+            p._post_draw_fns.append(
+                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
+            )
 
         # Embedding label (after fixed-panel so tight-bbox reflects final size)
         if self._embedding_label:
@@ -1158,7 +1200,9 @@ class ScatterPlotter:
                 base_size=self.base_size,
             )
             p = _ensure_post_draw(p)
-            p._post_draw_fns.append(lambda fig, _c=legend_config: _draw_numerical_legend(fig, **_c))
+            p._post_draw_fns.append(
+                lambda fig, _c=legend_config: _draw_numerical_legend(fig, **_c)
+            )
 
         if self._embedding_label:
             p = self._add_embedding_label(p, self._data)
@@ -1193,7 +1237,11 @@ class ScatterPlotter:
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_moran_markers()")
 
-        from .transforms import compute_grid_moran, marker_genes_by_region, prepare_density_df
+        from .transforms import (
+            compute_grid_moran,
+            marker_genes_by_region,
+            prepare_density_df,
+        )
 
         data = self._data
         gene_df = compute_grid_moran(data, n_bins=n_bins, min_cells=min_cells)
@@ -1210,11 +1258,13 @@ class ScatterPlotter:
             label_rows = []
             for _, row in first_gene_per_bin.iterrows():
                 genes = markers[row["top_bin"]][:genes_shown]
-                label_rows.append({
-                    "x":     row["top_bin_x"],
-                    "y":     row["top_bin_y"],
-                    "label": "\n".join(genes),
-                })
+                label_rows.append(
+                    {
+                        "x": row["top_bin_x"],
+                        "y": row["top_bin_y"],
+                        "label": "\n".join(genes),
+                    }
+                )
             label_df = pd.DataFrame(label_rows)
         else:
             label_df = pd.DataFrame({"x": [], "y": [], "label": []})
@@ -1311,12 +1361,19 @@ class ScatterPlotter:
         if self._data is None:
             raise RuntimeError("call .set_source() before .save_interactive_moran()")
         from .interactive import save_interactive_moran as _impl
+
         _impl(
-            self, column, output_path,
-            min_cells=min_cells, k=k, min_moran=min_moran,
+            self,
+            column,
+            output_path,
+            min_cells=min_cells,
+            k=k,
+            min_moran=min_moran,
             var_score_column=var_score_column,
-            dpi=dpi, debug=debug,
-            gene_url=gene_url, gene_url_inline=gene_url_inline,
+            dpi=dpi,
+            debug=debug,
+            gene_url=gene_url,
+            gene_url_inline=gene_url_inline,
         )
 
     def plot_grid_histogram(
@@ -1359,9 +1416,7 @@ class ScatterPlotter:
         factor = fill_fraction
         if scale_by_count:
             # sqrt so that linear dimension ∝ sqrt(count) and area ∝ count
-            hdf["cell_factor"] = factor * np.sqrt(
-                hdf["total"] / hdf["total"].max()
-            )
+            hdf["cell_factor"] = factor * np.sqrt(hdf["total"] / hdf["total"].max())
         else:
             hdf["cell_factor"] = factor
 
@@ -1451,7 +1506,9 @@ class ScatterPlotter:
         if self._fixed_panel_size is not None:
             w, h = self._fixed_panel_size
             p = _ensure_post_draw(p)
-            p._post_draw_fns.append(lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h))
+            p._post_draw_fns.append(
+                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
+            )
 
         return p
 
@@ -1538,6 +1595,7 @@ class ScatterPlotter:
         if show_region and region is not None:
             from .transforms import _corner_to_bounds
             import numpy as _np
+
             if len(region) == 2:
                 if isinstance(region[0], str) or isinstance(region[1], str):
                     c1 = _corner_to_bounds(region[0], ref_data)
@@ -1553,7 +1611,9 @@ class ScatterPlotter:
                 # polygon order: tl → tr → br → bl
                 corners = [(xlo, yhi), (xhi, yhi), (xhi, ylo), (xlo, ylo)]
             else:
-                pts4 = sorted([_np.array(c, dtype=float) for c in region], key=lambda p: -p[1])
+                pts4 = sorted(
+                    [_np.array(c, dtype=float) for c in region], key=lambda p: -p[1]
+                )
                 top_two = sorted(pts4[:2], key=lambda pt: pt[0])
                 bot_two = sorted(pts4[2:], key=lambda pt: pt[0])
                 tl_, tr_ = top_two[0], top_two[1]
@@ -1563,7 +1623,9 @@ class ScatterPlotter:
             cx = [c[0] for c in corners] + [corners[0][0]]
             cy = [c[1] for c in corners] + [corners[0][1]]
             region_path_df = pd.DataFrame({"x": cx, "y": cy})
-            region_pts_df = pd.DataFrame({"x": [c[0] for c in corners], "y": [c[1] for c in corners]})
+            region_pts_df = pd.DataFrame(
+                {"x": [c[0] for c in corners], "y": [c[1] for c in corners]}
+            )
             p = p + p9.geom_path(
                 data=region_path_df,
                 mapping=p9.aes(x="x", y="y"),
@@ -1608,13 +1670,21 @@ class ScatterPlotter:
         if self._fixed_panel_size is not None:
             w, h = self._fixed_panel_size
             p = _ensure_post_draw(p)
-            p._post_draw_fns.append(lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h))
+            p._post_draw_fns.append(
+                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
+            )
 
         # 2D colour legend (to the right of the figure)
         if show_legend:
-            _cfg = {"corner_colors": corner_colors, "ref_name": ref_name, "base_size": self.base_size}
+            _cfg = {
+                "corner_colors": corner_colors,
+                "ref_name": ref_name,
+                "base_size": self.base_size,
+            }
             p = _ensure_post_draw(p)
-            p._post_draw_fns.append(lambda fig, _c=_cfg: _draw_embedding_color_legend(fig, **_c))
+            p._post_draw_fns.append(
+                lambda fig, _c=_cfg: _draw_embedding_color_legend(fig, **_c)
+            )
 
         # Embedding label — runs after legend so tight-bbox is stable
         if self._embedding_label:
@@ -1631,11 +1701,13 @@ class ScatterPlotter:
         fontsize = (
             self._embedding_label_size
             if self._embedding_label_size is not None
-            else self.base_size  
+            else self.base_size
         )
         p = _ensure_post_draw(p)
         p._post_draw_fns.append(
-            lambda fig, _l=label, _fs=fontsize: _draw_embedding_label(fig, label=_l, fontsize=_fs)
+            lambda fig, _l=label, _fs=fontsize: _draw_embedding_label(
+                fig, label=_l, fontsize=_fs
+            )
         )
         return p
 
@@ -1736,8 +1808,12 @@ class ScatterPlotter:
                 )
                 + p9.scale_fill_manual(
                     values=cat_to_color,
-                    name=bc.legend_title if bc.legend_title is not None else self._cell_type_column,
-                    guide=p9.guide_legend(override_aes={"alpha": 1, "size": bc.legend_dot_size}),
+                    name=bc.legend_title
+                    if bc.legend_title is not None
+                    else self._cell_type_column,
+                    guide=p9.guide_legend(
+                        override_aes={"alpha": 1, "size": bc.legend_dot_size}
+                    ),
                 )
             )
 
@@ -1826,22 +1902,22 @@ class ScatterPlotter:
         else:
             default_cbar_name = expr_name
         cbar_name = (
-            self._cbar_title
-            if self._cbar_title is not None
-            else default_cbar_name
+            self._cbar_title if self._cbar_title is not None else default_cbar_name
         )
         has_zeros = self._layer_zeros and len(df_zeros) > 0
         has_clips = len(df_above) > 0
         zero_val_str = "0" if abs(zero_val) < 1e-9 else f"{zero_val:.3g}"
         data_min = float(df["expression"].min())
         zero_label = (
-            f"≤{zero_val_str}" if has_zeros and data_min < zero_val - 1e-9
+            f"≤{zero_val_str}"
+            if has_zeros and data_min < zero_val - 1e-9
             else zero_val_str
         )
         # Use MaxNLocator to get ≥7 "nice" break values so that after removing
         # the boundary ticks that duplicate the extension-box labels (1 at each
         # end), at least 5 ticks remain.
         import matplotlib.ticker as _ticker
+
         cbar_breaks = list(
             _ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]).tick_values(
                 zero_val, clip_val
@@ -1955,7 +2031,9 @@ class ScatterPlotter:
 
         p = p + p9.scale_color_manual(
             values=color_values,
-            name=self._cat_colors_title if self._cat_colors_title is not None else expr_name,
+            name=self._cat_colors_title
+            if self._cat_colors_title is not None
+            else expr_name,
             guide=p9.guide_legend(
                 override_aes={"size": self._legend_dot_size, "shape": "o"},
                 ncol=ncol,
