@@ -50,6 +50,11 @@ ScatterPlotter(base_size=12)
 plotter.set_source(ad_or_data, embedding="umap")
 ```
 
+`ad_or_data` can be:
+- an `anndata.AnnData` object
+- a path (`str` or `pathlib.Path`) to an `.h5ad` file — requires [h5ad_inspect](https://github.com/tyberiusPrime/h5ad_inspect) on `PATH`
+- an `EmbeddingData` instance (skips re-wrapping)
+
 `embedding` can be a key in `ad.obsm` (`"umap"` → `"X_umap"`) or a tuple for two PCA components:
 ```python
 plotter.set_source(ad, embedding=("pca", 0, 1))
@@ -315,13 +320,205 @@ for gene in ["S100A8", "LST1", "CST3"]:
 
 ---
 
+## Loading directly from .h5ad files
+
+When [h5ad_inspect](https://github.com/tyberiusPrime/h5ad_inspect) is
+installed, you can pass a file path to `set_source` instead of loading the
+full dataset into memory first:
+
+```python
+plotter = ScatterPlotter().set_source("my_data.h5ad", embedding="umap")
+plotter.plot("S100A8").save("s100a8.png")
+```
+
+Only the data actually needed for each plot is read from disk — obs columns
+and gene-expression vectors are fetched on demand, and embedding arrays are
+read directly via h5py.  This is useful for large datasets where loading the
+full AnnData into RAM is slow or impractical.
+
+### Installation
+
+```bash
+# Cargo (Rust toolchain required)
+cargo install --git https://github.com/TyberiusPrime/h5ad_inspect
+
+# Nix devShell — add to your flake packages:
+# h5ad_inspect.packages.${system}.h5ad-inspect
+```
+
+### Feature detection
+
+```python
+from mbf_singlecell_plotter import is_h5ad_inspect_available
+
+if is_h5ad_inspect_available():
+    plotter.set_source("my_data.h5ad", embedding="umap")
+else:
+    import anndata
+    plotter.set_source(anndata.read_h5ad("my_data.h5ad"), embedding="umap")
+```
+
+### What is supported
+
+The file-backed source implements the same interface as `AnnData`:
+
+| Attribute | Description |
+|---|---|
+| `obs_names` / `var_names` | cell and gene indices |
+| `obs[key]` | obs columns — numeric, bool, or categorical |
+| `var.index` / `var[key]` | gene index and var columns |
+| `obsm[key]` | embedding arrays |
+| `X[:, i]` | gene-expression column by integer position |
+
+Columns are cached after the first access, so repeated `get_column` calls for
+the same gene or annotation do not re-invoke `h5ad-inspect`.
+
+---
+
+## Data layer
+
+`EmbeddingData` is the pure-data backbone of the library. It wraps an
+`AnnData` object together with an embedding choice and exposes column
+lookup, coordinate extraction, viewport management, and grid-mapping — all
+without touching plotnine or matplotlib.
+
+```python
+from mbf_singlecell_plotter import EmbeddingData, ColumnData
+```
+
+### Construction
+
+```python
+data = EmbeddingData(
+    ad,                             # anndata.AnnData
+    embedding="umap",               # str key in ad.obsm, or ("pca", col1, col2) tuple
+    alternative_id_column=None,     # ad.var column to use as a secondary gene lookup key
+    grid_size=12,                   # cells per axis (max 26)
+    grid_letters_on_vertical=False, # True → numbers on x-axis, letters on y-axis
+)
+```
+
+`embedding` resolution order:
+1. Exact key in `ad.obsm` (e.g. `"X_umap"`).
+2. `"X_" + key` (e.g. `"umap"` → `"X_umap"`).
+3. Tuple `("pca", 0, 1)` — picks columns 0 and 1 from the named array.
+
+---
+
+### `get_column(name)` → `ColumnData`
+
+Retrieve any observation-level value by name.  Returns a
+`ColumnData(series, name)` named tuple where `series` is a `pd.Series`
+indexed by `ad.obs_names`.
+
+```python
+col = data.get_column("leiden")   # obs column
+col = data.get_column("S100A8")   # gene from ad.X
+series, label = col               # unpack like a named tuple
+```
+
+Resolution order:
+
+| Priority | Source | Condition |
+|---|---|---|
+| 1 | `ad.obs[name]` | name is a column in obs |
+| 2 | `ad.var.index` | exact match |
+| 3 | `ad.var[alternative_id_column]` | if `alternative_id_column` was set and yields exactly one hit |
+| 4 | `ad.var.index` prefix `"<name> "` | when var index contains space-separated `"<name> <id>"` pairs |
+| 5 | `ad.var.index` suffix `" <name>"` | when var index contains space-separated `"<id> <name>"` pairs |
+
+Raises `KeyError` if no match is found.
+
+#### `ColumnData`
+
+```python
+from mbf_singlecell_plotter import ColumnData  # NamedTuple
+
+col.series   # pd.Series — values indexed by obs_names
+col.name     # str — the resolved display name
+```
+
+---
+
+### Coordinates
+
+```python
+df = data.coordinates()   # pd.DataFrame with columns ["x", "y"], indexed by obs_names
+```
+
+---
+
+### Viewport (focus)
+
+`EmbeddingData` is immutable — viewport methods return a **new** instance.
+
+```python
+# Coordinate ranges
+zoomed = data.focus_on(x=(x_min, x_max), y=(y_min, y_max))
+
+# Grid labels (e.g. top-left "A1" to bottom-right "C5")
+zoomed = data.focus_on("A1", "C5")
+
+# Remove focus
+full = zoomed.unfocus()
+
+data.has_focus   # bool — True if a focus is active
+```
+
+---
+
+### Bounds
+
+```python
+data.bounds()       # (x_min, x_max, y_min, y_max) — focus-aware
+data.full_bounds()  # same, always from the full data range
+```
+
+---
+
+### Grid helpers
+
+```python
+# Label for a single coordinate pair (e.g. "G3")
+label = data.grid_coordinate(x, y)
+
+# Labels for every cell — pd.Series indexed by obs_names
+labels = data.grid_coordinates()
+
+# Tick positions and labels for grid axes
+x_pos, y_pos, x_labels, y_labels = data.grid_labels()
+
+data.grid_size   # int — cells per axis
+```
+
+---
+
+### Analysis helpers
+
+```python
+# Median x/y position + grid label per cluster category
+centers = data.cluster_centers("leiden")
+# → pd.DataFrame with columns ["x", "y", "grid"], index = category names
+
+# Spatially coherent marker genes per UMAP region (Moran's I)
+markers = data.moran_markers(n_bins=40, min_cells=3, k=20, min_moran=0.2)
+# → dict mapping (xi, yi) bin-index tuple → list of gene names
+
+# Grid-local category frequency histogram
+hist = data.grid_local_histogram("leiden", min_cells=10)
+# → pd.DataFrame with columns ["x", "y", "category", "frequency", "total"]
+```
+
+---
+
 ## Low-level API
 
-The transform functions and data layer are also importable directly:
+The transform functions and theme helpers are also importable directly:
 
 ```python
 from mbf_singlecell_plotter import (
     EmbeddingData,
+    ColumnData,
     prepare_scatter_df,
     prepare_density_df,
     compute_boundaries,
@@ -332,7 +529,9 @@ from mbf_singlecell_plotter import (
 )
 ```
 
-`EmbeddingData` wraps an AnnData and exposes coordinate, column, and grid-mapping methods. `embedding_theme()` returns the base plotnine theme. `sc_guide_colorbar` is the custom colorbar guide with optional zero/clip extension boxes.
+`embedding_theme()` returns the base plotnine theme used by all plots.
+`sc_guide_colorbar` is the custom colorbar guide with optional zero/clip
+extension boxes.
 
 ---
 
