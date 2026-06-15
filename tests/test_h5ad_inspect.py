@@ -1,6 +1,6 @@
 """Tests for the h5ad-inspect backed data source.
 
-These tests exercise _H5adFacade + EmbeddingData (via set_source) against the
+These tests exercise H5adFacade + EmbeddingData (via set_source) against the
 same example file used by the rest of the test suite.  All tests are
 automatically skipped when h5ad-inspect is not on PATH.
 """
@@ -15,7 +15,7 @@ from mbf_singlecell_plotter import (
     ScatterPlotter,
     is_h5ad_inspect_available,
 )
-from mbf_singlecell_plotter.h5ad_source import _H5adFacade
+from mbf_singlecell_plotter import H5adFacade
 
 EXAMPLE_H5AD = (
     Path(__file__).parent.parent / "example_data" / "scanpy-pbmc3k_stripped.h5ad"
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def facade():
-    return _H5adFacade(EXAMPLE_H5AD)
+    return H5adFacade(EXAMPLE_H5AD)
 
 
 @pytest.fixture(scope="module")

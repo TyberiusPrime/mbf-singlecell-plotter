@@ -358,9 +358,35 @@ else:
     plotter.set_source(anndata.read_h5ad("my_data.h5ad"), embedding="umap")
 ```
 
+### Early analysis (no embedding yet)
+
+`H5adFacade` is exported as a top-level name so you can use it directly
+before any embedding has been computed.  It gives you lazy, on-demand access
+to `obs` annotations and gene expression without loading the whole file:
+
+```python
+from mbf_singlecell_plotter import H5adFacade
+
+ad = H5adFacade("my_data.h5ad")
+
+# Inspect available obs columns
+print(list(ad.obs.columns))
+
+# Read a single obs column (fetched on demand, then cached)
+leiden = ad.obs["leiden"]
+
+# Read a gene-expression vector
+series = ad.obs["n_counts"]  # any obs column
+expr = ad.X[:, ad.var_names.get_loc("S100A8")]  # gene by integer index
+
+# Once embeddings are added, pass it straight to EmbeddingData
+from mbf_singlecell_plotter import EmbeddingData
+data = EmbeddingData(ad, embedding="umap")
+```
+
 ### What is supported
 
-The file-backed source implements the same interface as `AnnData`:
+`H5adFacade` implements the same interface as `AnnData`:
 
 | Attribute | Description |
 |---|---|

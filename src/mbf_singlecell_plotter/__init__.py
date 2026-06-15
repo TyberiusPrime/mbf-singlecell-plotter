@@ -6,12 +6,13 @@ from .data import EmbeddingData, ColumnData
 from .transforms import prepare_density_df, prepare_scatter_df, compute_boundaries, prepare_embedding_color_df, compute_grid_moran, marker_genes_by_region
 from .plots import ScatterPlotter, BorderConfig, GridConfig, DoNotUpdate
 from .colorbar import sc_guide_colorbar
-from .h5ad_source import is_h5ad_inspect_available
+from .h5ad_source import is_h5ad_inspect_available, H5adFacade
 
 __all__ = [
     # data
     "EmbeddingData",
     "ColumnData",
+    "H5adFacade",
     "is_h5ad_inspect_available",
     # plotting
     "ScatterPlotter",

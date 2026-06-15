@@ -216,7 +216,7 @@ class _XProxy:
 # ── main facade ───────────────────────────────────────────────────────────────
 
 
-class _H5adFacade:
+class H5adFacade:
     """
     Minimal AnnData-compatible object backed by h5ad-inspect and h5py.
 

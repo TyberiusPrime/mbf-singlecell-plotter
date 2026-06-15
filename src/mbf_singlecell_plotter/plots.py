@@ -539,10 +539,9 @@ class ScatterPlotter:
             if isinstance(ad_or_data, EmbeddingData):
                 self._data = ad_or_data
             elif isinstance(ad_or_data, (str, Path)):
-                from .h5ad_source import _require_h5ad_inspect, _H5adFacade
-
+                from .h5ad_source import _require_h5ad_inspect, H5adFacade
                 _require_h5ad_inspect()
-                self._data = EmbeddingData(_H5adFacade(Path(ad_or_data)), embedding)
+                self._data = EmbeddingData(H5adFacade(Path(ad_or_data)), embedding)
             else:
                 self._data = EmbeddingData(ad_or_data, embedding)
 
@@ -566,10 +565,9 @@ class ScatterPlotter:
                 else False
             )
             if isinstance(ad_or_data, (str, Path)):
-                from .h5ad_source import _require_h5ad_inspect, _H5adFacade
-
+                from .h5ad_source import _require_h5ad_inspect, H5adFacade
                 _require_h5ad_inspect()
-                ad_or_data = _H5adFacade(Path(ad_or_data))
+                ad_or_data = H5adFacade(Path(ad_or_data))
             new._data = EmbeddingData(
                 ad_or_data,
                 embedding,
