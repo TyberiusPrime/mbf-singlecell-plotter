@@ -222,6 +222,21 @@ class TestGridLocalHistogram:
         assert x_min < x_max
         assert y_min < y_max
 
+    def test_bool_column_works(self, data):
+        """Bool columns are discrete categories — must not raise."""
+        df = data.grid_local_histogram("bool", min_cells=5)
+        assert "category" in df.columns
+        assert set(df["category"].unique()).issubset({"True", "False"})
+
+    def test_bool_frequencies_sum_to_one_per_bin(self, data):
+        df = data.grid_local_histogram("bool", min_cells=5)
+        grouped = df.groupby(["x", "y"])["frequency"].sum()
+        np.testing.assert_allclose(grouped.values, 1.0, atol=1e-6)
+
+    def test_numeric_still_raises(self, data):
+        with pytest.raises(ValueError, match="category types only"):
+            data.grid_local_histogram(NUMERIC_COL)
+
 
 # ---------------------------------------------------------------------------
 # Constructor edge cases

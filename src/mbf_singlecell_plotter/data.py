@@ -597,9 +597,12 @@ class EmbeddingData:
     ) -> pd.DataFrame:
         """Return DataFrame of grid-local category histograms."""
         expr, _ = self.get_column(key)
-        if pd.api.types.is_numeric_dtype(expr) and not isinstance(
-            expr.dtype, pd.CategoricalDtype
+        if isinstance(expr.dtype, pd.CategoricalDtype) or pd.api.types.is_bool_dtype(
+            expr
         ):
+            # categorical or bool — both are handled as discrete categories below
+            pass
+        elif pd.api.types.is_numeric_dtype(expr):
             raise ValueError("category types only")
         coords = self.coordinates()
         x_min, x_max, y_min, y_max = self.bounds()
@@ -615,6 +618,10 @@ class EmbeddingData:
             & (y_bins < len(y_grid) - 1)
         )
         assert all(valid)
+        # Coerce bool → str so the histogram "category" values are plain labels
+        # (mirrors how ScatterPlotter.plot renders bool columns).
+        if pd.api.types.is_bool_dtype(expr):
+            expr = expr.astype(str)
         try:
             df_cells = pd.DataFrame(
                 {
