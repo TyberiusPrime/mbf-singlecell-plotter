@@ -734,7 +734,125 @@ class TestAlternativeSourceH5adFacade:
         alt.write_h5ad(path)
 
         data = EmbeddingData(ad, "umap").add_alternative_source(str(path))
-        assert isinstance(data.alternative_sources[0], H5adFacade)
+        assert isinstance(data.alternative_sources[0].ad, H5adFacade)
         series, _ = data.get_column("EXTRA_GENE")
         assert np.allclose(series.values, np.arange(ad.n_obs))
+
+
+# ---------------------------------------------------------------------------
+# Alternative sources: naming + tuple routing
+# ---------------------------------------------------------------------------
+
+
+class TestAlternativeSourceNames:
+    def test_register_with_name(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        assert data.alternative_sources[0].name == "imp"
+
+    def test_tuple_routes_to_named_source(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        series, name = data.get_column(("imp", "EXTRA_GENE"))
+        assert name == "EXTRA_GENE"
+        assert series.index.equals(ad.obs_names)
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_tuple_reindexes_shuffled_alternative(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE", shuffle=True)
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        series, _ = data.get_column(("imp", "EXTRA_GENE"))
+        expected = pd.Series(
+            np.arange(ad.n_obs, dtype=np.float32), index=ad.obs_names
+        )
+        np.testing.assert_allclose(series.values, expected.values)
+
+    def test_tuple_routes_to_named_not_primary(self, ad):
+        """Tuple addresses the named source even when primary also has the column."""
+        alt = _make_alt_ad(ad, extra_gene="S100A8")  # S100A8 is also in primary
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="v2")
+        series, name = data.get_column(("v2", "S100A8"))
+        assert name == "S100A8"
+        # alt's values are 0..n-1 (from _make_alt_ad), distinct from primary expr
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_tuple_unknown_name_raises(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        with pytest.raises(KeyError):
+            data.get_column(("nope", "EXTRA_GENE"))
+
+    def test_tuple_missing_column_in_named_source_raises(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        with pytest.raises(KeyError):
+            data.get_column(("imp", "NOT_THERE"))
+
+    def test_tuple_bad_shape_raises(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        with pytest.raises(KeyError):
+            data.get_column(("imp", "EXTRA_GENE", "extra"))
+
+    def test_plain_string_fallback_unaffected_by_names(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        # plain string still falls back to the alternative
+        series, _ = data.get_column("EXTRA_GENE")
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+        # and primary still wins for shared columns
+        series2, _ = data.get_column("S100A8")
+        assert not np.allclose(series2.values, np.arange(ad.n_obs))
+
+    def test_unnamed_source_skipped_by_tuple_routing(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt)  # no name
+        with pytest.raises(KeyError):
+            data.get_column(("anything", "EXTRA_GENE"))
+        # but the fallback search still finds it
+        series, _ = data.get_column("EXTRA_GENE")
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_duplicate_name_raises(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="x")
+        with pytest.raises(ValueError):
+            data.add_alternative_source(_make_alt_ad(ad), name="x")
+
+    def test_constructor_accepts_named_tuples(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap", alternative_sources=[("imp", alt)])
+        assert data.alternative_sources[0].name == "imp"
+        series, _ = data.get_column(("imp", "EXTRA_GENE"))
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+
+class TestAlternativeSourceNamesPlotter:
+    def test_plotter_named_and_tuple_routing(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        sp = (
+            ScatterPlotter()
+            .set_source(ad, "umap")
+            .add_alternative_source(alt, name="imp")
+        )
+        series, name = sp.get_column(("imp", "EXTRA_GENE"))
+        assert name == "EXTRA_GENE"
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_plot_accepts_tuple_column(self, ad):
+        import plotnine as p9
+
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        sp = (
+            ScatterPlotter()
+            .set_source(ad, "umap")
+            .add_alternative_source(alt, name="imp")
+        )
+        p = sp.plot(("imp", "EXTRA_GENE"))
+        assert isinstance(p, p9.ggplot)
+        # pulls from the named alternative (values 0..n-1), reindexed to primary
+        assert "expression" in p.data.columns
+        assert set(p.data["expression"]).issubset(set(np.arange(ad.n_obs)))
+
+
 

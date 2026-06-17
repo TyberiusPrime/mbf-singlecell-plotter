@@ -72,6 +72,18 @@ class ColumnData(NamedTuple):
     name: str
 
 
+class AlternativeSource(NamedTuple):
+    """A registered fallback source for :meth:`EmbeddingData.get_column`.
+
+    ``name`` is ``None`` for sources that only participate in the automatic
+    fallback search; a non-None name additionally enables explicit tuple
+    routing via ``get_column((name, column))``.
+    """
+
+    name: Optional[str]
+    ad: object
+
+
 class EmbeddingData:
     """Wraps an AnnData + embedding choice. Pure data extraction, no plotting."""
 
@@ -91,9 +103,9 @@ class EmbeddingData:
         self._grid_letters_on_vertical = grid_letters_on_vertical
         self._alternative_id_column = alternative_id_column
         self._has_name_and_id = ad.var.index.str.contains(" ").any()
-        self._alternative_sources = [
-            self._coerce_source(s) for s in (alternative_sources or [])
-        ]
+        self._alternative_sources = self._normalize_alternative_items(
+            alternative_sources or []
+        )
 
         # Resolve embedding — check tuple BEFORE string concatenation
         if isinstance(embedding, tuple):
@@ -144,11 +156,11 @@ class EmbeddingData:
 
     @property
     def alternative_sources(self) -> list:
-        """List of fallback AnnData-like sources consulted by :meth:`get_column`."""
+        """List of :class:`AlternativeSource` fallbacks consulted by :meth:`get_column`."""
         return list(self._alternative_sources)
 
     @staticmethod
-    def _coerce_source(source):
+    def _coerce_ad(source):
         """Normalise an alternative-source argument to an AnnData-like object.
 
         Accepts an ``AnnData``, an :class:`H5adFacade`, a path (``str``/
@@ -161,23 +173,66 @@ class EmbeddingData:
 
         if isinstance(source, EmbeddingData):
             return source.ad
-        if isinstance(source, (str, Path)):  # type: ignore[name-defined]
+        if isinstance(source, (str, Path)):
             _require_h5ad_inspect()
-            return H5adFacade(Path(source))  # type: ignore[name-defined]
+            return H5adFacade(Path(source))
         # Assume AnnData or any AnnData-compatible facade (e.g. H5adFacade)
         return source
 
-    def add_alternative_source(self, source) -> "EmbeddingData":
+    def _normalize_alternative_items(self, items, existing_names=None):
+        """Coerce a sequence of alternative-source specs into AlternativeSource records.
+
+        Each item may be:
+
+        * an :class:`AlternativeSource` (name + ad preserved)
+        * a ``(name, source)`` 2-tuple (``name`` must be a ``str``)
+        * a bare source (AnnData / H5adFacade / path / EmbeddingData) → unnamed
+
+        Non-None names must be unique (checked against *existing_names* too);
+        duplicates raise ``ValueError``.
+        """
+        seen = set(existing_names or [])
+        result = []
+        for item in items:
+            if isinstance(item, AlternativeSource):
+                name, src = item.name, item.ad
+            elif (
+                isinstance(item, tuple)
+                and len(item) == 2
+                and isinstance(item[0], str)
+            ):
+                name, src = item
+            else:
+                name, src = None, item
+            if name is not None:
+                if name in seen:
+                    raise ValueError(
+                        f"Duplicate alternative source name {name!r}"
+                    )
+                seen.add(name)
+            result.append(AlternativeSource(name, self._coerce_ad(src)))
+        return result
+
+    def add_alternative_source(self, source, name=None) -> "EmbeddingData":
         """Return a copy with an additional fallback source appended.
 
-        ``source`` may be an ``AnnData``, an :class:`H5adFacade`, an
-        ``.h5ad`` path, or another ``EmbeddingData``.  Sources are consulted
-        in registration order; the first one that can resolve a column wins.
+        ``source`` may be an ``AnnData``, an :class:`H5adFacade`, an ``.h5ad``
+        path, or another ``EmbeddingData``.  Sources are consulted in
+        registration order when :meth:`get_column` cannot resolve a name in the
+        primary source; the first hit wins and is reindexed onto the primary
+        ``obs_names``.
+
+        If *name* is given, the source can additionally be addressed
+        explicitly via ``get_column((name, column))`` — which resolves
+        *column* from that specific source only.  Names must be unique among
+        registered alternatives.
         """
+        existing = {a.name for a in self._alternative_sources if a.name is not None}
+        item = (name, source) if name is not None else source
         new = copy.copy(self)
-        new._alternative_sources = self._alternative_sources + [
-            self._coerce_source(source)
-        ]
+        new._alternative_sources = self._alternative_sources + (
+            self._normalize_alternative_items([item], existing_names=existing)
+        )
         return new
 
     # ── viewport ────────────────────────────────────────────────────────────
@@ -261,29 +316,57 @@ class EmbeddingData:
 
     # ── data accessors ──────────────────────────────────────────────────────
 
-    def get_column(self, name: str) -> ColumnData:
+    def get_column(self, name) -> ColumnData:
         """Return ColumnData(series, column_name) for an obs column or gene.
 
-        The primary source is consulted first.  If *name* cannot be resolved
-        there, each registered :meth:`add_alternative_source` fallback is
-        tried in order; the first hit is reindexed to the primary source's
-        ``obs_names`` so it aligns with the embedding.  Cells present in the
-        primary but absent from the alternative become ``NaN``; extra cells
-        in the alternative are dropped.
+        Resolution:
+
+        * If *name* is a ``(source_name, column)`` tuple, resolve *column*
+          from the alternative source registered under *source_name* (see
+          :meth:`add_alternative_source`).  The result is reindexed onto the
+          primary ``obs_names``.  ``KeyError`` is raised if no alternative is
+          registered under that name or it does not contain *column*.
+
+        * Otherwise *name* is a string: the primary source is consulted first
+          and, on a miss, each registered alternative is tried in registration
+          order (the existing fallback search).  The first hit is reindexed to
+          the primary ``obs_names`` (extra cells dropped, missing cells → NaN).
         """
+        # Explicit routing to a named alternative source.
+        if isinstance(name, tuple):
+            if len(name) != 2:
+                raise KeyError(
+                    "Tuple column lookup must be (source_name, column), "
+                    f"got {name!r}"
+                )
+            src_name, col = name
+            for alt in self._alternative_sources:
+                if alt.name == src_name:
+                    resolved = self._resolve_column_from(alt.ad, col)
+                    return ColumnData(
+                        resolved.series.reindex(self.ad.obs_names), resolved.name
+                    )
+            registered = [
+                a.name for a in self._alternative_sources if a.name is not None
+            ]
+            raise KeyError(
+                f"No alternative source named {src_name!r}. "
+                f"Registered names: {registered!r}"
+            )
+
+        # Plain string: primary first, then fallback chain.
         try:
             return self._resolve_column_from(self.ad, name)
         except KeyError:
             pass
 
         primary_index = self.ad.obs_names
-        for source in self._alternative_sources:
+        for alt in self._alternative_sources:
             try:
-                col = self._resolve_column_from(source, name)
+                resolved = self._resolve_column_from(alt.ad, name)
             except KeyError:
                 continue
-            reindexed = col.series.reindex(primary_index)
-            return ColumnData(reindexed, col.name)
+            return ColumnData(resolved.series.reindex(primary_index), resolved.name)
 
         raise KeyError(
             f"Column or gene {name!r} not found in primary source"

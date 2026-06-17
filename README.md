@@ -82,6 +82,26 @@ Sources may be `AnnData`, `H5adFacade`, an `.h5ad` path, or another
 `EmbeddingData`. The plotter is immutable, so `add_alternative_source` returns
 a new copy.
 
+#### Naming sources & explicit lookup
+
+Give an alternative a name to address it explicitly:
+
+```python
+plotter = plotter.add_alternative_source(imputed_ad, name="imputed")
+```
+
+Then pass a `(source_name, column)` tuple to pull a column from that specific
+source — bypassing both the primary and the fallback order:
+
+```python
+plotter.plot(("imputed", "S100A8"))
+plotter.get_column(("imputed", "S100A8"))
+```
+
+Tuple lookups resolve from the named source only and are reindexed onto the
+primary `obs_names`. Plain-string lookups keep the usual primary → fallback
+behaviour. Names must be unique; passing a duplicate name raises `ValueError`.
+
 ---
 
 ### Visual style
@@ -454,8 +474,11 @@ data = EmbeddingData(
 
 ```python
 # Register fallback sources imperatively (returns a new EmbeddingData)
-data = data.add_alternative_source(other_ad)
+data = data.add_alternative_source(other_ad, name="imputed")  # name optional
 ```
+
+Named sources can be addressed explicitly via `get_column((name, column))`;
+plain-string lookups fall back through every registered alternative.
 
 ---
 
@@ -486,6 +509,19 @@ Raises `KeyError` if no match is found.
 If nothing matches in the primary source, each registered alternative source
 (see `alternative_sources` / `add_alternative_source`) is tried with the same
 resolution order; the first hit is reindexed onto the primary `obs_names`.
+
+For explicit routing, pass a `(source_name, column)` tuple — the column is
+resolved from the alternative registered under `source_name` only.
+
+#### `AlternativeSource`
+
+```python
+from mbf_singlecell_plotter import AlternativeSource  # NamedTuple
+```
+
+Each registered fallback is exposed as an `AlternativeSource(name, ad)` named
+tuple via `EmbeddingData.alternative_sources`. `name` is `None` for sources
+that participate only in the automatic fallback search.
 
 #### `ColumnData`
 
@@ -577,6 +613,7 @@ The transform functions and theme helpers are also importable directly:
 from mbf_singlecell_plotter import (
     EmbeddingData,
     ColumnData,
+    AlternativeSource,
     prepare_scatter_df,
     prepare_density_df,
     compute_boundaries,

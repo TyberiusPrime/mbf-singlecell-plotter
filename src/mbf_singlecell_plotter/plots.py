@@ -3,7 +3,7 @@
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 
 class _DoNotUpdateType:
@@ -588,7 +588,7 @@ class ScatterPlotter:
             raise RuntimeError("No data source set — call set_source() first.")
         return self._data.get_column(name)
 
-    def add_alternative_source(self, source) -> "ScatterPlotter":
+    def add_alternative_source(self, source, name=None) -> "ScatterPlotter":
         """Register a fallback source for column / gene lookup.
 
         When a name passed to :meth:`plot` or :meth:`get_column` is not found
@@ -597,6 +597,12 @@ class ScatterPlotter:
         values are reindexed onto the primary source's ``obs_names`` so they
         align with the embedding (extra cells dropped, missing cells → NaN).
 
+        If *name* is given, the source can additionally be addressed
+        explicitly via ``plot((name, column))`` or
+        ``get_column((name, column))`` — which resolves *column* from that
+        specific source only.  Names must be unique among registered
+        alternatives.
+
         ``source`` may be an ``AnnData``, an :class:`H5adFacade`, a path to an
         ``.h5ad`` file (requires ``h5ad-inspect``), or another
         ``EmbeddingData``.  The plotter is immutable — a new copy is returned.
@@ -604,7 +610,7 @@ class ScatterPlotter:
         if self._data is None:
             raise RuntimeError("call .set_source() before .add_alternative_source()")
         new = copy.copy(self)
-        new._data = self._data.add_alternative_source(source)
+        new._data = self._data.add_alternative_source(source, name=name)
         return new
 
     # ── dot appearance ───────────────────────────────────────────────────────
@@ -1051,8 +1057,13 @@ class ScatterPlotter:
 
     # ── terminal ─────────────────────────────────────────────────────────────
 
-    def plot(self, column: str) -> p9.ggplot:
-        """Build and return a plotnine ggplot for the given obs column or gene."""
+    def plot(self, column: Union[str, tuple]) -> p9.ggplot:
+        """Build and return a plotnine ggplot for the given obs column or gene.
+
+        *column* may be a plain name (resolved against the primary source, then
+        any registered alternative sources) or a ``(source_name, column)``
+        tuple to pull the column from a specific named alternative source.
+        """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot()")
 
