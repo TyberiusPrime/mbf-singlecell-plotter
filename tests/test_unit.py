@@ -11,6 +11,7 @@ import anndata
 import numpy as np
 import pandas as pd
 import pytest
+import shutil
 
 from mbf_singlecell_plotter import (
     EmbeddingData,
@@ -506,3 +507,234 @@ class TestBackground:
     def test_disable(self):
         p = ScatterPlotter().background().background(enabled=False)
         assert p._background_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# Alternative / fallback sources
+# ---------------------------------------------------------------------------
+
+
+def _make_alt_ad(primary, extra_gene="EXTRA_GENE", extra_obs="extra_annot",
+                 shuffle=False, drop=0, superset_extra=0):
+    """Build a secondary AnnData sharing primary's obs_names.
+
+    shuffle: reverse the obs_names order so the alternative stores values in a
+             different order than the primary (to exercise reindex alignment).
+    drop:    drop this many trailing cells from the alternative (subset).
+    superset_extra: prepend this many brand-new cells (superset).
+    """
+    obs_names = list(primary.obs_names)
+    n = len(obs_names)
+
+    new_names = obs_names
+    if superset_extra:
+        new_names = [f"extra_{i}" for i in range(superset_extra)] + obs_names
+        n = len(new_names)
+    if drop:
+        new_names = new_names[: len(new_names) - drop]
+        n = len(new_names)
+
+    g = np.arange(n, dtype=np.float32) * 1.0  # distinct, order-sensitive values
+    X = g.reshape(-1, 1)
+    alt = anndata.AnnData(X=X)
+    alt.obs_names = new_names
+    alt.var_names = [extra_gene]
+    # an obs column only present in the alternative
+    alt.obs[extra_obs] = pd.Categorical(["a", "b", "c"][i % 3] for i in range(n))
+
+    if shuffle:
+        order = list(range(n))[::-1]
+        alt = alt[order].copy()
+    return alt
+
+
+class TestAlternativeSourcesEmbeddingData:
+    def test_primary_hit_skips_alternative(self, ad):
+        data = EmbeddingData(ad, "umap")
+        alt = _make_alt_ad(ad, extra_gene="S100A8")  # S100A8 also in primary
+        data2 = data.add_alternative_source(alt)
+        series, name = data2.get_column("S100A8")
+        # primary's S100A8 values are real expression, not 0..n integers
+        assert name == "S100A8"
+        assert not np.allclose(series.values, np.arange(len(series)))
+
+    def test_missing_gene_from_alternative(self, ad):
+        data = EmbeddingData(ad, "umap")
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data2 = data.add_alternative_source(alt)
+        series, name = data2.get_column("EXTRA_GENE")
+        assert name == "EXTRA_GENE"
+        assert len(series) == ad.n_obs
+        # values 0..n-1 from the alternative, in primary's obs order
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+        # index must be the primary's obs_names
+        assert series.index.equals(ad.obs_names)
+
+    def test_missing_obs_column_from_alternative(self, ad):
+        data = EmbeddingData(ad, "umap")
+        alt = _make_alt_ad(ad, extra_obs="extra_annot")
+        data2 = data.add_alternative_source(alt)
+        series, name = data2.get_column("extra_annot")
+        assert name == "extra_annot"
+        assert len(series) == ad.n_obs
+        assert series.index.equals(ad.obs_names)
+
+    def test_alternative_reindex_alignment_when_shuffled(self, ad):
+        """Alternative stores values in reversed obs order — reindex must fix it."""
+        data = EmbeddingData(ad, "umap")
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE", shuffle=True)
+        data2 = data.add_alternative_source(alt)
+        series, _ = data2.get_column("EXTRA_GENE")
+        # After reindex onto primary obs_names, value i must sit at primary position i
+        expected = pd.Series(
+            np.arange(ad.n_obs, dtype=np.float32), index=ad.obs_names
+        )
+        np.testing.assert_allclose(series.values, expected.values)
+        assert series.index.equals(ad.obs_names)
+
+    def test_alternative_superset_is_subsetted(self, ad):
+        """Alternative has extra cells not in primary — they must be dropped."""
+        data = EmbeddingData(ad, "umap")
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE", superset_extra=7)
+        assert len(alt.obs_names) == ad.n_obs + 7
+        data2 = data.add_alternative_source(alt)
+        series, _ = data2.get_column("EXTRA_GENE")
+        assert len(series) == ad.n_obs
+        assert series.index.equals(ad.obs_names)
+
+    def test_alternative_missing_cells_become_nan(self, ad):
+        """Primary cells absent from the alternative become NaN."""
+        data = EmbeddingData(ad, "umap")
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE", drop=5)
+        data2 = data.add_alternative_source(alt)
+        series, _ = data2.get_column("EXTRA_GENE")
+        assert len(series) == ad.n_obs
+        # the dropped cells are the last 5 of the primary
+        missing = set(ad.obs_names[-5:]) - set(alt.obs_names)
+        assert missing, "precondition: some primary cells missing from alt"
+        assert series.loc[list(missing)].isna().all()
+
+    def test_not_found_anywhere_raises(self, ad):
+        data = EmbeddingData(ad, "umap")
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data2 = data.add_alternative_source(alt)
+        with pytest.raises(KeyError):
+            data2.get_column("__does_not_exist__")
+
+    def test_first_alternative_wins(self, ad):
+        data = EmbeddingData(ad, "umap")
+        alt_a = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        alt_b = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        # give alt_b distinguishable values
+        alt_b.X = alt_b.X * 100
+        data2 = data.add_alternative_source(alt_a).add_alternative_source(alt_b)
+        series, _ = data2.get_column("EXTRA_GENE")
+        # alt_a registered first → its values (0..n-1) win
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_second_alternative_used_when_first_lacks_it(self, ad):
+        data = EmbeddingData(ad, "umap")
+        alt_empty = _make_alt_ad(ad, extra_gene="OTHER_GENE")
+        alt_real = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data2 = data.add_alternative_source(alt_empty).add_alternative_source(alt_real)
+        series, name = data2.get_column("EXTRA_GENE")
+        assert name == "EXTRA_GENE"
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_immutability_add_alternative_source(self, ad):
+        data = EmbeddingData(ad, "umap")
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data2 = data.add_alternative_source(alt)
+        assert data.alternative_sources == []
+        assert len(data2.alternative_sources) == 1
+        # adding another must not mutate data2's list
+        data3 = data2.add_alternative_source(alt)
+        assert len(data2.alternative_sources) == 1
+        assert len(data3.alternative_sources) == 2
+
+    def test_constructor_accepts_alternative_sources(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap", alternative_sources=[alt])
+        assert len(data.alternative_sources) == 1
+        series, _ = data.get_column("EXTRA_GENE")
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_coerce_unwraps_embedding_data(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        # alt has no embedding; add one so it can be wrapped as EmbeddingData
+        alt.obsm["X_umap"] = np.column_stack([
+            np.linspace(0, 1, alt.n_obs), np.linspace(0, 1, alt.n_obs)
+        ])
+        alt_data = EmbeddingData(alt, "umap")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt_data)
+        series, _ = data.get_column("EXTRA_GENE")
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+
+class TestAlternativeSourcesPlotter:
+    def test_plotter_add_alternative_source_resolves_gene(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        sp = ScatterPlotter().set_source(ad, "umap").add_alternative_source(alt)
+        series, name = sp.get_column("EXTRA_GENE")
+        assert name == "EXTRA_GENE"
+        assert len(series) == ad.n_obs
+
+    def test_plotter_add_alternative_source_immutable(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        base = ScatterPlotter().set_source(ad, "umap")
+        extended = base.add_alternative_source(alt)
+        assert len(base._data.alternative_sources) == 0
+        assert len(extended._data.alternative_sources) == 1
+
+    def test_plotter_requires_source_first(self, ad):
+        with pytest.raises(RuntimeError):
+            ScatterPlotter().add_alternative_source(ad)
+
+    def test_plotter_alternatives_survive_with_grid(self, ad):
+        """with_grid rebuilds EmbeddingData — alternatives must be preserved."""
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        sp = (
+            ScatterPlotter()
+            .set_source(ad, "umap")
+            .add_alternative_source(alt)
+            .with_grid(grid_size=8)
+        )
+        assert len(sp._data.alternative_sources) == 1
+        series, _ = sp.get_column("EXTRA_GENE")
+        assert len(series) == ad.n_obs
+        assert sp._data._grid_size == 8
+
+
+class TestAlternativeSourceH5adFacade:
+    """H5adFacade implements the same interface as AnnData — verify it is accepted
+    as an alternative source and resolves columns correctly."""
+
+    def test_h5ad_facade_accepted_as_alternative(self, ad, tmp_path):
+        pytest.importorskip("h5py")
+        from mbf_singlecell_plotter import H5adFacade
+
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        path = tmp_path / "alt.h5ad"
+        alt.write_h5ad(path)
+
+        data = EmbeddingData(ad, "umap").add_alternative_source(H5adFacade(path))
+        series, name = data.get_column("EXTRA_GENE")
+        assert name == "EXTRA_GENE"
+        assert series.index.equals(ad.obs_names)
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_path_coerced_to_h5ad_facade(self, ad, tmp_path):
+        # only meaningful when h5ad-inspect binary is available
+        if not shutil.which("h5ad-inspect"):
+            pytest.skip("h5ad-inspect not on PATH")
+        from mbf_singlecell_plotter import H5adFacade
+
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        path = tmp_path / "alt.h5ad"
+        alt.write_h5ad(path)
+
+        data = EmbeddingData(ad, "umap").add_alternative_source(str(path))
+        assert isinstance(data.alternative_sources[0], H5adFacade)
+        series, _ = data.get_column("EXTRA_GENE")
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+

@@ -588,6 +588,25 @@ class ScatterPlotter:
             raise RuntimeError("No data source set — call set_source() first.")
         return self._data.get_column(name)
 
+    def add_alternative_source(self, source) -> "ScatterPlotter":
+        """Register a fallback source for column / gene lookup.
+
+        When a name passed to :meth:`plot` or :meth:`get_column` is not found
+        in the primary source, each registered alternative source is tried in
+        registration order.  The first one that resolves the name wins, and its
+        values are reindexed onto the primary source's ``obs_names`` so they
+        align with the embedding (extra cells dropped, missing cells → NaN).
+
+        ``source`` may be an ``AnnData``, an :class:`H5adFacade`, a path to an
+        ``.h5ad`` file (requires ``h5ad-inspect``), or another
+        ``EmbeddingData``.  The plotter is immutable — a new copy is returned.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .add_alternative_source()")
+        new = copy.copy(self)
+        new._data = self._data.add_alternative_source(source)
+        return new
+
     # ── dot appearance ───────────────────────────────────────────────────────
 
     def style(
@@ -906,6 +925,7 @@ class ScatterPlotter:
                     new._data._embedding_cols[1],
                 ),
                 alternative_id_column=new._data._alternative_id_column,
+                alternative_sources=new._data._alternative_sources,
                 grid_size=resolved_grid_size,
                 grid_letters_on_vertical=resolved_vl,
             )

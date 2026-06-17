@@ -60,6 +60,28 @@ plotter.set_source(ad_or_data, embedding="umap")
 plotter.set_source(ad, embedding=("pca", 0, 1))
 ```
 
+#### Alternative / fallback sources
+
+Register secondary sources that are consulted only when a column or gene is
+missing from the primary source:
+
+```python
+plotter = plotter.add_alternative_source(other_ad)            # AnnData
+plotter = plotter.add_alternative_source(H5adFacade("sub.h5ad"))  # lazy facade
+plotter = plotter.add_alternative_source("genes_only.h5ad")   # path (needs h5ad-inspect)
+plotter = plotter.add_alternative_source(other_embedding_data)  # reuse an EmbeddingData
+```
+
+When `plot("S100A8")` / `get_column("...")` can't resolve a name in the
+primary source, each alternative is tried in registration order. The first hit
+wins and its values are **reindexed onto the primary source's `obs_names`** so
+they line up with the embedding — extra cells in the alternative are dropped,
+and primary cells absent from the alternative become `NaN`.
+
+Sources may be `AnnData`, `H5adFacade`, an `.h5ad` path, or another
+`EmbeddingData`. The plotter is immutable, so `add_alternative_source` returns
+a new copy.
+
 ---
 
 ### Visual style
@@ -419,6 +441,7 @@ data = EmbeddingData(
     ad,                             # anndata.AnnData
     embedding="umap",               # str key in ad.obsm, or ("pca", col1, col2) tuple
     alternative_id_column=None,     # ad.var column to use as a secondary gene lookup key
+    alternative_sources=None,       # list of fallback AnnData/H5adFacade/path sources
     grid_size=12,                   # cells per axis (max 26)
     grid_letters_on_vertical=False, # True → numbers on x-axis, letters on y-axis
 )
@@ -428,6 +451,11 @@ data = EmbeddingData(
 1. Exact key in `ad.obsm` (e.g. `"X_umap"`).
 2. `"X_" + key` (e.g. `"umap"` → `"X_umap"`).
 3. Tuple `("pca", 0, 1)` — picks columns 0 and 1 from the named array.
+
+```python
+# Register fallback sources imperatively (returns a new EmbeddingData)
+data = data.add_alternative_source(other_ad)
+```
 
 ---
 
@@ -454,6 +482,10 @@ Resolution order:
 | 5 | `ad.var.index` suffix `" <name>"` | when var index contains space-separated `"<id> <name>"` pairs |
 
 Raises `KeyError` if no match is found.
+
+If nothing matches in the primary source, each registered alternative source
+(see `alternative_sources` / `add_alternative_source`) is tried with the same
+resolution order; the first hit is reindexed onto the primary `obs_names`.
 
 #### `ColumnData`
 

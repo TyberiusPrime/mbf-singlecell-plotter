@@ -2,6 +2,7 @@
 
 import copy
 import collections
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -79,6 +80,7 @@ class EmbeddingData:
         ad,
         embedding,
         alternative_id_column: Optional[str] = None,
+        alternative_sources: Optional[list] = None,
         grid_size: int = 12,
         grid_letters_on_vertical: bool = False,
     ):
@@ -89,6 +91,9 @@ class EmbeddingData:
         self._grid_letters_on_vertical = grid_letters_on_vertical
         self._alternative_id_column = alternative_id_column
         self._has_name_and_id = ad.var.index.str.contains(" ").any()
+        self._alternative_sources = [
+            self._coerce_source(s) for s in (alternative_sources or [])
+        ]
 
         # Resolve embedding — check tuple BEFORE string concatenation
         if isinstance(embedding, tuple):
@@ -136,6 +141,44 @@ class EmbeddingData:
     @property
     def has_focus(self) -> bool:
         return self._focus is not None
+
+    @property
+    def alternative_sources(self) -> list:
+        """List of fallback AnnData-like sources consulted by :meth:`get_column`."""
+        return list(self._alternative_sources)
+
+    @staticmethod
+    def _coerce_source(source):
+        """Normalise an alternative-source argument to an AnnData-like object.
+
+        Accepts an ``AnnData``, an :class:`H5adFacade`, a path (``str``/
+        ``pathlib.Path``) to an ``.h5ad`` file, or another ``EmbeddingData``
+        (its wrapped ``.ad`` is reused).  Paths require ``h5ad-inspect`` on
+        ``PATH`` and are wrapped in :class:`H5adFacade` for lazy, on-demand
+        column reads.
+        """
+        from .h5ad_source import _require_h5ad_inspect, H5adFacade
+
+        if isinstance(source, EmbeddingData):
+            return source.ad
+        if isinstance(source, (str, Path)):  # type: ignore[name-defined]
+            _require_h5ad_inspect()
+            return H5adFacade(Path(source))  # type: ignore[name-defined]
+        # Assume AnnData or any AnnData-compatible facade (e.g. H5adFacade)
+        return source
+
+    def add_alternative_source(self, source) -> "EmbeddingData":
+        """Return a copy with an additional fallback source appended.
+
+        ``source`` may be an ``AnnData``, an :class:`H5adFacade`, an
+        ``.h5ad`` path, or another ``EmbeddingData``.  Sources are consulted
+        in registration order; the first one that can resolve a column wins.
+        """
+        new = copy.copy(self)
+        new._alternative_sources = self._alternative_sources + [
+            self._coerce_source(source)
+        ]
+        return new
 
     # ── viewport ────────────────────────────────────────────────────────────
 
@@ -219,8 +262,46 @@ class EmbeddingData:
     # ── data accessors ──────────────────────────────────────────────────────
 
     def get_column(self, name: str) -> ColumnData:
-        """Return ColumnData(series, column_name) for an obs column or gene."""
-        ad = self.ad
+        """Return ColumnData(series, column_name) for an obs column or gene.
+
+        The primary source is consulted first.  If *name* cannot be resolved
+        there, each registered :meth:`add_alternative_source` fallback is
+        tried in order; the first hit is reindexed to the primary source's
+        ``obs_names`` so it aligns with the embedding.  Cells present in the
+        primary but absent from the alternative become ``NaN``; extra cells
+        in the alternative are dropped.
+        """
+        try:
+            return self._resolve_column_from(self.ad, name)
+        except KeyError:
+            pass
+
+        primary_index = self.ad.obs_names
+        for source in self._alternative_sources:
+            try:
+                col = self._resolve_column_from(source, name)
+            except KeyError:
+                continue
+            reindexed = col.series.reindex(primary_index)
+            return ColumnData(reindexed, col.name)
+
+        raise KeyError(
+            f"Column or gene {name!r} not found in primary source"
+            + (
+                f" or any of {len(self._alternative_sources)} alternative source(s)"
+                if self._alternative_sources
+                else ""
+            )
+        )
+
+    def _resolve_column_from(self, ad, name: str) -> ColumnData:
+        """Resolve *name* against a single AnnData-like source.
+
+        Same resolution order as documented for :meth:`get_column`, applied to
+        the given ``ad`` (primary or alternative).  Works for ``AnnData`` and
+        :class:`H5adFacade` alike since only the shared interface is used.
+        Raises ``KeyError`` if *name* is not found in this source.
+        """
         if name in ad.obs:
             return ColumnData(ad.obs[name], name)
 
@@ -241,7 +322,7 @@ class EmbeddingData:
             alt_hits = ad.var[self._alternative_id_column] == name
             if alt_hits.sum() == 1:
                 return _extract(alt_hits)
-        if self._has_name_and_id:
+        if ad.var.index.str.contains(" ").any():
             name_hits = ad.var.index.str.startswith(name + " ")
             if name_hits.sum() == 1:
                 return _extract(name_hits)
