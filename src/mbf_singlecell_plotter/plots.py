@@ -552,6 +552,7 @@ class ScatterPlotter:
         self,
         ad_or_data,
         embedding: str = "umap",
+        alternative_id_column=None
     ) -> "ScatterPlotter":
         """Attach data source. Accepts AnnData, EmbeddingData, or a path to an .h5ad file."""
         new = copy.copy(self)
@@ -575,6 +576,7 @@ class ScatterPlotter:
                 embedding,
                 grid_size=grid_size,
                 grid_letters_on_vertical=glv,
+                alternative_id_column=alternative_id_column
             )
         new._boundary_cache = {"df": None}
         return new
