@@ -482,6 +482,7 @@ class ScatterPlotter:
 
         # dot appearance
         self._dot_size: float = 1
+        self._dot_alpha: float = 1
         self._legend_dot_size: float = 4
         self._panel_border: bool = True
         self._spine_color: str = "#555555"
@@ -647,6 +648,7 @@ class ScatterPlotter:
         self,
         *,
         dot_size: Optional[float] = None,
+        dot_alpha: Optional[float] = None,
         legend_dot_size: Optional[float] = None,  # None = keep current (default 4)
         panel_border: Optional[bool] = None,
         spine_color: Optional[str] = None,
@@ -657,6 +659,8 @@ class ScatterPlotter:
 
         Args:
             dot_size:        Point size for the main scatter layer.
+            dot_alpha:       Point transparency for the main scatter layer
+                             (0–1, default 1).
             legend_dot_size: Override the dot size shown in the categorical legend
                              (default: same as dot_size).
             panel_border:    Show/hide the panel border (True = show).
@@ -667,6 +671,8 @@ class ScatterPlotter:
         new = copy.copy(self)
         if dot_size is not None:
             new._dot_size = dot_size
+        if dot_alpha is not None:
+            new._dot_alpha = dot_alpha
         if legend_dot_size is not None:
             new._legend_dot_size = legend_dot_size
         if panel_border is not None:
@@ -1674,7 +1680,7 @@ class ScatterPlotter:
 
         # Main scatter — identity scale reads hex color strings directly
         if self._layer_data:
-            p = p + p9.geom_point(size=dot)
+            p = p + p9.geom_point(size=dot, alpha=self._dot_alpha)
 
         p = p + p9.scale_color_identity(guide=None)
 
