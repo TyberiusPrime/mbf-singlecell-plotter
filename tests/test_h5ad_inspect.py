@@ -262,3 +262,29 @@ class TestAlternativeIdLabel:
         sp = ScatterPlotter().set_source(ed_alt).without_grid()
         p = sp.plot("leiden")
         assert p.labels.get("title", None) == "leiden"
+
+    @staticmethod
+    def _colorbar_name(p):
+        for s in p.scales:
+            n = getattr(s, "name", None)
+            if n is not None:
+                return n
+        return None
+
+    def test_colorbar_keeps_log2_suffix_with_alt_id(self, ed_alt):
+        # the alt-id relabel must only affect the title, not the colourbar —
+        # the ": log2 expression" stance (and is_gene detection) must survive.
+        sp = ScatterPlotter().set_source(ed_alt).without_grid()
+        p = sp.plot("S100A8")
+        assert self._colorbar_name(p) == "S100A8: log2 expression"
+
+    def test_user_colorbar_title_not_overwritten_by_alt_id(self, ed_alt):
+        sp = (
+            ScatterPlotter()
+            .set_source(ed_alt)
+            .without_grid()
+            .colormap(title="my cbar")
+        )
+        p = sp.plot("S100A8")
+        assert p.labels.get("title", None) == "ENSG00000143546 (S100A8)"
+        assert self._colorbar_name(p) == "my cbar"

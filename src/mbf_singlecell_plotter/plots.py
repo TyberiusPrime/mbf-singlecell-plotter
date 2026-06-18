@@ -1102,12 +1102,6 @@ class ScatterPlotter:
 
         # Load expression data
         expr, expr_name = data.get_column(column)
-        if self._data._alternative_id_column is not None:
-            # expr_name is always in var.index space — look up the
-            # alternative id (e.g. Ensembl) so the label reads "alt_id (symbol)".
-            alt_id = data.alternative_id_for(expr_name)
-            if alt_id is not None:
-                expr_name = f"{alt_id} ({expr_name})"
 
         is_numerical = (
             (expr.dtype != "object")
@@ -1161,7 +1155,16 @@ class ScatterPlotter:
         if self._title_override is not _UNSET:
             p = p + p9.labs(title=self._title_override)
         else:
-            p = p + p9.labs(title=expr_name)
+            # expr_name is in var.index space (the gene symbol); if an
+            # alternative id column is configured, expand the title to read
+            # "alt_id (symbol)".  Only the title is affected — the colourbar
+            # name and is_gene detection keep using the bare symbol.
+            title_name = expr_name
+            if data._alternative_id_column is not None:
+                alt_id = data.alternative_id_for(expr_name)
+                if alt_id is not None:
+                    title_name = f"{alt_id} ({expr_name})"
+            p = p + p9.labs(title=title_name)
 
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = p + embedding_theme(
