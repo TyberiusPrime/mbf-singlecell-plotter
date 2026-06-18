@@ -1975,7 +1975,7 @@ class ScatterPlotter:
 
         # Main scatter (gradient range)
         if self._layer_data:
-            p = p + p9.geom_point(size=self._dot_size)
+            p = p + p9.geom_point(size=self._dot_size, alpha=self._dot_alpha)
 
         # Clipped values drawn on top in clip color
         if self._layer_data and len(df_above) > 0:
@@ -1984,6 +1984,7 @@ class ScatterPlotter:
                 mapping=p9.aes("x", "y"),
                 color=self._upper_clip_color,
                 size=self._dot_size,
+                alpha=self._dot_alpha,
                 inherit_aes=False,
             )
 
@@ -2085,7 +2086,7 @@ class ScatterPlotter:
 
         # Scatter
         if self._layer_data:
-            p = p + p9.geom_point(size=self._dot_size)
+            p = p + p9.geom_point(size=self._dot_size, alpha=self._dot_alpha)
 
         # Outlier replot
         if self._layer_outliers:
@@ -2108,6 +2109,7 @@ class ScatterPlotter:
                 p = p + p9.geom_point(
                     data=df_outliers,
                     size=self._dot_size,
+                    alpha=self._dot_alpha,
                     inherit_aes=True,
                     **extra,
                 )
