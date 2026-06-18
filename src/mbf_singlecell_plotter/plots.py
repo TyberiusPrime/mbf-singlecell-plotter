@@ -437,6 +437,7 @@ class BorderConfig:
     colors: tuple = field(default_factory=lambda: tuple(DEFAULT_COLORS_BORDERS))
     legend: bool = True
     legend_dot_size: float = 4
+    legend_dot_alpha: float = 1
     legend_title: Optional[str] = None  # None → use the cell_type column name
 
 
@@ -484,6 +485,7 @@ class ScatterPlotter:
         self._dot_size: float = 1
         self._dot_alpha: float = 1
         self._legend_dot_size: float = 4
+        self._legend_dot_alpha: float = 1
         self._panel_border: bool = True
         self._spine_color: str = "#555555"
         self._tick_color: str = "#555555"
@@ -650,6 +652,7 @@ class ScatterPlotter:
         dot_size: Optional[float] = None,
         dot_alpha: Optional[float] = None,
         legend_dot_size: Optional[float] = None,  # None = keep current (default 4)
+        legend_dot_alpha: Optional[float] = None,  # None = keep current (default 1)
         panel_border: Optional[bool] = None,
         spine_color: Optional[str] = None,
         tick_color: Optional[str] = None,
@@ -663,6 +666,8 @@ class ScatterPlotter:
                              (0–1, default 1).
             legend_dot_size: Override the dot size shown in the categorical legend
                              (default: same as dot_size).
+            legend_dot_alpha: Override the dot transparency shown in the categorical
+                              legend (0–1, default 1).
             panel_border:    Show/hide the panel border (True = show).
             spine_color:     Hex color for the panel border (default ``"#555555"``).
             tick_color:      Hex color for axis ticks and tick labels (default ``"#555555"``).
@@ -675,6 +680,8 @@ class ScatterPlotter:
             new._dot_alpha = dot_alpha
         if legend_dot_size is not None:
             new._legend_dot_size = legend_dot_size
+        if legend_dot_alpha is not None:
+            new._legend_dot_alpha = legend_dot_alpha
         if panel_border is not None:
             new._panel_border = panel_border
         if spine_color is not None:
@@ -838,6 +845,7 @@ class ScatterPlotter:
         colors: Optional[list] = None,
         legend: bool = True,
         legend_dot_size: float = 4,
+        legend_dot_alpha: float = 1,
         legend_title: Optional[str] = None,
     ) -> "ScatterPlotter":
         new = copy.copy(self)
@@ -852,6 +860,7 @@ class ScatterPlotter:
             colors=resolved_colors,
             legend=legend,
             legend_dot_size=legend_dot_size,
+            legend_dot_alpha=legend_dot_alpha,
             legend_title=legend_title,
         )
         if cell_type_column is not None:
@@ -1905,7 +1914,10 @@ class ScatterPlotter:
                     if bc.legend_title is not None
                     else self._cell_type_column,
                     guide=p9.guide_legend(
-                        override_aes={"alpha": 1, "size": bc.legend_dot_size}
+                        override_aes={
+                            "alpha": bc.legend_dot_alpha,
+                            "size": bc.legend_dot_size,
+                        }
                     ),
                 )
             )
@@ -2133,7 +2145,11 @@ class ScatterPlotter:
             if self._cat_colors_title is not None
             else expr_name,
             guide=p9.guide_legend(
-                override_aes={"size": self._legend_dot_size, "shape": "o"},
+                override_aes={
+                    "size": self._legend_dot_size,
+                    "shape": "o",
+                    "alpha": self._legend_dot_alpha,
+                },
                 ncol=ncol,
             ),
         )
