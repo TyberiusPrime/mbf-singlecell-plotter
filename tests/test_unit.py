@@ -870,4 +870,222 @@ class TestAlternativeSourceNamesPlotter:
         assert set(p.data["expression"]).issubset(set(np.arange(ad.n_obs)))
 
 
+# ---------------------------------------------------------------------------
+# Derived sources: on-demand computed columns
+# ---------------------------------------------------------------------------
+
+
+class TestDerivedSources:
+    def test_plain_string_computed_on_demand(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"double_genes": lambda d: d.get_column("n_genes").series * 2}
+        )
+        series, name = data.get_column("double_genes")
+        assert name == "double_genes"
+        assert series.index.equals(ad.obs_names)
+        expected = ad.obs["n_genes"].astype(float) * 2
+        np.testing.assert_allclose(series.values, expected.values)
+
+    def test_callable_receives_embedding_data_and_combines(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {
+                "ratio": lambda d: (
+                    d.get_column("n_genes").series / d.get_column("total_counts").series
+                )
+            }
+        )
+        series, _ = data.get_column("ratio")
+        assert series.index.equals(ad.obs_names)
+        expected = ad.obs["n_genes"].astype(float) / ad.obs["total_counts"].astype(float)
+        np.testing.assert_allclose(series.values, expected.values)
+
+    def test_named_tuple_routing(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"x": lambda d: d.get_column("n_genes").series + 1},
+            name="calc",
+        )
+        series, name = data.get_column(("calc", "x"))
+        assert name == "x"
+        assert series.index.equals(ad.obs_names)
+        expected = ad.obs["n_genes"].astype(float) + 1
+        np.testing.assert_allclose(series.values, expected.values)
+
+    def test_tuple_unknown_name_raises(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"x": lambda d: d.get_column("n_genes").series}
+        )
+        with pytest.raises(KeyError):
+            data.get_column(("nope", "x"))
+
+    def test_tuple_missing_column_in_named_derived_raises(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"x": lambda d: d.get_column("n_genes").series}, name="calc"
+        )
+        with pytest.raises(KeyError):
+            data.get_column(("calc", "not_there"))
+
+    def test_unnamed_derived_plain_string_fallback(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"derived_only": lambda d: d.get_column("n_genes").series * 10}
+        )
+        # cannot be tuple-addressed without a name
+        with pytest.raises(KeyError):
+            data.get_column(("anything", "derived_only"))
+        # but plain string finds it
+        series, _ = data.get_column("derived_only")
+        assert series.index.equals(ad.obs_names)
+
+    def test_primary_wins_over_derived(self, ad):
+        """Primary source is consulted first — derived callable not invoked."""
+        calls = []
+
+        def fn(d):
+            calls.append(1)
+            return pd.Series(99.0, index=ad.obs_names)
+
+        data = EmbeddingData(ad, "umap").add_derived_source({"n_genes": fn})
+        series, _ = data.get_column("n_genes")
+        # primary's real n_genes values, not the derived 99.0
+        assert not np.allclose(series.values, 99.0)
+        assert calls == []  # never invoked because primary hit
+
+    def test_derived_checked_before_alternatives(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="DUP")  # alt gives values 0..n-1
+        data = (
+            EmbeddingData(ad, "umap")
+            .add_alternative_source(alt)
+            .add_derived_source(
+                {"DUP": lambda d: pd.Series(42.0, index=ad.obs_names)}
+            )
+        )
+        series, _ = data.get_column("DUP")
+        # derived (42.0) wins over the alternative (0..n-1)
+        assert np.allclose(series.values, 42.0)
+
+    def test_recomputed_each_call_no_cache(self, ad):
+        calls = []
+
+        def fn(d):
+            calls.append(1)
+            return d.get_column("n_genes").series
+
+        data = EmbeddingData(ad, "umap").add_derived_source({"tracked": fn})
+        data.get_column("tracked")
+        data.get_column("tracked")
+        assert len(calls) == 2
+
+    def test_non_callable_value_raises_at_registration(self, ad):
+        data = EmbeddingData(ad, "umap")
+        with pytest.raises(TypeError):
+            data.add_derived_source({"bad": 5})
+
+    def test_non_series_return_raises(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"bad": lambda d: [1, 2, 3]}
+        )
+        with pytest.raises(TypeError):
+            data.get_column("bad")
+
+    def test_non_dict_arg_raises(self, ad):
+        data = EmbeddingData(ad, "umap")
+        with pytest.raises(TypeError):
+            data.add_derived_source("not a dict")
+
+    def test_duplicate_name_vs_alternative_raises(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="dup")
+        with pytest.raises(ValueError):
+            data.add_derived_source({"x": lambda d: d.get_column("n_genes").series}, name="dup")
+
+    def test_duplicate_name_among_derived_raises(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"x": lambda d: d.get_column("n_genes").series}, name="d"
+        )
+        with pytest.raises(ValueError):
+            data.add_derived_source({"y": lambda d: d.get_column("n_genes").series}, name="d")
+
+    def test_immutability(self, ad):
+        data = EmbeddingData(ad, "umap")
+        data2 = data.add_derived_source({"x": lambda d: d.get_column("n_genes").series})
+        assert data.derived_sources == []
+        assert len(data2.derived_sources) == 1
+        # alternative list shared-but-immutable: original untouched
+        data2.get_column("x")  # works on the copy
+
+    def test_property_returns_records(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"x": lambda d: d.get_column("n_genes").series}, name="calc"
+        )
+        rec = data.derived_sources[0]
+        assert rec.name == "calc"
+        assert set(rec.columns) == {"x"}
+
+    def test_constructor_accepts_derived(self, ad):
+        data = EmbeddingData(
+            ad,
+            "umap",
+            derived_sources=[("calc", {"x": lambda d: d.get_column("n_genes").series * 3})],
+        )
+        assert data.derived_sources[0].name == "calc"
+        series, _ = data.get_column(("calc", "x"))
+        expected = ad.obs["n_genes"].astype(float) * 3
+        np.testing.assert_allclose(series.values, expected.values)
+
+    def test_constructor_bare_dict_derived(self, ad):
+        data = EmbeddingData(
+            ad,
+            "umap",
+            derived_sources=[{"x": lambda d: d.get_column("n_genes").series}],
+        )
+        assert data.derived_sources[0].name is None
+        series, name = data.get_column("x")
+        assert name == "x"
+
+    def test_derived_source_record_accepted(self, ad):
+        from mbf_singlecell_plotter import DerivedSource
+
+        rec = DerivedSource("calc", {"x": lambda d: d.get_column("n_genes").series})
+        data = EmbeddingData(ad, "umap").add_derived_source(rec)
+        assert data.derived_sources[0].name == "calc"
+        series, _ = data.get_column(("calc", "x"))
+        assert series.index.equals(ad.obs_names)
+
+
+class TestDerivedSourcesPlotter:
+    def test_plotter_add_derived_and_tuple_routing(self, ad):
+        sp = (
+            ScatterPlotter()
+            .set_source(ad, "umap")
+            .add_derived_source(
+                {"x": lambda d: d.get_column("n_genes").series * 2},
+                name="calc",
+            )
+        )
+        series, name = sp.get_column(("calc", "x"))
+        assert name == "x"
+        expected = ad.obs["n_genes"].astype(float) * 2
+        np.testing.assert_allclose(series.values, expected.values)
+
+    def test_plotter_requires_set_source(self, ad):
+        with pytest.raises(RuntimeError):
+            ScatterPlotter().add_derived_source(
+                {"x": lambda d: d.get_column("n_genes").series}
+            )
+
+    def test_plot_accepts_derived_tuple(self, ad):
+        import plotnine as p9
+
+        sp = (
+            ScatterPlotter()
+            .set_source(ad, "umap")
+            .add_derived_source(
+                {"score": lambda d: d.get_column("n_genes").series * 2},
+                name="calc",
+            )
+        )
+        p = sp.plot(("calc", "score"))
+        assert isinstance(p, p9.ggplot)
+        assert "expression" in p.data.columns
+
+
 

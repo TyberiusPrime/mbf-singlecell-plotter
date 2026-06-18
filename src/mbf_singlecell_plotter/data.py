@@ -3,7 +3,7 @@
 import copy
 import collections
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import Callable, Dict, NamedTuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -84,6 +84,21 @@ class AlternativeSource(NamedTuple):
     ad: object
 
 
+class DerivedSource(NamedTuple):
+    """A source whose columns are computed on demand from other sources.
+
+    ``columns`` maps a column name to a callable that receives the owning
+    :class:`EmbeddingData` and returns a :class:`pandas.Series` indexed by the
+    primary ``obs_names`` (so it can pull from the primary source or any
+    registered alternative via ``get_column(...)`` and combine the results).
+    Like :class:`AlternativeSource`, a non-None ``name`` additionally enables
+    explicit tuple routing via ``get_column((name, column))``.
+    """
+
+    name: Optional[str]
+    columns: Dict[str, Callable[["EmbeddingData"], "pd.Series"]]
+
+
 class EmbeddingData:
     """Wraps an AnnData + embedding choice. Pure data extraction, no plotting."""
 
@@ -93,6 +108,7 @@ class EmbeddingData:
         embedding,
         alternative_id_column: Optional[str] = None,
         alternative_sources: Optional[list] = None,
+        derived_sources: Optional[list] = None,
         grid_size: int = 12,
         grid_letters_on_vertical: bool = False,
     ):
@@ -105,6 +121,11 @@ class EmbeddingData:
         self._has_name_and_id = ad.var.index.str.contains(" ").any()
         self._alternative_sources = self._normalize_alternative_items(
             alternative_sources or []
+        )
+        # derived names share the namespace with alternative names
+        alt_names = {a.name for a in self._alternative_sources if a.name is not None}
+        self._derived_sources = self._normalize_derived_items(
+            derived_sources or [], existing_names=alt_names
         )
 
         # Resolve embedding — check tuple BEFORE string concatenation
@@ -158,6 +179,11 @@ class EmbeddingData:
     def alternative_sources(self) -> list:
         """List of :class:`AlternativeSource` fallbacks consulted by :meth:`get_column`."""
         return list(self._alternative_sources)
+
+    @property
+    def derived_sources(self) -> list:
+        """List of :class:`DerivedSource` computed-column sources consulted by :meth:`get_column`."""
+        return list(self._derived_sources)
 
     @staticmethod
     def _coerce_ad(source):
@@ -232,6 +258,82 @@ class EmbeddingData:
         new = copy.copy(self)
         new._alternative_sources = self._alternative_sources + (
             self._normalize_alternative_items([item], existing_names=existing)
+        )
+        return new
+
+    def _normalize_derived_items(self, items, existing_names=None):
+        """Coerce a sequence of derived-source specs into DerivedSource records.
+
+        Each item may be:
+
+        * a :class:`DerivedSource` (name + columns preserved)
+        * a ``(name, columns_dict)`` 2-tuple (``name`` must be a ``str``)
+        * a bare ``{column: callable}`` dict (→ unnamed)
+
+        Every column value must be callable.  Non-None names must be unique
+        (checked against *existing_names* too — the shared alternative/derived
+        namespace); duplicates raise ``ValueError``.
+        """
+        seen = set(existing_names or [])
+        result = []
+        for item in items:
+            if isinstance(item, DerivedSource):
+                name, cols = item.name, dict(item.columns)
+            elif (
+                isinstance(item, tuple)
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and isinstance(item[1], dict)
+            ):
+                name, cols = item[0], dict(item[1])
+            elif isinstance(item, dict):
+                name, cols = None, dict(item)
+            else:
+                raise TypeError(
+                    "Derived source must be a {column: callable} dict, a "
+                    f"(name, dict) tuple, or a DerivedSource; got {item!r}"
+                )
+            for col, fn in cols.items():
+                if not callable(fn):
+                    raise TypeError(
+                        f"Derived column {col!r} must map to a callable, "
+                        f"got {type(fn).__name__}"
+                    )
+            if name is not None:
+                if name in seen:
+                    raise ValueError(f"Duplicate source name {name!r}")
+                seen.add(name)
+            result.append(DerivedSource(name, cols))
+        return result
+
+    def add_derived_source(self, derived, name=None) -> "EmbeddingData":
+        """Return a copy with an additional computed (derived) source appended.
+
+        *derived* is a ``{column_name: callable}`` mapping.  Each callable
+        receives this :class:`EmbeddingData` and must return a
+        :class:`pandas.Series` indexed by the primary ``obs_names`` — so it can
+        pull from the primary source or any registered alternative via
+        ``get_column(...)`` and combine the results.  Columns are computed on
+        demand, once per :meth:`get_column` call (no caching).
+
+        Derived columns participate in :meth:`get_column` lookups two ways:
+
+        * by plain string — checked after the primary source but *before*
+          alternative sources (so an explicit derived column wins over an
+          accidentally same-named column in a fallback source);
+        * explicitly via ``get_column((name, column_name))`` when *name* is
+          given.
+
+        *name* must be unique among all alternative and derived sources.  The
+        result is reindexed onto the primary ``obs_names`` for consistency with
+        other sources.
+        """
+        existing = {a.name for a in self._alternative_sources if a.name is not None}
+        existing |= {d.name for d in self._derived_sources if d.name is not None}
+        item = (name, derived) if name is not None else derived
+        new = copy.copy(self)
+        new._derived_sources = self._derived_sources + (
+            self._normalize_derived_items([item], existing_names=existing)
         )
         return new
 
@@ -322,17 +424,19 @@ class EmbeddingData:
         Resolution:
 
         * If *name* is a ``(source_name, column)`` tuple, resolve *column*
-          from the alternative source registered under *source_name* (see
-          :meth:`add_alternative_source`).  The result is reindexed onto the
-          primary ``obs_names``.  ``KeyError`` is raised if no alternative is
+          from the source (alternative or derived) registered under
+          *source_name* (see :meth:`add_alternative_source` /
+          :meth:`add_derived_source`).  The result is reindexed onto the
+          primary ``obs_names``.  ``KeyError`` is raised if no source is
           registered under that name or it does not contain *column*.
 
-        * Otherwise *name* is a string: the primary source is consulted first
-          and, on a miss, each registered alternative is tried in registration
-          order (the existing fallback search).  The first hit is reindexed to
-          the primary ``obs_names`` (extra cells dropped, missing cells → NaN).
+        * Otherwise *name* is a string: the primary source is consulted first,
+          then each registered *derived* source (columns computed on demand),
+          then each alternative source in registration order.  The first hit
+          is reindexed to the primary ``obs_names`` (extra cells dropped,
+          missing cells → NaN).
         """
-        # Explicit routing to a named alternative source.
+        # Explicit routing to a named source.
         if isinstance(name, tuple):
             if len(name) != 2:
                 raise KeyError(
@@ -340,6 +444,12 @@ class EmbeddingData:
                     f"got {name!r}"
                 )
             src_name, col = name
+            for d in self._derived_sources:
+                if d.name == src_name:
+                    return ColumnData(
+                        self._compute_derived(col, d).reindex(self.ad.obs_names),
+                        col,
+                    )
             for alt in self._alternative_sources:
                 if alt.name == src_name:
                     resolved = self._resolve_column_from(alt.ad, col)
@@ -347,18 +457,26 @@ class EmbeddingData:
                         resolved.series.reindex(self.ad.obs_names), resolved.name
                     )
             registered = [
-                a.name for a in self._alternative_sources if a.name is not None
+                s.name
+                for s in (self._derived_sources + self._alternative_sources)
+                if s.name is not None
             ]
             raise KeyError(
-                f"No alternative source named {src_name!r}. "
+                f"No source named {src_name!r}. "
                 f"Registered names: {registered!r}"
             )
 
-        # Plain string: primary first, then fallback chain.
+        # Plain string: primary first, then derived, then alternative fallback.
         try:
             return self._resolve_column_from(self.ad, name)
         except KeyError:
             pass
+
+        for d in self._derived_sources:
+            if name in d.columns:
+                return ColumnData(
+                    self._compute_derived(name, d).reindex(self.ad.obs_names), name
+                )
 
         primary_index = self.ad.obs_names
         for alt in self._alternative_sources:
@@ -371,11 +489,37 @@ class EmbeddingData:
         raise KeyError(
             f"Column or gene {name!r} not found in primary source"
             + (
+                f" or any of {len(self._derived_sources)} derived source(s)"
+                if self._derived_sources
+                else ""
+            )
+            + (
                 f" or any of {len(self._alternative_sources)} alternative source(s)"
                 if self._alternative_sources
                 else ""
             )
         )
+
+    def _compute_derived(self, col, derived) -> pd.Series:
+        """Run the callable for *col* of *derived*, returning its pandas Series.
+
+        Raises ``KeyError`` if *col* is not a registered column of this derived
+        source, and ``TypeError`` if the callable does not return a Series.
+        """
+        try:
+            fn = derived.columns[col]
+        except KeyError:
+            raise KeyError(
+                f"Derived source {derived.name!r} has no column {col!r}; "
+                f"available: {list(derived.columns)}"
+            )
+        series = fn(self)
+        if not isinstance(series, pd.Series):
+            raise TypeError(
+                f"Derived column {col!r} callable must return a pandas Series, "
+                f"got {type(series).__name__}"
+            )
+        return series
 
     def _resolve_column_from(self, ad, name: str) -> ColumnData:
         """Resolve *name* against a single AnnData-like source.

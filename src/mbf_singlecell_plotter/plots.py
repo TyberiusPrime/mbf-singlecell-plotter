@@ -613,6 +613,30 @@ class ScatterPlotter:
         new._data = self._data.add_alternative_source(source, name=name)
         return new
 
+    def add_derived_source(self, derived, name=None) -> "ScatterPlotter":
+        """Register a computed (derived) source for column / gene lookup.
+
+        *derived* is a ``{column_name: callable}`` mapping where each callable
+        receives the underlying :class:`EmbeddingData` and returns a
+        :class:`pandas.Series` indexed by the primary ``obs_names`` — so it can
+        pull from the primary source or any registered alternative via
+        :meth:`get_column` and combine the results.  Columns are computed on
+        demand (once per lookup, no caching).
+
+        Derived columns are found by :meth:`plot` and :meth:`get_column` both
+        as plain strings (checked after the primary source but before
+        alternative sources) and, when *name* is given, explicitly via
+        ``plot((name, column_name))`` / ``get_column((name, column_name))``.
+        *name* must be unique among all alternative and derived sources.
+
+        The plotter is immutable — a new copy is returned.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .add_derived_source()")
+        new = copy.copy(self)
+        new._data = self._data.add_derived_source(derived, name=name)
+        return new
+
     # ── dot appearance ───────────────────────────────────────────────────────
 
     def style(
