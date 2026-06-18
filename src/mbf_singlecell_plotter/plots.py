@@ -1152,7 +1152,7 @@ class ScatterPlotter:
             fig_size = self.fig_size
 
         # Build plot
-        is_gene = expr_name in data.ad.var.index
+        is_gene = data.is_gene(column)
         if is_numerical:
             p = self._build_numerical(df, expr_name, is_gene=is_gene)
         else:

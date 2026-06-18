@@ -3,7 +3,7 @@
 import copy
 import collections
 from pathlib import Path
-from typing import Callable, Dict, NamedTuple, Optional
+from typing import Callable, Dict, NamedTuple, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -582,6 +582,63 @@ class EmbeddingData:
                     continue
                 return val
         return None
+
+    def _classify_in(self, ad, name: str) -> Optional[bool]:
+        """Classify *name* against a single source without extracting data.
+
+        Mirrors :meth:`_resolve_column_from`'s resolution order.  Returns
+        ``True`` if *name* is a feature (``var`` row), ``False`` if it is an
+        ``obs`` column, or ``None`` if it is not found in this source.
+        """
+        if name in ad.obs:
+            return False
+        if name in ad.var.index:
+            return True
+        if (
+            self._alternative_id_column is not None
+            and self._alternative_id_column in ad.var.columns
+            and bool((ad.var[self._alternative_id_column] == name).sum() == 1)
+        ):
+            return True
+        if ad.var.index.str.contains(" ").any():
+            if bool((ad.var.index.str.startswith(name + " ")).sum() == 1):
+                return True
+            if bool((ad.var.index.str.endswith(" " + name)).sum() == 1):
+                return True
+        return None
+
+    def is_gene(self, name: Union[str, tuple]) -> bool:
+        """Return ``True`` if *name* resolves to a feature (``var`` row) rather
+        than an ``obs`` column.
+
+        Accepts the same *name* forms as :meth:`get_column` — a plain string or
+        a ``(source_name, column)`` tuple — and mirrors its resolution order so
+        that a gene sourced from an alternative source, or addressed via an
+        alternative id / ``"symbol id"`` pattern, is still recognised.
+        """
+        # Explicit routing to a named source.
+        if isinstance(name, tuple):
+            src_name, col = name
+            for d in self._derived_sources:
+                if d.name == src_name:
+                    return False  # derived columns are computed, not genes
+            for alt in self._alternative_sources:
+                if alt.name == src_name:
+                    return self._classify_in(alt.ad, col) is True
+            return False  # unknown source — get_column would have raised
+
+        # Plain string: primary first, then derived, then alternative fallback.
+        result = self._classify_in(self.ad, name)
+        if result is not None:
+            return result
+        for d in self._derived_sources:
+            if name in d.columns:
+                return False  # derived column wins before alt sources
+        for alt in self._alternative_sources:
+            result = self._classify_in(alt.ad, name)
+            if result is not None:
+                return result
+        return False
 
     def coordinates(self) -> pd.DataFrame:
         """Return DataFrame with x, y columns, indexed by obs index."""
