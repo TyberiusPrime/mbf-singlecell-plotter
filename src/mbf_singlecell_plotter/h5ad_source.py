@@ -87,8 +87,11 @@ def _parse_series(
         lower = [ln.lower() for ln in lines]
         return pd.Series([ln == "true" for ln in lower], index=index, name=name)
 
-    # numeric (float/int)
-    return pd.Series(pd.to_numeric(lines), index=index, name=name)
+    # numeric (float/int) — fall back to strings when the column isn't numeric
+    try:
+        return pd.Series(pd.to_numeric(lines), index=index, name=name)
+    except (ValueError, TypeError):
+        return pd.Series(lines, index=index, name=name, dtype=object)
 
 
 def _read_obsm(path: Path, key: str) -> np.ndarray:

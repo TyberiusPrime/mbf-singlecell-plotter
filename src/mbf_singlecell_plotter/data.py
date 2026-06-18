@@ -558,6 +558,31 @@ class EmbeddingData:
                 return _extract(id_hits)
         raise KeyError(f"Column or gene {name!r} not found")
 
+    def alternative_id_for(self, gene_name: str) -> Optional[str]:
+        """Return the alternative-id value for *gene_name*, or ``None``.
+
+        Searches the primary source first, then each registered alternative
+        source, looking up ``var[_alternative_id_column]`` for the row whose
+        index equals *gene_name*.  Returns ``None`` when no
+        ``_alternative_id_column`` is configured, the column is absent in a
+        source, the gene is not found, or its alternative id is missing.
+        """
+        if self._alternative_id_column is None:
+            return None
+        col = self._alternative_id_column
+        for ad in [self.ad, *(s.ad for s in self._alternative_sources)]:
+            if col in ad.var.columns and gene_name in ad.var.index:
+                series = ad.var[col]
+                if gene_name not in series.index:
+                    continue
+                val = series[gene_name]
+                if isinstance(val, pd.Series):  # duplicate gene symbols
+                    val = val.iloc[0]
+                if val is None or pd.isna(val):
+                    continue
+                return val
+        return None
+
     def coordinates(self) -> pd.DataFrame:
         """Return DataFrame with x, y columns, indexed by obs index."""
         if self._embedding_cols is not None:

@@ -524,7 +524,7 @@ class ScatterPlotter:
         self._boundary_cache: dict = {"df": None}
         self._grid_config: Optional[GridConfig] = GridConfig(coords=True)
         self._facet_variable: Optional[str] = None
-        self._facet_direction: Optional[str] = 'h'
+        self._facet_direction: Optional[str] = "h"
         self._n_col: int = 2
         self._title_override = _UNSET
 
@@ -540,6 +540,7 @@ class ScatterPlotter:
                 self._data = ad_or_data
             elif isinstance(ad_or_data, (str, Path)):
                 from .h5ad_source import _require_h5ad_inspect, H5adFacade
+
                 _require_h5ad_inspect()
                 self._data = EmbeddingData(H5adFacade(Path(ad_or_data)), embedding)
             else:
@@ -566,6 +567,7 @@ class ScatterPlotter:
             )
             if isinstance(ad_or_data, (str, Path)):
                 from .h5ad_source import _require_h5ad_inspect, H5adFacade
+
                 _require_h5ad_inspect()
                 ad_or_data = H5adFacade(Path(ad_or_data))
             new._data = EmbeddingData(
@@ -800,14 +802,15 @@ class ScatterPlotter:
             new._background_dot_size = dot_size
         return new
 
-
     # overplotting
 
-    def anti_overplot(self, enabled: bool = True, ascending: bool = True) -> "ScatterPlotter":
+    def anti_overplot(
+        self, enabled: bool = True, ascending: bool = True
+    ) -> "ScatterPlotter":
         """Toggle anti-overplotting (random jitter + draw order).
 
         When enabled (default), the values are plotted in order.
-        By default, highest on top, change with ascending=False.  
+        By default, highest on top, change with ascending=False.
         """
         new = copy.copy(self)
         new._anti_overplot = enabled
@@ -1025,10 +1028,10 @@ class ScatterPlotter:
 
     # ── faceting ─────────────────────────────────────────────────────────────
 
-    def facet(self, variable: str, n_col: int = 2, dir: str = 'h') -> "ScatterPlotter":
+    def facet(self, variable: str, n_col: int = 2, dir: str = "h") -> "ScatterPlotter":
         new = copy.copy(self)
         new._facet_variable = variable
-        if not dir in ('h', 'v'):
+        if not dir in ("h", "v"):
             raise ValueError("dir must be 'h' or 'v'")
         new._facet_direction = dir
         new._n_col = n_col
@@ -1097,6 +1100,13 @@ class ScatterPlotter:
 
         # Load expression data
         expr, expr_name = data.get_column(column)
+        if self._data._alternative_id_column is not None:
+            # expr_name is always in var.index space — look up the
+            # alternative id (e.g. Ensembl) so the label reads "alt_id (symbol)".
+            alt_id = data.alternative_id_for(expr_name)
+            if alt_id is not None:
+                expr_name = f"{alt_id} ({expr_name})"
+
         is_numerical = (
             (expr.dtype != "object")
             and (expr.dtype != "category")
@@ -1918,7 +1928,9 @@ class ScatterPlotter:
         df_above = df_nonzero[df_nonzero["expression"] > clip_val].copy()
 
         if self._anti_overplot is not None:
-            df_normal = df_normal.sort_values("expression", ascending=self._anti_overplot_ascending)
+            df_normal = df_normal.sort_values(
+                "expression", ascending=self._anti_overplot_ascending
+            )
 
         df_normal["expression_plot"] = df_normal["expression"]
 
@@ -2010,7 +2022,7 @@ class ScatterPlotter:
                     if self._fixed_panel_size is not None
                     else None
                 ),
-                reverse = self._anti_overplot_ascending is False
+                reverse=self._anti_overplot_ascending is False,
             ),
         )
         return p

@@ -223,3 +223,42 @@ class TestSetSourcePath:
         )
         p = plotter.plot("n_genes")
         assert p is not None
+
+
+# ── alternative_id_column label via facade ───────────────────────────────────
+
+
+class TestAlternativeIdLabel:
+    """The example file stores Ensembl ids in ``var['gene_ids']``; using it as
+    the ``alternative_id_column`` should produce ``"alt_id (symbol)"`` labels."""
+
+    @pytest.fixture(scope="class")
+    def ed_alt(self, facade):
+        return EmbeddingData(facade, "umap", alternative_id_column="gene_ids")
+
+    def test_helper_resolves_symbol(self, ed_alt):
+        assert ed_alt.alternative_id_for("S100A8") == "ENSG00000143546"
+
+    def test_helper_returns_none_for_obs_column(self, ed_alt):
+        # obs columns are not in var.index -> no alternative id
+        assert ed_alt.alternative_id_for("n_genes") is None
+
+    def test_helper_returns_none_without_column(self, facade):
+        ed = EmbeddingData(facade, "umap")
+        assert ed.alternative_id_for("S100A8") is None
+
+    def test_plot_title_shows_alt_id_and_symbol(self, ed_alt):
+        sp = ScatterPlotter().set_source(ed_alt).without_grid()
+        p = sp.plot("S100A8")
+        assert p.labels.get("title", None) == "ENSG00000143546 (S100A8)"
+
+    def test_plot_by_alt_id_labelled_with_symbol(self, ed_alt):
+        # addressing a gene by its alternative id still resolves to the symbol
+        sp = ScatterPlotter().set_source(ed_alt).without_grid()
+        p = sp.plot("ENSG00000143546")
+        assert p.labels.get("title", None) == "ENSG00000143546 (S100A8)"
+
+    def test_plot_obs_column_unaffected(self, ed_alt):
+        sp = ScatterPlotter().set_source(ed_alt).without_grid()
+        p = sp.plot("leiden")
+        assert p.labels.get("title", None) == "leiden"
