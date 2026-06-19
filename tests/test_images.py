@@ -510,6 +510,11 @@ class TestPanelSize:
         )
         assert_image(p)
 
+    def test_density_fixed_panel(self, plotter_no_boundary, assert_image):
+        """panel_size applied to a density heatmap."""
+        p = plotter_no_boundary.panel_size(3, 3).plot_density()
+        assert_image(p)
+
 
 class TestColormaps:
     def test_numeric_manual_colors(self, plotter_no_boundary, assert_image):

@@ -60,10 +60,21 @@ def _ensure_post_draw(p: p9.ggplot) -> "_PlotWithPostDraw":
 
 def _apply_fixed_panel(fig, panel_w: float, panel_h: float) -> None:
     """Resize *fig* so the scatter panel is exactly panel_w × panel_h inches."""
-    from plotnine._mpl.layout_manager._spaces import LayoutSpaces
-
     fw, fh = fig.get_size_inches()
     le = fig.get_layout_engine()
+    if le is None:
+        # Layout already frozen (e.g. by a custom post-draw colourbar): axes
+        # positions are fixed figure fractions, so size the figure directly from
+        # the current panel position.  No iteration is needed because the frozen
+        # positions do not change when the figure is resized.
+        ax = fig.get_axes()[0]
+        pos = ax.get_position()
+        fig.set_size_inches(panel_w / pos.width, panel_h / pos.height)
+        fig.canvas.draw()
+        return
+
+    from plotnine._mpl.layout_manager._spaces import LayoutSpaces
+
     spaces = LayoutSpaces(le.plot)
     l_in = spaces.l.total * fw
     r_in = spaces.r.total * fw
@@ -1349,6 +1360,15 @@ class ScatterPlotter:
             p = _ensure_post_draw(p)
             p._post_draw_fns.append(
                 lambda fig, _c=legend_config: _draw_numerical_legend(fig, **_c)
+            )
+
+        # Fixed panel size — registered after the colorbar so the resize wins
+        # (the custom legend scales the panel horizontally; must run first).
+        if self._fixed_panel_size is not None:
+            w, h = self._fixed_panel_size
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(
+                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
             )
 
         if self._embedding_label:
