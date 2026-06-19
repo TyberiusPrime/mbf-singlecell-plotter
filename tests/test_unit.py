@@ -897,6 +897,19 @@ class TestAlternativeSourcesEmbeddingData:
         series, _ = data.get_column("EXTRA_GENE")
         assert np.allclose(series.values, np.arange(ad.n_obs))
 
+    def test_rejects_dict_source(self, ad):
+        data = EmbeddingData(ad, "umap")
+        with pytest.raises(TypeError):
+            data.add_alternative_source({"x": lambda d: d.get_column("n_genes").series})
+
+    def test_constructor_rejects_dict_source(self, ad):
+        with pytest.raises(TypeError):
+            EmbeddingData(
+                ad,
+                "umap",
+                alternative_sources=[{"x": lambda d: d.get_column("n_genes").series}],
+            )
+
 
 class TestAlternativeSourcesPlotter:
     def test_plotter_add_alternative_source_resolves_gene(self, ad):

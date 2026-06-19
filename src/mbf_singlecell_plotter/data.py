@@ -197,6 +197,12 @@ class EmbeddingData:
         """
         from .h5ad_source import _require_h5ad_inspect, H5adFacade
 
+        if isinstance(source, dict):
+            raise TypeError(
+                "An alternative source must be an AnnData, H5adFacade, .h5ad "
+                "path, or EmbeddingData — got a dict. Use add_derived_source() "
+                "to register computed {column: callable} columns."
+            )
         if isinstance(source, EmbeddingData):
             return source.ad
         if isinstance(source, (str, Path)):

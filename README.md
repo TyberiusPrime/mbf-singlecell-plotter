@@ -102,6 +102,48 @@ Tuple lookups resolve from the named source only and are reindexed onto the
 primary `obs_names`. Plain-string lookups keep the usual primary → fallback
 behaviour. Names must be unique; passing a duplicate name raises `ValueError`.
 
+#### Derived sources (computed columns)
+
+Register a source whose columns are computed on demand from the primary —
+or any registered alternative — source:
+
+```python
+plotter = plotter.add_derived_source({
+    "double_genes": lambda d: d.get_column("n_genes").series * 2,
+    "ratio": lambda d: d.get_column("n_genes").series / d.get_column("total_counts").series,
+})
+
+plotter.plot("double_genes")
+```
+
+Each callable receives the underlying `EmbeddingData` and must return a
+`pandas.Series` indexed by the primary `obs_names`. Columns are recomputed on
+every lookup (no caching), so they always reflect the current source state.
+
+Give a derived source a name to address a column explicitly, bypassing both
+the primary source and the fallback order:
+
+```python
+plotter = plotter.add_derived_source(
+    {"score": lambda d: d.get_column("n_genes").series * 2},
+    name="calc",
+)
+
+plotter.plot(("calc", "score"))
+plotter.get_column(("calc", "score"))
+```
+
+Lookup order:
+
+- plain string — checked **after** the primary source but **before** the
+  alternative sources (so a derived column wins over an accidentally
+  same-named column in a fallback);
+- `(name, column)` — resolves from the named derived source only.
+
+`name` must be unique among all alternative and derived sources, and results
+are reindexed onto the primary `obs_names`. The plotter is immutable —
+`add_derived_source` returns a new copy.
+
 ---
 
 ### Visual style
@@ -488,6 +530,57 @@ data = data.add_alternative_source(other_ad, name="imputed")  # name optional
 Named sources can be addressed explicitly via `get_column((name, column))`;
 plain-string lookups fall back through every registered alternative.
 
+### Derived sources (computed columns)
+
+Register a source whose columns are computed on demand — the callables may
+pull from the primary source or any registered alternative via `get_column`
+and combine the results:
+
+```python
+data = data.add_derived_source({
+    "double_genes": lambda d: d.get_column("n_genes").series * 2,
+    "ratio": lambda d: d.get_column("n_genes").series / d.get_column("total_counts").series,
+})
+
+# Or pass a name for explicit tuple routing
+data = data.add_derived_source(
+    {"score": lambda d: d.get_column("n_genes").series * 2},
+    name="calc",
+)
+data.get_column(("calc", "score"))
+```
+
+`derived` is a `{column_name: callable}` mapping; each callable receives the
+`EmbeddingData` and returns a `pandas.Series` indexed by the primary
+`obs_names`. Columns are recomputed on every lookup (no caching).
+
+Resolution order for plain-string names:
+
+1. Primary source
+2. **Derived sources** (checked before alternatives, so a derived column
+   wins over an accidentally same-named column in a fallback)
+3. Alternative sources
+
+Tuple routing `get_column((name, column))` resolves from the named derived
+(or alternative) source only. `name` must be unique among all alternative and
+derived sources, and results are reindexed onto the primary `obs_names`.
+
+`EmbeddingData` is immutable — `add_derived_source` returns a new copy.
+Registered derived sources are exposed via `EmbeddingData.derived_sources`
+as `DerivedSource(name, columns)` named tuples.
+
+#### `DerivedSource`
+
+```python
+from mbf_singlecell_plotter import DerivedSource  # NamedTuple
+
+rec = DerivedSource("calc", {"score": lambda d: d.get_column("n_genes").series})
+data = EmbeddingData(ad, "umap").add_derived_source(rec)
+
+rec.name      # Optional[str] — None for plain-string-only sources
+rec.columns   # Dict[str, Callable[[EmbeddingData], pd.Series]]
+```
+
 ---
 
 ### `get_column(name)` → `ColumnData`
@@ -514,12 +607,15 @@ Resolution order:
 
 Raises `KeyError` if no match is found.
 
-If nothing matches in the primary source, each registered alternative source
-(see `alternative_sources` / `add_alternative_source`) is tried with the same
-resolution order; the first hit is reindexed onto the primary `obs_names`.
+If nothing matches in the primary source, **derived sources** are checked
+next (see `derived_sources` / `add_derived_source`), then each registered
+alternative source (see `alternative_sources` / `add_alternative_source`)
+is tried with the same resolution order; the first hit is reindexed onto
+the primary `obs_names`.
 
 For explicit routing, pass a `(source_name, column)` tuple — the column is
-resolved from the alternative registered under `source_name` only.
+resolved from the alternative or derived source registered under
+`source_name` only.
 
 #### `AlternativeSource`
 
@@ -622,6 +718,7 @@ from mbf_singlecell_plotter import (
     EmbeddingData,
     ColumnData,
     AlternativeSource,
+    DerivedSource,
     prepare_scatter_df,
     prepare_density_df,
     compute_boundaries,
