@@ -40,6 +40,9 @@ SAMPLE_GENES = [
 # The categorical cluster column in the example data (leiden clusters)
 CELL_TYPE_COLUMN = "leiden"
 
+# A coarse (3-category) grouping derived from leiden, for 2-D facet tests.
+COARSE_COLUMN = "coarse"
+
 
 @pytest.fixture(scope="session")
 def ad():
@@ -48,6 +51,12 @@ def ad():
     half_and_half = pd.Series(True, index=res.obs.index)
     half_and_half.iloc[: len(half_and_half) // 2] = False
     res.obs["bool"] = half_and_half
+    # Coarse cluster grouping: low / mid / high leiden index → 3 categories.
+    coarse = pd.Series("M", index=res.obs.index, dtype=object)
+    leiden_int = res.obs["leiden"].astype(int)
+    coarse[leiden_int < 3] = "L"
+    coarse[leiden_int >= 6] = "H"
+    res.obs[COARSE_COLUMN] = coarse.astype("category")
     return res
 
 

@@ -304,6 +304,63 @@ class TestPrepareDensityDf:
         assert facet_total == pytest.approx(plain_total)
 
 
+class TestPrepareDensityDf2D:
+    """prepare_density_df 2-D (facet_grid) faceting."""
+
+    def test_adds_row_and_col_columns(self, data):
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        row_vals, _ = data.get_column("bool")
+        col_vals, _ = data.get_column("coarse")
+        df = prepare_density_df(
+            data, bins=80, facet_row=row_vals, facet_col=col_vals
+        )
+        assert "facet_row" in df.columns
+        assert "facet_col" in df.columns
+        assert isinstance(df["facet_row"].dtype, pd.CategoricalDtype)
+        assert isinstance(df["facet_col"].dtype, pd.CategoricalDtype)
+
+    def test_grid_partitions_cells(self, data):
+        """Each (row, col) cell combination's density sums to its cell count."""
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        row_vals, _ = data.get_column("bool")
+        col_vals, _ = data.get_column("coarse")
+        df = prepare_density_df(
+            data, bins=80, facet_row=row_vals, facet_col=col_vals
+        )
+        coords = data.coordinates()
+        r = row_vals.reindex(coords.index)
+        c = col_vals.reindex(coords.index)
+        true = coords.groupby([r, c], observed=True).size()
+        for (rv, cv), sub in df.groupby(
+            ["facet_row", "facet_col"], observed=True
+        ):
+            assert sub["density"].sum() == pytest.approx(true[(rv, cv)])
+
+    def test_2d_preserves_total(self, data):
+        """Concatenated 2-D grid densities sum to the un-faceted total."""
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        row_vals, _ = data.get_column("bool")
+        col_vals, _ = data.get_column("coarse")
+        grid_total = prepare_density_df(
+            data, bins=80, facet_row=row_vals, facet_col=col_vals
+        )["density"].sum()
+        plain_total = prepare_density_df(data, bins=80)["density"].sum()
+        assert grid_total == pytest.approx(plain_total)
+
+    def test_rows_only_grid(self, data):
+        """facet_row without facet_col still partitions by the single variable."""
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        row_vals, _ = data.get_column("coarse")
+        df = prepare_density_df(data, bins=80, facet_row=row_vals)
+        assert "facet_row" in df.columns
+        assert "facet_col" not in df.columns
+        assert set(df["facet_row"].cat.categories) == {"L", "M", "H"}
+
+
 class TestPlotDensityParity:
     """plot_density honours focus_on / focus_on_grid and title like plot()."""
 
@@ -470,6 +527,46 @@ class TestPanelSize:
         assert img_num.size != img_cat.size, (
             "Different legend sizes should give different total figure sizes"
         )
+
+
+class TestFacet2D:
+    """facet_2d() API and its mutual exclusivity with facet()."""
+
+    def test_facet_2d_sets_row_and_col(self, plotter_no_boundary):
+        pt = plotter_no_boundary.facet_2d("bool", "coarse")
+        assert pt._facet_row_variable == "bool"
+        assert pt._facet_col_variable == "coarse"
+        assert pt._facet_variable is None
+
+    def test_facet_after_2d_clears_2d(self, plotter_no_boundary):
+        pt = plotter_no_boundary.facet_2d("bool", "coarse").facet("leiden", n_col=3)
+        assert pt._facet_variable == "leiden"
+        assert pt._facet_row_variable is None
+        assert pt._facet_col_variable is None
+
+    def test_2d_after_facet_clears_1d(self, plotter_no_boundary):
+        pt = plotter_no_boundary.facet("leiden", n_col=3).facet_2d("bool", "coarse")
+        assert pt._facet_row_variable == "bool"
+        assert pt._facet_col_variable == "coarse"
+        assert pt._facet_variable is None
+
+    def test_unfacet_clears_2d(self, plotter_no_boundary):
+        pt = plotter_no_boundary.facet_2d("bool", "coarse").unfacet()
+        assert pt._facet_variable is None
+        assert pt._facet_row_variable is None
+        assert pt._facet_col_variable is None
+
+    def test_2d_uses_facet_grid(self, plotter_no_boundary):
+        import plotnine as p9
+
+        p = plotter_no_boundary.facet_2d("bool", "coarse").plot("S100A8")
+        assert type(p.facet) is p9.facet_grid
+
+    def test_1d_uses_facet_wrap(self, plotter_no_boundary):
+        import plotnine as p9
+
+        p = plotter_no_boundary.facet("leiden", n_col=3).plot("S100A8")
+        assert type(p.facet) is p9.facet_wrap
 
 
 # ---------------------------------------------------------------------------

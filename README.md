@@ -273,6 +273,14 @@ plotter.facet("batch", n_col=3, dir='v')
 plotter.unfacet()
 ```
 
+Facet by two variables into a grid (`facet_grid(row ~ col)`):
+
+```python
+plotter.facet_2d(row_variable="donor", col_variable="tissue")
+```
+
+`facet()` and `facet_2d()` are mutually exclusive — each unsets the other.
+
 ---
 
 ### Title

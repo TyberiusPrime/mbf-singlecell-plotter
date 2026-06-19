@@ -552,6 +552,9 @@ class ScatterPlotter:
         self._facet_variable: Optional[str] = None
         self._facet_direction: Optional[str] = "h"
         self._n_col: int = 2
+        # 2D faceting (facet_grid rows ~ cols); mutually exclusive with facet().
+        self._facet_row_variable: Optional[str] = None
+        self._facet_col_variable: Optional[str] = None
         self._title_override = _UNSET
 
         # embedding label
@@ -1075,12 +1078,77 @@ class ScatterPlotter:
             raise ValueError("dir must be 'h' or 'v'")
         new._facet_direction = dir
         new._n_col = n_col
+        # facet() and facet_2d() are mutually exclusive.
+        new._facet_row_variable = None
+        new._facet_col_variable = None
+        return new
+
+    def facet_2d(
+        self, row_variable: str, col_variable: str
+    ) -> "ScatterPlotter":
+        """Facet into a 2-D grid (``facet_grid(row ~ col)``).
+
+        *row_variable* labels the grid rows, *col_variable* labels the columns,
+        matching ggplot's ``facet_grid`` convention.  Unsets any regular
+        :meth:`facet` configuration, and vice versa.
+        """
+        new = copy.copy(self)
+        new._facet_row_variable = row_variable
+        new._facet_col_variable = col_variable
+        # facet() and facet_2d() are mutually exclusive.
+        new._facet_variable = None
         return new
 
     def unfacet(self) -> "ScatterPlotter":
         new = copy.copy(self)
         new._facet_variable = None
+        new._facet_row_variable = None
+        new._facet_col_variable = None
         return new
+
+    # ── faceting (internals) ────────────────────────────────────────────────
+
+    def _is_faceted(self) -> bool:
+        return (
+            self._facet_variable is not None
+            or self._facet_row_variable is not None
+            or self._facet_col_variable is not None
+        )
+
+    def _facet_grid_dims(self, df: pd.DataFrame) -> "tuple[int, int]":
+        """Return (n_col, n_row) panel counts for figure sizing."""
+        if self._facet_variable is not None:
+            n_facets = df["facet"].nunique()
+            n_row = -(-n_facets // self._n_col)  # ceil division
+            return self._n_col, n_row
+        n_col = (
+            df["facet_col"].nunique()
+            if self._facet_col_variable is not None
+            else 1
+        )
+        n_row = (
+            df["facet_row"].nunique()
+            if self._facet_row_variable is not None
+            else 1
+        )
+        return n_col, n_row
+
+    def _apply_facet_layer(self, p: p9.ggplot) -> p9.ggplot:
+        """Attach the configured facet_wrap / facet_grid to *p*."""
+        if self._facet_variable is not None:
+            return p + p9.facet_wrap(
+                "~facet", ncol=self._n_col, dir=self._facet_direction
+            )
+        if self._facet_row_variable is not None or (
+            self._facet_col_variable is not None
+        ):
+            kwargs: dict = {}
+            if self._facet_row_variable is not None:
+                kwargs["rows"] = "facet_row"
+            if self._facet_col_variable is not None:
+                kwargs["cols"] = "facet_col"
+            return p + p9.facet_grid(**kwargs)
+        return p
 
     # ── title ────────────────────────────────────────────────────────────────
 
@@ -1152,17 +1220,22 @@ class ScatterPlotter:
         df = coords.copy()
         df["expression"] = expr
 
-        # Facet column
+        # Facet columns
         if self._facet_variable is not None:
             facet_vals, _ = data.get_column(self._facet_variable)
             df["facet"] = facet_vals
+        if self._facet_row_variable is not None:
+            row_vals, _ = data.get_column(self._facet_row_variable)
+            df["facet_row"] = row_vals
+        if self._facet_col_variable is not None:
+            col_vals, _ = data.get_column(self._facet_col_variable)
+            df["facet_col"] = col_vals
 
         # Figure size
         if self.fig_size is None:
-            if self._facet_variable is not None:
-                n_facets = df["facet"].nunique()
-                n_row = (n_facets + self._n_col - 1) // self._n_col
-                fig_size = (6 * self._n_col, 5 * n_row)
+            if self._is_faceted():
+                n_col, n_row = self._facet_grid_dims(df)
+                fig_size = (6 * n_col, 5 * n_row)
             else:
                 has_border_legend = (
                     self._layer_borders
@@ -1186,8 +1259,7 @@ class ScatterPlotter:
             p = p + p9.coord_cartesian(xlim=(x_min, x_max), ylim=(y_min, y_max))
 
         # Facet
-        if self._facet_variable is not None:
-            p = p + p9.facet_wrap("~facet", ncol=self._n_col, dir=self._facet_direction)
+        p = self._apply_facet_layer(p)
 
         # Title
         if self._title_override is not _UNSET:
@@ -1261,7 +1333,20 @@ class ScatterPlotter:
         if self._facet_variable is not None:
             facet_series, _ = data.get_column(self._facet_variable)
 
-        df = prepare_density_df(data, bins=bins, facet=facet_series)
+        facet_row_series = None
+        facet_col_series = None
+        if self._facet_row_variable is not None:
+            facet_row_series, _ = data.get_column(self._facet_row_variable)
+        if self._facet_col_variable is not None:
+            facet_col_series, _ = data.get_column(self._facet_col_variable)
+
+        df = prepare_density_df(
+            data,
+            bins=bins,
+            facet=facet_series,
+            facet_row=facet_row_series,
+            facet_col=facet_col_series,
+        )
 
         has_clips = quantile < 1.0
         if has_clips:
@@ -1315,10 +1400,7 @@ class ScatterPlotter:
             p = p + p9.coord_cartesian(xlim=(x_min, x_max), ylim=(y_min, y_max))
 
         # Facet (mirrors .plot())
-        if self._facet_variable is not None:
-            p = p + p9.facet_wrap(
-                "~facet", ncol=self._n_col, dir=self._facet_direction
-            )
+        p = self._apply_facet_layer(p)
 
         # Title (mirrors .plot() / .plot_embedding_color())
         if self._title_override is not _UNSET:
@@ -1331,10 +1413,9 @@ class ScatterPlotter:
 
         # Figure size — grows with facets, like .plot()
         if self.fig_size is None:
-            if self._facet_variable is not None:
-                n_facets = df["facet"].nunique()
-                n_row = (n_facets + self._n_col - 1) // self._n_col
-                fig_size = (6 * self._n_col, 5 * n_row)
+            if self._is_faceted():
+                n_col, n_row = self._facet_grid_dims(df)
+                fig_size = (6 * n_col, 5 * n_row)
             else:
                 fig_size = (6, 5)
         else:

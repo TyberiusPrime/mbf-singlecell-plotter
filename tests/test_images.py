@@ -412,6 +412,39 @@ class TestPlotScatterFacet:
 
 
 # ---------------------------------------------------------------------------
+# plot / plot_density — 2-D faceting (facet_2d → facet_grid)
+# ---------------------------------------------------------------------------
+
+
+class TestFacet2D:
+    def test_scatter_2d_grid(self, plotter_no_boundary, assert_image):
+        """Scatter faceted into a 2-D grid (rows=bool, cols=coarse)."""
+        p = (
+            plotter_no_boundary
+            .facet_2d("bool", "coarse")
+            .style(dot_size=DOT_SIZE)
+            .plot("S100A8")
+        )
+        assert_image(p)
+
+    def test_density_2d_grid(self, plotter_no_boundary, assert_image):
+        """Density heatmap faceted into a 2-D grid (rows=bool, cols=coarse)."""
+        p = plotter_no_boundary.facet_2d("bool", "coarse").plot_density()
+        assert_image(p)
+
+    def test_2d_fixed_panel(self, plotter_no_boundary, assert_image):
+        """2-D facet grid with a fixed per-panel size."""
+        p = (
+            plotter_no_boundary
+            .facet_2d("bool", "coarse")
+            .style(dot_size=DOT_SIZE)
+            .panel_size(2, 2)
+            .plot("S100A8")
+        )
+        assert_image(p)
+
+
+# ---------------------------------------------------------------------------
 # plot — axis limits (focus_on)
 # ---------------------------------------------------------------------------
 

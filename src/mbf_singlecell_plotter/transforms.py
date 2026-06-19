@@ -46,7 +46,9 @@ def prepare_scatter_df(
     return df
 
 
-def prepare_density_df(data, bins: int = 200, facet=None) -> pd.DataFrame:
+def prepare_density_df(
+    data, bins: int = 200, facet=None, facet_row=None, facet_col=None
+) -> pd.DataFrame:
     """2D histogram → long-form DataFrame with x, y, density, x_width, y_width columns.
 
     When *facet* is a :class:`pandas.Series` aligned to the embedding's cell
@@ -54,6 +56,10 @@ def prepare_density_df(data, bins: int = 200, facet=None) -> pd.DataFrame:
     bin edges (so every panel shares the same coordinate frame and colour
     scale) and an ordered-Categorical ``facet`` column is added — ready for
     ``plotnine.facet_wrap("~facet")``.
+
+    Alternatively, *facet_row* and *facet_col* (both Series) produce a 2-D grid
+    of histograms with ``facet_row`` / ``facet_col`` Categorical columns, ready
+    for ``plotnine.facet_grid(rows="facet_row", cols="facet_col")``.
     """
     coords = data.coordinates()
     # Shared global edges so every facet panel uses the same coordinate frame.
@@ -65,53 +71,106 @@ def prepare_density_df(data, bins: int = 200, facet=None) -> pd.DataFrame:
     y_width = y_edges[1] - y_edges[0]
     X, Y = np.meshgrid(x_centers, y_centers)
 
-    if facet is None:
-        H, _, _ = np.histogram2d(coords["x"], coords["y"], bins=[x_edges, y_edges])
+    def _hist(sub):
+        H, _, _ = np.histogram2d(sub["x"], sub["y"], bins=[x_edges, y_edges])
+        return H.T.flatten()
+
+    if facet is None and facet_row is None and facet_col is None:
         df = pd.DataFrame(
             {
                 "x": X.flatten(),
                 "y": Y.flatten(),
-                "density": H.T.flatten(),
+                "density": _hist(coords),
                 "x_width": x_width,
                 "y_width": y_width,
             }
         )
         return df[df["density"] > 0].copy()
 
-    # Per-facet histograms over the shared global edges.
+    # ── 1-D faceting ──────────────────────────────────────────────────────────
+    if facet is not None:
+        from natsort import natsorted
+
+        facet = facet.reindex(coords.index)
+        cat_order = _facet_categories(facet)
+        frames = []
+        for value in cat_order:
+            sub = coords[facet == value]
+            if len(sub) == 0:
+                continue
+            fdf = pd.DataFrame(
+                {
+                    "x": X.flatten(),
+                    "y": Y.flatten(),
+                    "density": _hist(sub),
+                    "x_width": x_width,
+                    "y_width": y_width,
+                    "facet": value,
+                }
+            )
+            frames.append(fdf[fdf["density"] > 0])
+        if not frames:
+            return pd.DataFrame(
+                columns=["x", "y", "density", "x_width", "y_width", "facet"]
+            )
+        df = pd.concat(frames, ignore_index=True)
+        df["facet"] = pd.Categorical(df["facet"], categories=cat_order)
+        return df
+
+    # ── 2-D faceting (facet_grid) ─────────────────────────────────────────────
     from natsort import natsorted
 
-    facet = facet.reindex(coords.index)
-    if isinstance(facet.dtype, pd.CategoricalDtype):
-        cat_order = list(facet.cat.categories)
-    else:
-        cat_order = list(natsorted(pd.unique(facet.dropna())))
+    facet_row = facet_row.reindex(coords.index) if facet_row is not None else None
+    facet_col = facet_col.reindex(coords.index) if facet_col is not None else None
+    row_cats = _facet_categories(facet_row) if facet_row is not None else [None]
+    col_cats = _facet_categories(facet_col) if facet_col is not None else [None]
 
     frames = []
-    for value in cat_order:
-        sub = coords[facet == value]
-        if len(sub) == 0:
-            continue
-        H, _, _ = np.histogram2d(sub["x"], sub["y"], bins=[x_edges, y_edges])
-        fdf = pd.DataFrame(
-            {
+    for rv in row_cats:
+        for cv in col_cats:
+            mask = np.ones(len(coords), dtype=bool)
+            if facet_row is not None:
+                mask &= (facet_row.values == rv)
+            if facet_col is not None:
+                mask &= (facet_col.values == cv)
+            sub = coords[mask]
+            if len(sub) == 0:
+                continue
+            row = {
                 "x": X.flatten(),
                 "y": Y.flatten(),
-                "density": H.T.flatten(),
+                "density": _hist(sub),
                 "x_width": x_width,
                 "y_width": y_width,
-                "facet": value,
             }
-        )
-        frames.append(fdf[fdf["density"] > 0])
-
+            if facet_row is not None:
+                row["facet_row"] = rv
+            if facet_col is not None:
+                row["facet_col"] = cv
+            fdf = pd.DataFrame(row)
+            frames.append(fdf[fdf["density"] > 0])
     if not frames:
-        return pd.DataFrame(
-            columns=["x", "y", "density", "x_width", "y_width", "facet"]
-        )
+        cols = ["x", "y", "density", "x_width", "y_width"]
+        if facet_row is not None:
+            cols.append("facet_row")
+        if facet_col is not None:
+            cols.append("facet_col")
+        return pd.DataFrame(columns=cols)
     df = pd.concat(frames, ignore_index=True)
-    df["facet"] = pd.Categorical(df["facet"], categories=cat_order)
+    if facet_row is not None:
+        df["facet_row"] = pd.Categorical(df["facet_row"], categories=row_cats)
+    if facet_col is not None:
+        df["facet_col"] = pd.Categorical(df["facet_col"], categories=col_cats)
     return df
+
+
+def _facet_categories(series: pd.Series) -> list:
+    """Return the ordered category list for a facet Series."""
+    from natsort import natsorted
+
+    if isinstance(series.dtype, pd.CategoricalDtype):
+        return list(series.cat.categories)
+    return list(natsorted(pd.unique(series.dropna())))
 
 
 def compute_boundaries(
