@@ -1452,7 +1452,8 @@ class ScatterPlotter:
 
         return p
 
-    def plot_density(self, bins: int = 200, quantile: float = 0.99) -> p9.ggplot:
+    def plot_density(self, bins: int = 200, quantile: float = 0.99, cmap_colors=None, 
+                     include_counts=False) -> p9.ggplot:
         """Build a 2D cell-density heatmap.
 
         Args:
@@ -1502,7 +1503,8 @@ class ScatterPlotter:
         nonzero = df["density"][df["density"] > 0]
         density_min = float(nonzero.min()) if len(nonzero) > 0 else 0.0
 
-        cmap_colors = ["#BFBFFF", "#0000FF"]
+        if cmap_colors is None:
+            cmap_colors = ["#BFBFFF", "#0000FF"]
         breaks = list(np.linspace(density_min, clip_val, 5))
         labels = [f"{b:.2f}" for b in breaks]
 
@@ -1518,6 +1520,10 @@ class ScatterPlotter:
                 name="density",
             )
         )
+        if include_counts:
+            count_df = df[df['density'] > 0]
+            count_df = count_df.assign(text = count_df['density'].round(0).astype(int).astype(str))
+            p = p + p9.geom_text(p9.aes('x','y', label='text'), data=count_df)
 
         if has_clips:
             p = p + p9.guides(fill="none")
