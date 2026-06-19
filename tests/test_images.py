@@ -515,6 +515,37 @@ class TestPanelSize:
         p = plotter_no_boundary.panel_size(3, 3).plot_density()
         assert_image(p)
 
+    def test_density_facet_fixed_panel(self, plotter_no_boundary, assert_image):
+        """panel_size applied to a faceted density heatmap (multi-row, multi-col).
+
+        Exercises the fixed-panel resize across a facet grid; density plots take
+        the frozen-layout path (the colourbar freezes the engine) which is
+        facet-correct, so every panel should be 3x3 in.
+        """
+        p = (
+            plotter_no_boundary
+            .facet(CAT_COL, n_col=3)
+            .panel_size(3, 3)
+            .plot_density()
+        )
+        assert_image(p)
+
+    def test_numerical_facet_fixed_panel(self, plotter_no_boundary, assert_image):
+        """panel_size applied to a faceted numerical plot (multi-row, multi-col).
+
+        Exercises the fixed-panel resize across a facet grid: every panel must
+        come out 3x3 in.  _apply_fixed_panel's live-layout branch scales the
+        figure-size correction by the facet's ncol/nrow.
+        """
+        p = (
+            plotter_no_boundary
+            .style(dot_size=DOT_SIZE)
+            .facet(CAT_COL, n_col=3)
+            .panel_size(3, 3)
+            .plot("S100A8")
+        )
+        assert_image(p)
+
 
 class TestColormaps:
     def test_numeric_manual_colors(self, plotter_no_boundary, assert_image):

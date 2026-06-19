@@ -75,23 +75,35 @@ def _apply_fixed_panel(fig, panel_w: float, panel_h: float) -> None:
 
     from plotnine._mpl.layout_manager._spaces import LayoutSpaces
 
+    # Facet grid dimensions (1x1 for un-faceted plots).
+    facet = le.plot.facet
+    n_col = max(1, int(getattr(facet, "ncol", 1) or 1))
+    n_row = max(1, int(getattr(facet, "nrow", 1) or 1))
+
     spaces = LayoutSpaces(le.plot)
     l_in = spaces.l.total * fw
     r_in = spaces.r.total * fw
     b_in = spaces.b.total * fh
     t_in = spaces.t.total * fh
-    fig.set_size_inches(l_in + panel_w + r_in, b_in + panel_h + t_in)
+    # Initial estimate: reserve width/height for *every* panel in the grid.
+    # Inter-panel gaps are ignored here and corrected by the iteration below.
+    fig.set_size_inches(
+        l_in + n_col * panel_w + r_in,
+        b_in + n_row * panel_h + t_in,
+    )
     le.execute(fig)
     fig.canvas.draw()
-    for _ in range(3):
+    for _ in range(5):
         ax = fig.get_axes()[0]
         pos = ax.get_position()
         cur_fw, cur_fh = fig.get_size_inches()
         actual_w = pos.width * cur_fw
         actual_h = pos.height * cur_fh
+        # Each panel only claims 1/n_col of any figure-width change (and 1/n_row
+        # of a height change), so scale the correction by the grid dimensions.
         fig.set_size_inches(
-            cur_fw + (panel_w - actual_w),
-            cur_fh + (panel_h - actual_h),
+            cur_fw + n_col * (panel_w - actual_w),
+            cur_fh + n_row * (panel_h - actual_h),
         )
         le.execute(fig)
         fig.canvas.draw()
