@@ -1221,13 +1221,24 @@ class ScatterPlotter:
                       Set to 1.0 for no clipping (uses the built-in plotnine legend).
                       Any value < 1.0 clips the colour scale and draws the same
                       custom matplotlib colourbar as numerical scatter plots.
+
+        Honours the plotter's grid overlay (``with_grid``), faceting
+        (``facet``), viewport (``focus_on`` / ``focus_on_grid``) and title
+        (``title``) configuration, mirroring :meth:`plot`.
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_density()")
 
         from .transforms import prepare_density_df
 
-        df = prepare_density_df(self._data, bins=bins)
+        data = self._data
+        x_min, x_max, y_min, y_max = data.bounds()
+
+        facet_series = None
+        if self._facet_variable is not None:
+            facet_series, _ = data.get_column(self._facet_variable)
+
+        df = prepare_density_df(data, bins=bins, facet=facet_series)
 
         has_clips = quantile < 1.0
         if has_clips:
@@ -1276,15 +1287,49 @@ class ScatterPlotter:
                     inherit_aes=False,
                 )
 
+        # Focus viewport (mirrors .plot())
+        if data.has_focus:
+            p = p + p9.coord_cartesian(xlim=(x_min, x_max), ylim=(y_min, y_max))
+
+        # Facet (mirrors .plot())
+        if self._facet_variable is not None:
+            p = p + p9.facet_wrap(
+                "~facet", ncol=self._n_col, dir=self._facet_direction
+            )
+
+        # Title (mirrors .plot() / .plot_embedding_color())
+        if self._title_override is not _UNSET:
+            p = p + p9.labs(title=self._title_override)
+        else:
+            emb_name = data.embedding
+            if emb_name.startswith("X_"):
+                emb_name = emb_name[2:]
+            p = p + p9.labs(title=emb_name)
+
+        # Figure size — grows with facets, like .plot()
+        if self.fig_size is None:
+            if self._facet_variable is not None:
+                n_facets = df["facet"].nunique()
+                n_row = (n_facets + self._n_col - 1) // self._n_col
+                fig_size = (6 * self._n_col, 5 * n_row)
+            else:
+                fig_size = (6, 5)
+        else:
+            fig_size = self.fig_size
+
         p = p + embedding_theme(
             base_size=self.base_size,
             show_spines=self._panel_border,
             bg_color=self._bg_color,
             spine_color=self._spine_color,
         )
-        p = p + p9.theme(figure_size=(6, 5))
+        p = p + p9.theme(figure_size=fig_size, **self._theme_overwrites)
 
-        if self._grid_config is None:
+        # Grid overlay + axis ticks — parity with .plot() / .plot_moran_markers()
+        if self._grid_config is not None:
+            p = self._add_grid_layers(p)
+            p = self._add_grid_axis_ticks(p)
+        else:
             p = self._add_plain_axis_ticks(p)
 
         if has_clips:
@@ -1307,7 +1352,7 @@ class ScatterPlotter:
             )
 
         if self._embedding_label:
-            p = self._add_embedding_label(p, self._data)
+            p = self._add_embedding_label(p, data)
 
         return p
 

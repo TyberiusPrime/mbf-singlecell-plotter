@@ -209,6 +209,46 @@ class TestPlotCellDensity:
         p = plotter_no_boundary.plot_density(bins=50)
         assert_image(p)
 
+    def test_no_grid(self, plotter_no_boundary, assert_image):
+        """Density with the grid disabled — plain axis ticks, no grid lines."""
+        p = plotter_no_boundary.without_grid().plot_density()
+        assert_image(p)
+
+    def test_grid_labels(self, plotter_no_boundary, assert_image):
+        """Density honouring the grid: lines + cell-interior labels + axis ticks."""
+        p = plotter_no_boundary.with_grid(labels=True).plot_density()
+        assert_image(p)
+
+    def test_grid_no_coords(self, plotter_no_boundary, assert_image):
+        """Grid lines drawn but axis ticks left as plain coordinates."""
+        p = plotter_no_boundary.with_grid(coords=False).plot_density()
+        assert_image(p)
+
+    def test_facet_by_leiden(self, plotter_no_boundary, assert_image):
+        """Density faceted by cluster — one heatmap panel per leiden group."""
+        p = plotter_no_boundary.facet(CAT_COL, n_col=3).plot_density()
+        assert_image(p)
+
+    def test_facet_with_grid(self, plotter_no_boundary, assert_image):
+        """Faceted density combined with the grid overlay."""
+        p = (
+            plotter_no_boundary
+            .facet(CAT_COL, n_col=3)
+            .with_grid(labels=True)
+            .plot_density()
+        )
+        assert_image(p)
+
+    def test_focus_on_grid(self, plotter_no_boundary, assert_image):
+        """Density zoomed to a grid window via focus_on_grid."""
+        p = plotter_no_boundary.focus_on_grid("K12", "G9").plot_density()
+        assert_image(p)
+
+    def test_title_override(self, plotter_no_boundary, assert_image):
+        """Custom title applied via .title()."""
+        p = plotter_no_boundary.title("cell density").plot_density()
+        assert_image(p)
+
     def test_returns_ggplot(self, plotter_no_boundary):
         import plotnine as p9
 

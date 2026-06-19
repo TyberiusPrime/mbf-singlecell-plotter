@@ -239,6 +239,121 @@ class TestGridLocalHistogram:
 
 
 # ---------------------------------------------------------------------------
+# prepare_density_df — 2D density transform (incl. faceting)
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareDensityDf:
+    def test_basic_columns(self, data):
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        df = prepare_density_df(data, bins=80)
+        assert set(["x", "y", "density", "x_width", "y_width"]).issubset(df.columns)
+        assert "facet" not in df.columns
+        assert (df["density"] > 0).all()
+
+    def test_facet_adds_facet_column(self, data):
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        facet_vals, _ = data.get_column(CAT_COL)
+        df = prepare_density_df(data, bins=80, facet=facet_vals)
+        assert "facet" in df.columns
+        assert isinstance(df["facet"].dtype, pd.CategoricalDtype)
+        # categorical order preserved from the source column
+        assert list(df["facet"].cat.categories) == list(facet_vals.cat.categories)
+
+    def test_facet_shared_global_edges(self, data):
+        """Every facet panel must share the same coordinate frame (global edges)."""
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        facet_vals, _ = data.get_column(CAT_COL)
+        df = prepare_density_df(data, bins=80, facet=facet_vals)
+        single = prepare_density_df(data, bins=80)
+        # bin width (and thus the shared edge spacing) matches the un-faceted run
+        assert df["x_width"].iloc[0] == pytest.approx(single["x_width"].iloc[0])
+        assert df["y_width"].iloc[0] == pytest.approx(single["y_width"].iloc[0])
+        # every facet's occupied bin centres lie on the shared global grid
+        global_x = np.isclose(
+            df["x"].values[:, None], single["x"].values[None, :], atol=1e-9
+        ).any(axis=1)
+        global_y = np.isclose(
+            df["y"].values[:, None], single["y"].values[None, :], atol=1e-9
+        ).any(axis=1)
+        assert global_x.all() and global_y.all()
+
+    def test_facet_cell_count_partitioned(self, data, ad):
+        """Per-facet density sums equal the number of cells in that facet."""
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        facet_vals, _ = data.get_column(CAT_COL)
+        df = prepare_density_df(data, bins=120, facet=facet_vals)
+        coords = data.coordinates()
+        true_counts = coords.groupby(
+            facet_vals.reindex(coords.index), observed=True
+        ).size()
+        for cat, sub in df.groupby("facet", observed=True):
+            assert sub["density"].sum() == pytest.approx(true_counts[cat])
+
+    def test_facet_preserves_total(self, data):
+        """Concatenated facet densities sum to the same total as the un-faceted run."""
+        from mbf_singlecell_plotter.transforms import prepare_density_df
+
+        facet_vals, _ = data.get_column(CAT_COL)
+        facet_total = prepare_density_df(data, bins=80, facet=facet_vals)["density"].sum()
+        plain_total = prepare_density_df(data, bins=80)["density"].sum()
+        assert facet_total == pytest.approx(plain_total)
+
+
+class TestPlotDensityParity:
+    """plot_density honours focus_on / focus_on_grid and title like plot()."""
+
+    def test_default_title_is_embedding_name(self, plotter_no_boundary):
+        import plotnine as p9
+
+        p = plotter_no_boundary.plot_density()
+        assert isinstance(p, p9.ggplot)
+        # "X_umap" → "umap", matching the embedding-label convention
+        assert p.labels.get("title", None) == "umap"
+
+    def test_title_override(self, plotter_no_boundary):
+        p = plotter_no_boundary.title("my density").plot_density()
+        assert p.labels.get("title", None) == "my density"
+
+    def test_focus_on_grid_applies_coord_cartesian(self, plotter_no_boundary, data):
+        import plotnine as p9
+
+        x_min, x_max, y_min, y_max = plotter_no_boundary.focus_on_grid(
+            "K12", "G9"
+        )._data.bounds()
+        p = plotter_no_boundary.focus_on_grid("K12", "G9").plot_density()
+        assert isinstance(p.coordinates, p9.coords.coord_cartesian)
+        assert p.coordinates.limits.x == (x_min, x_max)
+        assert p.coordinates.limits.y == (y_min, y_max)
+
+    def test_no_focus_leaves_limits_unset(self, plotter_no_boundary):
+        # plotnine defaults every ggplot to coord_cartesian(), so the signal
+        # that focus is *not* active is that limits are unset (None).
+        p = plotter_no_boundary.plot_density()
+        assert p.coordinates.limits.x is None
+        assert p.coordinates.limits.y is None
+
+    def test_focus_float_range(self, plotter_no_boundary, data):
+        import plotnine as p9
+
+        coords = data.coordinates()
+        xlo, xhi = float(coords["x"].min()), float(coords["x"].median())
+        ylo, yhi = float(coords["y"].min()), float(coords["y"].median())
+        p = (
+            plotter_no_boundary
+            .focus_on(x=(xlo, xhi), y=(ylo, yhi))
+            .plot_density()
+        )
+        assert isinstance(p.coordinates, p9.coords.coord_cartesian)
+        assert p.coordinates.limits.x == (xlo, xhi)
+        assert p.coordinates.limits.y == (ylo, yhi)
+
+
+# ---------------------------------------------------------------------------
 # Constructor edge cases
 # ---------------------------------------------------------------------------
 

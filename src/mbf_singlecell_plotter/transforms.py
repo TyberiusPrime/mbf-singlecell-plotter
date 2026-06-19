@@ -46,25 +46,72 @@ def prepare_scatter_df(
     return df
 
 
-def prepare_density_df(data, bins: int = 200) -> pd.DataFrame:
-    """2D histogram → long-form DataFrame with x, y, density, x_width, y_width columns."""
+def prepare_density_df(data, bins: int = 200, facet=None) -> pd.DataFrame:
+    """2D histogram → long-form DataFrame with x, y, density, x_width, y_width columns.
+
+    When *facet* is a :class:`pandas.Series` aligned to the embedding's cell
+    index, a separate histogram is computed per facet group over shared global
+    bin edges (so every panel shares the same coordinate frame and colour
+    scale) and an ordered-Categorical ``facet`` column is added — ready for
+    ``plotnine.facet_wrap("~facet")``.
+    """
     coords = data.coordinates()
-    H, xedges, yedges = np.histogram2d(coords["x"], coords["y"], bins=bins)
-    x_centers = (xedges[:-1] + xedges[1:]) / 2
-    y_centers = (yedges[:-1] + yedges[1:]) / 2
-    x_width = xedges[1] - xedges[0]
-    y_width = yedges[1] - yedges[0]
+    # Shared global edges so every facet panel uses the same coordinate frame.
+    x_edges = np.linspace(float(coords["x"].min()), float(coords["x"].max()), bins + 1)
+    y_edges = np.linspace(float(coords["y"].min()), float(coords["y"].max()), bins + 1)
+    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
+    x_width = x_edges[1] - x_edges[0]
+    y_width = y_edges[1] - y_edges[0]
     X, Y = np.meshgrid(x_centers, y_centers)
-    df = pd.DataFrame(
-        {
-            "x": X.flatten(),
-            "y": Y.flatten(),
-            "density": H.T.flatten(),
-            "x_width": x_width,
-            "y_width": y_width,
-        }
-    )
-    return df[df["density"] > 0].copy()
+
+    if facet is None:
+        H, _, _ = np.histogram2d(coords["x"], coords["y"], bins=[x_edges, y_edges])
+        df = pd.DataFrame(
+            {
+                "x": X.flatten(),
+                "y": Y.flatten(),
+                "density": H.T.flatten(),
+                "x_width": x_width,
+                "y_width": y_width,
+            }
+        )
+        return df[df["density"] > 0].copy()
+
+    # Per-facet histograms over the shared global edges.
+    from natsort import natsorted
+
+    facet = facet.reindex(coords.index)
+    if isinstance(facet.dtype, pd.CategoricalDtype):
+        cat_order = list(facet.cat.categories)
+    else:
+        cat_order = list(natsorted(pd.unique(facet.dropna())))
+
+    frames = []
+    for value in cat_order:
+        sub = coords[facet == value]
+        if len(sub) == 0:
+            continue
+        H, _, _ = np.histogram2d(sub["x"], sub["y"], bins=[x_edges, y_edges])
+        fdf = pd.DataFrame(
+            {
+                "x": X.flatten(),
+                "y": Y.flatten(),
+                "density": H.T.flatten(),
+                "x_width": x_width,
+                "y_width": y_width,
+                "facet": value,
+            }
+        )
+        frames.append(fdf[fdf["density"] > 0])
+
+    if not frames:
+        return pd.DataFrame(
+            columns=["x", "y", "density", "x_width", "y_width", "facet"]
+        )
+    df = pd.concat(frames, ignore_index=True)
+    df["facet"] = pd.Categorical(df["facet"], categories=cat_order)
+    return df
 
 
 def compute_boundaries(
