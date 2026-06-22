@@ -579,6 +579,17 @@ class TestPanelSize:
         )
         assert_image(p)
 
+    def test_panel_size_in_composition(self, plotter_no_boundary, assert_image):
+        """panel_size must be honoured when two plots are stacked with ``/``.
+
+        plotnine's ``Compose`` bypasses ``ggplot.save_helper``, so without the
+        composition post-draw patch the ``_apply_fixed_panel`` hook would never
+        run and both panels would fall back to the default figure size.
+        """
+        p1 = plotter_no_boundary.style(dot_size=DOT_SIZE).panel_size(3, 3).plot("S100A8")
+        p2 = plotter_no_boundary.style(dot_size=DOT_SIZE).panel_size(3, 3).plot(CAT_COL)
+        assert_image(p1 / p2)
+
 
 class TestColormaps:
     def test_numeric_manual_colors(self, plotter_no_boundary, assert_image):

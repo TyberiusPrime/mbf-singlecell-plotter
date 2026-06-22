@@ -528,6 +528,58 @@ class TestPanelSize:
             "Different legend sizes should give different total figure sizes"
         )
 
+    def test_panel_size_respected_in_composition(self, plotter_no_boundary):
+        """panel_size() must be honoured when plots are joined with `/` or `|`.
+
+        plotnine's Compose.save/draw bypass ggplot.save_helper, so the
+        post-draw hooks (incl. _apply_fixed_panel) used to be skipped for
+        stacked / side-by-side plots.  After the fix each member plot's panel
+        is resized to the requested size.
+        """
+        from mbf_singlecell_plotter.plots import _first_panel_axes
+
+        def _panel_inches(fig):
+            ax = _first_panel_axes(fig)
+            pos = ax.get_position()
+            fw, fh = fig.get_size_inches()
+            return pos.width * fw, pos.height * fh
+
+        # ── vertical stack (p1 / p2) ──────────────────────────────────────
+        p1 = plotter_no_boundary.panel_size(3, 3).plot("S100A8")
+        p2 = plotter_no_boundary.panel_size(3, 3).plot("S100A8")
+        fig = (p1 / p2).draw()
+        w, h = _panel_inches(fig)
+        assert abs(w - 3.0) < 0.05, f"stacked panel width {w:.2f} != 3.0"
+        assert abs(h - 3.0) < 0.05, f"stacked panel height {h:.2f} != 3.0"
+
+        # ── side-by-side (p1 | p2) ────────────────────────────────────────
+        p3 = plotter_no_boundary.panel_size(2, 4).plot("S100A8")
+        p4 = plotter_no_boundary.panel_size(2, 4).plot("S100A8")
+        fig2 = (p3 | p4).draw()
+        w2, h2 = _panel_inches(fig2)
+        assert abs(w2 - 2.0) < 0.05, f"beside panel width {w2:.2f} != 2.0"
+        assert abs(h2 - 4.0) < 0.05, f"beside panel height {h2:.2f} != 4.0"
+
+    def test_composition_panel_size_via_save(self, plotter_no_boundary):
+        """panel_size also works through the normal .save() path of a stack."""
+        import io
+        from PIL import Image
+
+        p1 = plotter_no_boundary.panel_size(3, 3).plot("S100A8")
+        p2 = plotter_no_boundary.panel_size(3, 3).plot("S100A8")
+
+        buf = io.BytesIO()
+        (p1 / p2).save(buf, format="png", dpi=100, verbose=False)
+        buf.seek(0)
+        img = Image.open(buf)
+        # Two 3x3in panels stacked (plus per-plot margins) → clearly taller
+        # than wide, and tall enough that each panel is ~3in at 100 dpi.
+        assert img.size[1] > img.size[0], "stacked image should be taller than wide"
+        # 2 panels × 3in × 100dpi = 600px of panel alone.
+        assert img.size[1] >= 600, (
+            f"stacked image height {img.size[1]}px too small for 2×3in panels"
+        )
+
 
 class TestFacet2D:
     """facet_2d() API and its mutual exclusivity with facet()."""

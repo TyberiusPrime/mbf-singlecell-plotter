@@ -41,6 +41,14 @@ class _PlotWithPostDraw(p9.ggplot):
 
     Use ``_ensure_post_draw(p)`` to promote any ggplot to this class, then
     append callables ``fn(fig)`` to ``p._post_draw_fns``.
+
+    Hooks are run after the figure is drawn in three situations:
+
+    * ``save_helper`` — the regular ``ggplot.save`` path for a single plot.
+    * ``interactive`` — the module runs the hooks explicitly after ``draw``.
+    * plotnine *compositions* (``p1 / p2``, ``p1 | p2``) — see
+      :func:`_patch_composition_post_draw`, which makes ``Compose.draw`` run
+      every member plot's hooks once the shared figure has been laid out.
     """
 
     def save_helper(self, **kwargs):
@@ -58,21 +66,56 @@ def _ensure_post_draw(p: p9.ggplot) -> "_PlotWithPostDraw":
     return p
 
 
+def _first_panel_axes(fig):
+    """Return a representative scatter-panel axes of *fig*.
+
+    For plain / faceted single plots the first axes is the panel.  In a
+    plotnine composition some helper axes (legends, tag titles) may precede
+    the panels, so prefer the first visible axes that actually holds data.
+    """
+    axes = fig.get_axes()
+    if not axes:
+        raise RuntimeError("figure has no axes; cannot measure panel size")
+    for ax in axes:
+        if not ax.get_visible():
+            continue
+        pos = ax.get_position()
+        if pos.width <= 0 or pos.height <= 0:
+            continue
+        if ax.collections or ax.images or ax.lines:
+            return ax
+    return axes[0]
+
+
 def _apply_fixed_panel(fig, panel_w: float, panel_h: float) -> None:
-    """Resize *fig* so the scatter panel is exactly panel_w × panel_h inches."""
-    fw, fh = fig.get_size_inches()
+    """Resize *fig* so the scatter panel is exactly panel_w × panel_h inches.
+
+    Works for single plots, faceted plots and plotnine compositions
+    (``p1 / p2`` & friends).  The composition case is handled by iterating
+    against the live ``PlotnineCompositionLayoutEngine``.
+    """
     le = fig.get_layout_engine()
+
     if le is None:
         # Layout already frozen (e.g. by a custom post-draw colourbar): axes
         # positions are fixed figure fractions, so size the figure directly from
         # the current panel position.  No iteration is needed because the frozen
         # positions do not change when the figure is resized.
-        ax = fig.get_axes()[0]
+        ax = _first_panel_axes(fig)
         pos = ax.get_position()
         fig.set_size_inches(panel_w / pos.width, panel_h / pos.height)
         fig.canvas.draw()
         return
 
+    from plotnine._mpl.layout_manager._engine import (
+        PlotnineCompositionLayoutEngine,
+    )
+
+    if isinstance(le, PlotnineCompositionLayoutEngine):
+        _apply_fixed_panel_composition(fig, le, panel_w, panel_h)
+        return
+
+    fw, fh = fig.get_size_inches()
     from plotnine._mpl.layout_manager._spaces import LayoutSpaces
 
     # Facet grid dimensions (1x1 for un-faceted plots).
@@ -94,7 +137,7 @@ def _apply_fixed_panel(fig, panel_w: float, panel_h: float) -> None:
     le.execute(fig)
     fig.canvas.draw()
     for _ in range(5):
-        ax = fig.get_axes()[0]
+        ax = _first_panel_axes(fig)
         pos = ax.get_position()
         cur_fw, cur_fh = fig.get_size_inches()
         actual_w = pos.width * cur_fw
@@ -107,6 +150,94 @@ def _apply_fixed_panel(fig, panel_w: float, panel_h: float) -> None:
         )
         le.execute(fig)
         fig.canvas.draw()
+
+
+def _apply_fixed_panel_composition(fig, le, panel_w: float, panel_h: float) -> None:
+    """``_apply_fixed_panel`` variant for plotnine composition figures.
+
+    The composition shares one figure between several plots.  After
+    ``harmonise`` every panel has equal width and height, so resizing the
+    figure so that *one* panel reaches the target size sizes them all.  We
+    iterate because the surrounding margins (titles, axis labels, legends)
+    are absolute and only settle once the layout engine re-executes.
+    """
+    cmp = le.composition
+    n_col = max(1, int(getattr(cmp, "ncol", 1) or 1))
+    n_row = max(1, int(getattr(cmp, "nrow", 1) or 1))
+
+    for _ in range(10):
+        le.execute(fig)
+        fig.canvas.draw()
+        ax = _first_panel_axes(fig)
+        pos = ax.get_position()
+        cur_fw, cur_fh = fig.get_size_inches()
+        actual_w = pos.width * cur_fw
+        actual_h = pos.height * cur_fh
+        if (
+            abs(actual_w - panel_w) < 0.005
+            and abs(actual_h - panel_h) < 0.005
+        ):
+            break
+        # As with facets: a figure-size change is split across the grid, so a
+        # single panel only grows by 1/n_col (width) or 1/n_row (height) of it.
+        fig.set_size_inches(
+            cur_fw + n_col * (panel_w - actual_w),
+            cur_fh + n_row * (panel_h - actual_h),
+        )
+
+
+def _patch_composition_post_draw() -> None:
+    """Make plotnine compositions run each member plot's post-draw hooks.
+
+    ``plotnine``'s ``Compose.draw`` / ``Compose.save`` build a shared figure
+    and apply their own layout engine, bypassing ``ggplot.save_helper`` where
+    our hooks normally run.  Without this patch, features registered through
+    :func:`_ensure_post_draw` — most notably :func:`panel_size`
+    (``_apply_fixed_panel``) — are silently ignored for stacked / side-by-side
+    plots.  We wrap ``Compose.draw`` to settle the layout and then run every
+    member plot's hooks once (deduplicated per figure).
+    """
+    import plotnine.composition._compose as _cmp
+
+    if getattr(_cmp.Compose.draw, "_msp_patched", False):
+        return
+    _orig_draw = _cmp.Compose.draw
+
+    def _collect_plots(cmp, out):
+        for item in cmp:
+            if isinstance(item, _cmp.Compose):
+                _collect_plots(item, out)
+            else:
+                out.append(item)
+
+    def _draw(self, *, show: bool = False):
+        figure = _orig_draw(self, show=show)
+        if getattr(figure, "_msp_post_draw_done", False):
+            return figure
+        plots: list = []
+        _collect_plots(self, plots)
+        hook_plots = [
+            p
+            for p in plots
+            if isinstance(p, _PlotWithPostDraw) and getattr(p, "_post_draw_fns", None)
+        ]
+        if hook_plots:
+            # Settle the composition layout before hooks read panel geometry.
+            le = figure.get_layout_engine()
+            if le is not None:
+                le.execute(figure)
+                figure.canvas.draw()
+            for p in hook_plots:
+                for fn in p._post_draw_fns:
+                    fn(figure)
+        figure._msp_post_draw_done = True
+        return figure
+
+    _draw._msp_patched = True
+    _cmp.Compose.draw = _draw
+
+
+_patch_composition_post_draw()
 
 
 # ── 2-D embedding colour legend ──────────────────────────────────────────────
