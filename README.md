@@ -429,8 +429,8 @@ plotter.plot("S100A8").save("s100a8.png")
 
 Only the data actually needed for each plot is read from disk — obs columns
 and gene-expression vectors are fetched on demand, and embedding arrays are
-read directly via h5py.  This is useful for large datasets where loading the
-full AnnData into RAM is slow or impractical.
+read via `h5ad-inspect`'s `--binary` mode.  This is useful for large datasets
+where loading the full AnnData into RAM is slow or impractical.
 
 ### Installation
 

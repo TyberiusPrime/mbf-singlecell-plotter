@@ -1,5 +1,6 @@
 """h5ad-inspect backed data source — fast selective reads from .h5ad files."""
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -50,38 +51,36 @@ def _run_lines(path: Path, *args: str) -> list:
     return [line for line in raw.split("\n") if line] if raw else []
 
 
-def _col_encoding(path: Path, group: str, key: str) -> str:
-    """Return the h5ad encoding for a column: ``'categorical'``, ``'bool'``, or ``'numeric'``."""
-    import h5py
+def _col_encoding(path: Path, group: str, key: str) -> tuple:
+    """Return ``(encoding, categories)`` for an obs/var column.
 
-    with h5py.File(path, "r") as f:
-        grp = f.get(group)
-        if grp is None or key not in grp:
-            return "numeric"
-        item = grp[key]
-        if isinstance(item, h5py.Group):
-            enc = item.attrs.get("encoding-type", b"")
-            if isinstance(enc, bytes):
-                enc = enc.decode()
-            if enc == "categorical":
-                return "categorical"
-        elif isinstance(item, h5py.Dataset):
-            if item.dtype.kind == "b":
-                return "bool"
-    return "numeric"
+    Uses ``h5ad-inspect export <group>_encoding <key>``, which emits a JSON
+    object such as ``{"encoding":"categorical","categories":[...]}``,
+    ``{"encoding":"bool"}``, or ``{"encoding":"numeric"}`` (a missing column
+    also resolves to ``numeric``).
+
+    ``encoding`` is one of ``'categorical'``, ``'bool'``, ``'numeric'``;
+    ``categories`` is the ordered category list for categorical columns,
+    otherwise ``None``.
+    """
+    raw = _run_inspect(path, "export", f"{group}_encoding", key).decode().strip()
+    if not raw:
+        return "numeric", None
+    info = json.loads(raw)
+    return info.get("encoding", "numeric"), info.get("categories")
 
 
 def _parse_series(
-    lines: list, name: str, index: pd.Index, encoding: str, path: Path, h5_group
+    lines: list, name: str, index: pd.Index, encoding: str, categories
 ) -> pd.Series:
     """Parse text lines from an ``export`` subcommand into a typed Series."""
     if not lines:
         return pd.Series([], index=index, name=name, dtype=object)
 
     if encoding == "categorical":
-        # we need to get the categories...
-        cat_order = _run_lines(path, "export", f"{h5_group}_categories", name)
-        return pd.Series(pd.Categorical(lines, cat_order), index=index, name=name)
+        return pd.Series(
+            pd.Categorical(lines, categories), index=index, name=name
+        )
 
     if encoding == "bool":
         lower = [ln.lower() for ln in lines]
@@ -134,9 +133,9 @@ class _ColProxy:
     def __getitem__(self, key: str) -> pd.Series:
         if key not in self._cache:
             lines = _run_lines(self._path, "export", self._h5_group, key)
-            encoding = _col_encoding(self._path, self._h5_group, key)
+            encoding, categories = _col_encoding(self._path, self._h5_group, key)
             self._cache[key] = _parse_series(
-                lines, key, self._index, encoding, self._path, self._h5_group
+                lines, key, self._index, encoding, categories
             )
         return self._cache[key]
 
@@ -217,14 +216,14 @@ class _XProxy:
 
 class H5adFacade:
     """
-    Minimal AnnData-compatible object backed by h5ad-inspect and h5py.
+    Minimal AnnData-compatible object backed by h5ad-inspect.
 
     Implements the subset of the AnnData interface used by EmbeddingData:
 
     * ``obs_names`` / ``var_names``  — cell / gene indices
     * ``obs``                        — lazy obs-column access (numeric, bool, categorical)
     * ``var``                        — lazy var-column access + gene index
-    * ``obsm``                       — embedding arrays via h5py
+    * ``obsm``                       — embedding arrays via h5ad-inspect ``--binary``
     * ``X``                          — gene expression via h5ad-inspect ``--binary``
     """
 
