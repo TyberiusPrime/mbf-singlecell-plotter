@@ -94,23 +94,16 @@ def _parse_series(
         return pd.Series(lines, index=index, name=name, dtype=object)
 
 
-def _read_obsm(path: Path, key: str) -> np.ndarray:
-    """Read an obsm entry directly from the .h5ad file via h5py."""
-    import h5py
+def _read_obsm(path: Path, key: str, n_cells: int) -> np.ndarray:
+    """Read an obsm entry via ``h5ad-inspect export --binary obsm``.
 
-    with h5py.File(path, "r") as f:
-        if "obsm" not in f:
-            raise KeyError(f"No 'obsm' group in {path}")
-        obsm = f["obsm"]
-        if key not in obsm:
-            raise KeyError(f"obsm key {key!r} not found in {path!r}")
-        item = obsm[key]
-        if isinstance(item, h5py.Dataset):
-            return np.array(item)
-        elif isinstance(item, h5py.Group):
-            col_order = list(item.attrs.get("column-order", sorted(item.keys())))
-            return np.column_stack([np.array(item[c]) for c in col_order])
-    raise KeyError(f"obsm key {key!r} not found")  # pragma: no cover
+    The binary stream is little-endian float64, row-major
+    (n_cells × n_components); we reshape using ``n_cells`` (the known
+    dimension) so callers receive a 2-D array.
+    """
+    raw = _run_inspect(path, "export", "--binary", "obsm", key)
+    arr = np.frombuffer(raw, dtype="<f8").copy()
+    return arr.reshape(n_cells, -1)
 
 
 # ── AnnData-compatible facade classes ─────────────────────────────────────────
@@ -171,10 +164,11 @@ class _VarProxy(_ColProxy):
 
 
 class _ObsmProxy:
-    """Mimics ``AnnData.obsm`` — reads embedding arrays via h5py."""
+    """Mimics ``AnnData.obsm`` — reads embedding arrays via h5ad-inspect ``--binary``."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, n_cells: int) -> None:
         self._path = path
+        self._n_cells = n_cells
         self._keys_list: Optional[list] = None
         self._cache: dict = {}
 
@@ -191,7 +185,9 @@ class _ObsmProxy:
 
     def __getitem__(self, key: str) -> np.ndarray:
         if key not in self._cache:
-            self._cache[key] = _read_obsm(self._path, key)
+            if key not in self:
+                raise KeyError(f"obsm key {key!r} not found in {self._path!r}")
+            self._cache[key] = _read_obsm(self._path, key, self._n_cells)
         return self._cache[key]
 
 
@@ -268,7 +264,7 @@ class H5adFacade:
     @property
     def obsm(self) -> _ObsmProxy:
         if self._obsm_proxy is None:
-            self._obsm_proxy = _ObsmProxy(self._path)
+            self._obsm_proxy = _ObsmProxy(self._path, len(self.obs_names))
         return self._obsm_proxy
 
     @property
