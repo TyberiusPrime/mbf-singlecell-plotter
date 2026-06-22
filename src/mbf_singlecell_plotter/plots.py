@@ -1150,6 +1150,18 @@ class ScatterPlotter:
             return p + p9.facet_grid(**kwargs)
         return p
 
+    def _facet_theme_overwrites(self) -> dict:
+        """Theme kwargs implied by the current faceting mode.
+
+        A 2-D ``facet_grid`` (with row strips) places the row labels on the
+        right, between the panels and the colour bar.  Horizontal labels eat
+        horizontal space there, so they are rotated to match plotnine's usual
+        ``strip_text_y`` convention and free up the gap to the legend.
+        """
+        if self._facet_row_variable is not None:
+            return {"strip_text_y": p9.element_text(angle=-90)}
+        return {}
+
     # ── title ────────────────────────────────────────────────────────────────
 
     def title(self, t: str) -> "ScatterPlotter":
@@ -1284,7 +1296,9 @@ class ScatterPlotter:
             spine_color=self._spine_color,
         )
         p = p + p9.theme(
-            figure_size=fig_size, legend_box="horizontal", **self._theme_overwrites
+            figure_size=fig_size,
+            legend_box="horizontal",
+            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
         )
 
         # Grid axis tick labels (applied after theme so they survive theme_void)
@@ -1427,7 +1441,10 @@ class ScatterPlotter:
             bg_color=self._bg_color,
             spine_color=self._spine_color,
         )
-        p = p + p9.theme(figure_size=fig_size, **self._theme_overwrites)
+        p = p + p9.theme(
+            figure_size=fig_size,
+            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
+        )
 
         # Grid overlay + axis ticks — parity with .plot() / .plot_moran_markers()
         if self._grid_config is not None:

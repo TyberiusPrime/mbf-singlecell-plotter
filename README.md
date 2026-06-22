@@ -323,6 +323,10 @@ plotter.facet_2d(row_variable="donor", col_variable="tissue")
 
 `facet()` and `facet_2d()` are mutually exclusive — each unsets the other.
 
+In a 2-D grid the row labels live on the right, between the panels and the
+colour bar. They are rotated 90° automatically so they don't crowd that gap
+(override with `.theme(strip_text_y=...)`).
+
 ---
 
 ### Title
