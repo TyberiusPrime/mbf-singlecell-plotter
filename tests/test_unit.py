@@ -489,6 +489,25 @@ class TestPlotHistogram:
         p = plotter_no_boundary.facet("coarse", n_col=3).plot_histogram(CAT_COL)
         assert type(p.facet) is p9.facet_wrap
 
+    def test_normalize_divides_by_factor(self, plotter_no_boundary, ad):
+        """Counts divided by n_obs should sum to 1.0 and the max category hits exactly its fraction."""
+        total = ad.n_obs
+        p = plotter_no_boundary.plot_histogram(CAT_COL, normalize=total)
+        # each count is now a fraction of total
+        assert abs(p.data["count"].sum() - 1.0) < 1e-9
+
+    def test_normalize_single_value_hits_one(self, plotter_no_boundary, ad):
+        """Normalizing by a specific bin's count makes that bin exactly 1.0."""
+        vc = ad.obs[CAT_COL].astype(str).value_counts(sort=False)
+        cat_name, target_val = str(vc.index[0]), int(vc.iloc[0])
+        p = plotter_no_boundary.plot_histogram(CAT_COL, normalize=target_val)
+        assert abs(p.data.loc[p.data["category"] == cat_name, "count"].iloc[0] - 1.0) < 1e-9
+
+    def test_normalize_none_keeps_raw_counts(self, plotter_no_boundary, ad):
+        """Explicit normalize=None behaves identically to omitting it."""
+        p = plotter_no_boundary.plot_histogram(CAT_COL, normalize=None)
+        assert p.data["count"].sum() == ad.n_obs
+
 
 # ---------------------------------------------------------------------------
 # Constructor edge cases

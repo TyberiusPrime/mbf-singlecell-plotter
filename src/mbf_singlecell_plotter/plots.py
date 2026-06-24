@@ -173,10 +173,7 @@ def _apply_fixed_panel_composition(fig, le, panel_w: float, panel_h: float) -> N
         cur_fw, cur_fh = fig.get_size_inches()
         actual_w = pos.width * cur_fw
         actual_h = pos.height * cur_fh
-        if (
-            abs(actual_w - panel_w) < 0.005
-            and abs(actual_h - panel_h) < 0.005
-        ):
+        if abs(actual_w - panel_w) < 0.005 and abs(actual_h - panel_h) < 0.005:
             break
         # As with facets: a figure-size change is split across the grid, so a
         # single panel only grows by 1/n_col (width) or 1/n_row (height) of it.
@@ -710,10 +707,7 @@ class ScatterPlotter:
     # ── source ──────────────────────────────────────────────────────────────
 
     def set_source(
-        self,
-        ad_or_data,
-        embedding: str = "umap",
-        alternative_id_column=None
+        self, ad_or_data, embedding: str = "umap", alternative_id_column=None
     ) -> "ScatterPlotter":
         """Attach data source. Accepts AnnData, EmbeddingData, or a path to an .h5ad file."""
         new = copy.copy(self)
@@ -737,7 +731,7 @@ class ScatterPlotter:
                 embedding,
                 grid_size=grid_size,
                 grid_letters_on_vertical=glv,
-                alternative_id_column=alternative_id_column
+                alternative_id_column=alternative_id_column,
             )
         new._boundary_cache = {"df": None}
         return new
@@ -1332,16 +1326,8 @@ class ScatterPlotter:
             n_facets = df["facet"].nunique()
             n_row = -(-n_facets // self._n_col)  # ceil division
             return self._n_col, n_row
-        n_col = (
-            df["facet_col"].nunique()
-            if self._facet_col_variable is not None
-            else 1
-        )
-        n_row = (
-            df["facet_row"].nunique()
-            if self._facet_row_variable is not None
-            else 1
-        )
+        n_col = df["facet_col"].nunique() if self._facet_col_variable is not None else 1
+        n_row = df["facet_row"].nunique() if self._facet_row_variable is not None else 1
         return n_col, n_row
 
     def _apply_facet_layer(self, p: p9.ggplot) -> p9.ggplot:
@@ -1531,8 +1517,13 @@ class ScatterPlotter:
 
         return p
 
-    def plot_density(self, bins: int = 200, quantile: float = 0.99, cmap_colors=None, 
-                     include_counts=False) -> p9.ggplot:
+    def plot_density(
+        self,
+        bins: int = 200,
+        quantile: float = 0.99,
+        cmap_colors=None,
+        include_counts=False,
+    ) -> p9.ggplot:
         """Build a 2D cell-density heatmap.
 
         Args:
@@ -1600,9 +1591,11 @@ class ScatterPlotter:
             )
         )
         if include_counts:
-            count_df = df[df['density'] > 0]
-            count_df = count_df.assign(text = count_df['density'].round(0).astype(int).astype(str))
-            p = p + p9.geom_text(p9.aes('x','y', label='text'), data=count_df)
+            count_df = df[df["density"] > 0]
+            count_df = count_df.assign(
+                text=count_df["density"].round(0).astype(int).astype(str)
+            )
+            p = p + p9.geom_text(p9.aes("x", "y", label="text"), data=count_df)
 
         if has_clips:
             p = p + p9.guides(fill="none")
@@ -2005,7 +1998,9 @@ class ScatterPlotter:
 
         return p
 
-    def plot_histogram(self, column: str) -> p9.ggplot:
+    def plot_histogram(
+        self, column: str, normalize_to: Optional[str] = None
+    ) -> p9.ggplot:
         """Build a bar plot of the ``value_counts`` of a categorical column.
 
         Bars are coloured per category using the discrete palette configured
@@ -2021,6 +2016,11 @@ class ScatterPlotter:
         Raises:
             RuntimeError: if no data source has been set.
             ValueError:  if *column* is numeric.
+
+        **Parameters**
+
+        - ``normalize_to``: optional column value. When provided, every bin
+          count is divided by this value's count so that it becomes ``1.0`` on the y-axis.
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_histogram()")
@@ -2029,14 +2029,11 @@ class ScatterPlotter:
         expr, expr_name = data.get_column(column)
 
         is_numerical = (
-            expr.dtype != "object"
-            and expr.dtype != "category"
-            and expr.dtype != "bool"
+            expr.dtype != "object" and expr.dtype != "category" and expr.dtype != "bool"
         )
         if is_numerical:
             raise ValueError(
-                f"plot_histogram() is for categorical columns; "
-                f"{column!r} is numeric"
+                f"plot_histogram() is for categorical columns; {column!r} is numeric"
             )
 
         if expr.dtype == "category":
@@ -2074,12 +2071,20 @@ class ScatterPlotter:
                 {"category": vc.index.to_numpy(), "count": vc.to_numpy()}
             )
 
+        if normalize_to is not None:
+            normalize = counts.loc[counts["category"] == normalize_to, "count"]
+            if len(normalize) == 0:
+                raise ValueError("That value was not in the column. Type issue maybe?")
+            normalize = normalize.sum()
+        else:
+            normalize = None
+
+        counts = _normalize_counts(counts, normalize)
+
         colors = self._colors_as_list(cats_str)
         color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
         legend_title = (
-            self._cat_colors_title
-            if self._cat_colors_title is not None
-            else expr_name
+            self._cat_colors_title if self._cat_colors_title is not None else expr_name
         )
 
         p = (
@@ -2091,6 +2096,12 @@ class ScatterPlotter:
                 guide=None,
             )
         )
+        if normalize_to is not None:
+            p = (
+                p
+                + p9.geom_hline(yintercept=1.0, color="black", linetype="dashed")
+                + p9.labs(y=f'Relative to "{normalize_to}"')
+            )
 
         p = self._apply_facet_layer(p)
 
@@ -2112,9 +2123,7 @@ class ScatterPlotter:
         p = p + p9.theme(
             figure_size=fig_size,
             panel_background=p9.element_rect(fill=self._bg_color, color=None),
-            panel_border=p9.element_rect(
-                color=self._spine_color, size=0.5, fill=None
-            ),
+            panel_border=p9.element_rect(color=self._spine_color, size=0.5, fill=None),
             panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
             panel_grid_minor=p9.element_blank(),
             axis_text=p9.element_text(color=self._tick_color),
@@ -2812,3 +2821,12 @@ class _UnsetType:
 
 
 _UNSET = _UnsetType()
+
+
+def _normalize_counts(counts_df, factor):
+    """Return a copy of *counts_df* with the ``count`` column divided by *factor*."""
+    if factor is None or factor == 0:
+        return counts_df
+    result = counts_df.copy()
+    result["count"] = result["count"] / factor
+    return result

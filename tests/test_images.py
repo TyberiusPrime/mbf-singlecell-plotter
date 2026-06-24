@@ -111,7 +111,7 @@ class TestPlotScatterNumerical:
 
     def test_background_numerical(self, plotter_no_boundary, assert_image):
         p = (
-            plotter_no_boundary.style(dot_size=.1)
+            plotter_no_boundary.style(dot_size=0.1)
             .background(color="#00FF00", dot_size=DOT_SIZE)
             .layers(zeros=False)
             .plot("S100A8")
@@ -172,23 +172,22 @@ class TestPlotScatterCategorical:
 
     def test_background_categorical(self, plotter_no_boundary, assert_image):
         p = (
-            plotter_no_boundary.style(dot_size=.1)
+            plotter_no_boundary.style(dot_size=0.1)
             .background(color="#CCCCCC", dot_size=DOT_SIZE)
-            #.layerz(zeros=False)
+            # .layerz(zeros=False)
             .plot(CAT_COL)
         )
         assert_image(p)
 
     def test_background_categorical_facet(self, plotter_no_boundary, assert_image):
         p = (
-            plotter_no_boundary.style(dot_size=.1)
+            plotter_no_boundary.style(dot_size=0.1)
             .background(color="#CCCCCC", dot_size=DOT_SIZE)
-            .facet('leiden')
-            #.layerz(zeros=False)
+            .facet("leiden")
+            # .layerz(zeros=False)
             .plot(CAT_COL)
         )
         assert_image(p)
-
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +231,7 @@ class TestPlotCellDensity:
     def test_facet_with_grid(self, plotter_no_boundary, assert_image):
         """Faceted density combined with the grid overlay."""
         p = (
-            plotter_no_boundary
-            .facet(CAT_COL, n_col=3)
+            plotter_no_boundary.facet(CAT_COL, n_col=3)
             .with_grid(labels=True)
             .plot_density()
         )
@@ -420,8 +418,7 @@ class TestFacet2D:
     def test_scatter_2d_grid(self, plotter_no_boundary, assert_image):
         """Scatter faceted into a 2-D grid (rows=bool, cols=coarse)."""
         p = (
-            plotter_no_boundary
-            .facet_2d("bool", "coarse")
+            plotter_no_boundary.facet_2d("bool", "coarse")
             .style(dot_size=DOT_SIZE)
             .plot("S100A8")
         )
@@ -435,8 +432,7 @@ class TestFacet2D:
     def test_2d_fixed_panel(self, plotter_no_boundary, assert_image):
         """2-D facet grid with a fixed per-panel size."""
         p = (
-            plotter_no_boundary
-            .facet_2d("bool", "coarse")
+            plotter_no_boundary.facet_2d("bool", "coarse")
             .style(dot_size=DOT_SIZE)
             .panel_size(2, 2)
             .plot("S100A8")
@@ -522,8 +518,15 @@ class TestPlotHistogram:
 
     def test_custom_colors(self, plotter_no_boundary, assert_image):
         colors = [
-            "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF",
-            "#00FFFF", "#000000", "#FFFFFF", "#888888",
+            "#FF0000",
+            "#00FF00",
+            "#0000FF",
+            "#FFFF00",
+            "#FF00FF",
+            "#00FFFF",
+            "#000000",
+            "#FFFFFF",
+            "#888888",
         ]
         p = plotter_no_boundary.colormap_discrete(colors).plot_histogram(CAT_COL)
         assert_image(p)
@@ -538,6 +541,10 @@ class TestPlotHistogram:
 
     def test_fixed_panel(self, plotter_no_boundary, assert_image):
         p = plotter_no_boundary.panel_size(3, 3).plot_histogram(CAT_COL)
+        assert_image(p)
+
+    def test_basic_normalized(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.plot_histogram(CAT_COL, normalize_to="4")
         assert_image(p)
 
 
@@ -586,12 +593,7 @@ class TestPanelSize:
         the frozen-layout path (the colourbar freezes the engine) which is
         facet-correct, so every panel should be 3x3 in.
         """
-        p = (
-            plotter_no_boundary
-            .facet(CAT_COL, n_col=3)
-            .panel_size(3, 3)
-            .plot_density()
-        )
+        p = plotter_no_boundary.facet(CAT_COL, n_col=3).panel_size(3, 3).plot_density()
         assert_image(p)
 
     def test_numerical_facet_fixed_panel(self, plotter_no_boundary, assert_image):
@@ -602,8 +604,7 @@ class TestPanelSize:
         figure-size correction by the facet's ncol/nrow.
         """
         p = (
-            plotter_no_boundary
-            .style(dot_size=DOT_SIZE)
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
             .facet(CAT_COL, n_col=3)
             .panel_size(3, 3)
             .plot("S100A8")
@@ -617,7 +618,9 @@ class TestPanelSize:
         composition post-draw patch the ``_apply_fixed_panel`` hook would never
         run and both panels would fall back to the default figure size.
         """
-        p1 = plotter_no_boundary.style(dot_size=DOT_SIZE).panel_size(3, 3).plot("S100A8")
+        p1 = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE).panel_size(3, 3).plot("S100A8")
+        )
         p2 = plotter_no_boundary.style(dot_size=DOT_SIZE).panel_size(3, 3).plot(CAT_COL)
         assert_image(p1 / p2)
 
@@ -863,9 +866,19 @@ class TestCategoricalLegendFit:
 
         # 13 distinct colors to go with 13 categories
         colors_13 = [
-            "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
-            "#911eb4", "#42d4f4", "#f032e6", "#bfef45", "#fabed4",
-            "#469990", "#dcbeff", "#9A6324",
+            "#e6194b",
+            "#3cb44b",
+            "#ffe119",
+            "#4363d8",
+            "#f58231",
+            "#911eb4",
+            "#42d4f4",
+            "#f032e6",
+            "#bfef45",
+            "#fabed4",
+            "#469990",
+            "#dcbeff",
+            "#9A6324",
         ]
 
         n = len(ad.obs)
@@ -891,9 +904,20 @@ class TestCategoricalLegendFit:
         from mbf_singlecell_plotter import EmbeddingData, ScatterPlotter
 
         colors_14 = [
-            "#e6194b", "#3cb44b", "#ffe119", "#4363d8", "#f58231",
-            "#911eb4", "#42d4f4", "#f032e6", "#bfef45", "#fabed4",
-            "#469990", "#dcbeff", "#9A6324", "#800000",
+            "#e6194b",
+            "#3cb44b",
+            "#ffe119",
+            "#4363d8",
+            "#f58231",
+            "#911eb4",
+            "#42d4f4",
+            "#f032e6",
+            "#bfef45",
+            "#fabed4",
+            "#469990",
+            "#dcbeff",
+            "#9A6324",
+            "#800000",
         ]
 
         n = len(ad.obs)
