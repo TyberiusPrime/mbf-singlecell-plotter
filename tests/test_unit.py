@@ -411,6 +411,86 @@ class TestPlotDensityParity:
 
 
 # ---------------------------------------------------------------------------
+# plot_histogram — global value_counts bar plot
+# ---------------------------------------------------------------------------
+
+
+class TestPlotHistogram:
+    def test_returns_ggplot_and_default_title(self, plotter_no_boundary):
+        import plotnine as p9
+
+        p = plotter_no_boundary.plot_histogram(CAT_COL)
+        assert isinstance(p, p9.ggplot)
+        assert p.labels.get("title", None) == CAT_COL
+
+    def test_title_override(self, plotter_no_boundary):
+        p = plotter_no_boundary.title("counts!").plot_histogram(CAT_COL)
+        assert p.labels.get("title", None) == "counts!"
+
+    def test_counts_match_value_counts(self, plotter_no_boundary, ad):
+        p = plotter_no_boundary.plot_histogram(CAT_COL)
+        vc = ad.obs[CAT_COL].astype(str).value_counts(sort=False)
+        got = p.data.set_index("category")["count"]
+        assert got.sort_index().equals(vc.sort_index())
+        # total must equal the number of cells
+        assert p.data["count"].sum() == ad.n_obs
+
+    def test_numeric_column_raises(self, plotter_no_boundary):
+        with pytest.raises(ValueError, match="numeric"):
+            plotter_no_boundary.plot_histogram(NUMERIC_COL)
+
+    def test_uses_configured_colors(self, plotter_no_boundary):
+        """Rendered bars must use the colormap_discrete palette."""
+        import matplotlib.colors as mc
+
+        colors = ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff",
+                  "#00ffff", "#000000", "#ffffff", "#888888"]
+        p = plotter_no_boundary.colormap_discrete(colors).plot_histogram(CAT_COL)
+        ax = p.draw().axes[0]
+        # geom_col bars are a PolyCollection in current plotnine
+        from matplotlib.collections import PolyCollection
+
+        fcs = set()
+        for pc in ax.collections:
+            if isinstance(pc, PolyCollection):
+                fcs.update(mc.to_hex(rgba) for rgba in pc.get_facecolors())
+        assert fcs, "no bars drawn"
+        assert fcs.issubset(set(colors))
+
+    def test_fill_legend_hidden(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot_histogram(CAT_COL)
+        scale = next(s for s in p.scales if "fill" in s.aesthetics)
+        assert scale.guide is None
+
+    def test_facet_counts_partition_cells(self, plotter_no_boundary, ad):
+        p = plotter_no_boundary.facet("coarse", n_col=3).plot_histogram(CAT_COL)
+        assert "facet" in p.data.columns
+        # totals equal the number of cells
+        assert p.data["count"].sum() == ad.n_obs
+        # per-facet counts match the ground truth
+        truth = (
+            ad.obs.assign(_c=ad.obs[CAT_COL].astype(str))
+            .groupby("coarse", observed=True)["_c"]
+            .value_counts()
+            .reset_index(name="count")
+        )
+        truth.columns = ["facet", "category", "count"]
+        merged = p.data.merge(truth, on=["facet", "category"])
+        assert merged["count_x"].equals(merged["count_y"])
+
+    def test_facet_2d_counts_partition_cells(self, plotter_no_boundary, ad):
+        p = plotter_no_boundary.facet_2d("bool", "coarse").plot_histogram(CAT_COL)
+        assert {"facet_row", "facet_col"}.issubset(p.data.columns)
+        assert p.data["count"].sum() == ad.n_obs
+
+    def test_facet_uses_facet_wrap(self, plotter_no_boundary):
+        import plotnine as p9
+
+        p = plotter_no_boundary.facet("coarse", n_col=3).plot_histogram(CAT_COL)
+        assert type(p.facet) is p9.facet_wrap
+
+
+# ---------------------------------------------------------------------------
 # Constructor edge cases
 # ---------------------------------------------------------------------------
 
@@ -619,6 +699,55 @@ class TestFacet2D:
 
         p = plotter_no_boundary.facet("leiden", n_col=3).plot("S100A8")
         assert type(p.facet) is p9.facet_wrap
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=IndexError,
+        reason=(
+            "plotnine facet_grid(drop=True) mishandles NaN in a facetting "
+            "variable: the NaN is added as an extra level when building the "
+            "cartesian product of panels (len(layout) > nrow*ncol), but "
+            "ninteraction(drop=True) does not assign it a ROW/COL index, so "
+            "only nrow*ncol axes are created. Strips.setup then indexes "
+            "self.axs out of range. facet_2d() uses facet_grid with the "
+            "default drop=True, so any NaN in the row or column variable "
+            "crashes the draw."
+        ),
+    )
+    def test_2d_facet_variable_with_nan_draws(self):
+        """2-D facetting where the column variable has NaN must still draw.
+
+        Reproduces the IndexError at ``plotnine/facets/strips.py`` line 184
+        (``ax = self.axs[layout_info.panel_index]``) reported when the 2nd
+        axis has more than 2 values. The actual trigger is a NaN in a
+        facetting variable combined with the default ``drop=True``.
+        """
+        np.random.seed(0)
+        n = 400
+        ad = anndata.AnnData(X=np.zeros((n, 1), dtype=np.float32))
+        ad.obs_names = [f"c{i}" for i in range(n)]
+        ad.var_names = ["gene0"]
+        ad.obsm["X_umap"] = np.column_stack([
+            np.random.rand(n), np.random.rand(n)
+        ])
+        # Row variable: a clean categorical.
+        ad.obs["row_var"] = pd.Categorical(
+            np.random.choice(["a", "b", "c"], n)
+        )
+        # Column variable: 3 categories with some unannotated (NaN) cells.
+        col = np.random.choice(
+            ["Missense", "Synonymous", "Frameshift"], n
+        ).astype(object)
+        col[:25] = None
+        ad.obs["col_var"] = pd.Categorical(col)
+
+        p = (
+            ScatterPlotter()
+            .set_source(ad, "umap")
+            .facet_2d("row_var", "col_var")
+            .plot("gene0")
+        )
+        p.draw()
 
 
 # ---------------------------------------------------------------------------

@@ -511,6 +511,37 @@ class TestPlotGridLocalHistogram:
 
 
 # ---------------------------------------------------------------------------
+# plot_histogram — global value_counts bar plot
+# ---------------------------------------------------------------------------
+
+
+class TestPlotHistogram:
+    def test_basic(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.plot_histogram(CAT_COL)
+        assert_image(p)
+
+    def test_custom_colors(self, plotter_no_boundary, assert_image):
+        colors = [
+            "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF",
+            "#00FFFF", "#000000", "#FFFFFF", "#888888",
+        ]
+        p = plotter_no_boundary.colormap_discrete(colors).plot_histogram(CAT_COL)
+        assert_image(p)
+
+    def test_facet(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.facet("coarse", n_col=3).plot_histogram(CAT_COL)
+        assert_image(p)
+
+    def test_facet_2d(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.facet_2d("bool", "coarse").plot_histogram(CAT_COL)
+        assert_image(p)
+
+    def test_fixed_panel(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.panel_size(3, 3).plot_histogram(CAT_COL)
+        assert_image(p)
+
+
+# ---------------------------------------------------------------------------
 # panel_size — fixed scatter-panel dimensions
 # ---------------------------------------------------------------------------
 

@@ -1963,6 +1963,133 @@ class ScatterPlotter:
 
         return p
 
+    def plot_histogram(self, column: str) -> p9.ggplot:
+        """Build a bar plot of the ``value_counts`` of a categorical column.
+
+        Bars are coloured per category using the discrete palette configured
+        via :meth:`colormap_discrete` (defaulting to
+        ``DEFAULT_COLORS_CATEGORIES``), and the fill legend is hidden because
+        the x-axis already labels the categories.
+
+        Honours the plotter's faceting (:meth:`facet` / :meth:`facet_2d`,
+        computing counts per facet group), :meth:`title`,
+        :meth:`panel_size` and :meth:`theme` configuration, mirroring the
+        other ``plot_*`` methods.  Returns the plotnine ``ggplot`` object.
+
+        Raises:
+            RuntimeError: if no data source has been set.
+            ValueError:  if *column* is numeric.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .plot_histogram()")
+
+        data = self._data
+        expr, expr_name = data.get_column(column)
+
+        is_numerical = (
+            expr.dtype != "object"
+            and expr.dtype != "category"
+            and expr.dtype != "bool"
+        )
+        if is_numerical:
+            raise ValueError(
+                f"plot_histogram() is for categorical columns; "
+                f"{column!r} is numeric"
+            )
+
+        if expr.dtype == "category":
+            cats = list(expr.cat.categories)
+        else:
+            cats = natsorted([c for c in expr.unique() if not pd.isna(c)])
+        cats_str = [str(c) for c in cats]
+
+        expr_clean = expr.dropna()
+        df = pd.DataFrame({"category": expr_clean.astype(str)})
+        df["category"] = pd.Categorical(df["category"], categories=cats_str)
+
+        facet_cols = []
+        if self._facet_variable is not None:
+            fv, _ = data.get_column(self._facet_variable)
+            df["facet"] = pd.Categorical(fv.reindex(expr_clean.index).astype(str))
+            facet_cols.append("facet")
+        if self._facet_row_variable is not None:
+            rv, _ = data.get_column(self._facet_row_variable)
+            df["facet_row"] = pd.Categorical(rv.reindex(expr_clean.index).astype(str))
+            facet_cols.append("facet_row")
+        if self._facet_col_variable is not None:
+            cv, _ = data.get_column(self._facet_col_variable)
+            df["facet_col"] = pd.Categorical(cv.reindex(expr_clean.index).astype(str))
+            facet_cols.append("facet_col")
+
+        if facet_cols:
+            vc = df.groupby(facet_cols, observed=True, sort=False)[
+                "category"
+            ].value_counts(sort=False)
+            counts = vc.reset_index(name="count")
+        else:
+            vc = df["category"].value_counts(sort=False)
+            counts = pd.DataFrame(
+                {"category": vc.index.to_numpy(), "count": vc.to_numpy()}
+            )
+
+        colors = self._colors_as_list(cats_str)
+        color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
+        legend_title = (
+            self._cat_colors_title
+            if self._cat_colors_title is not None
+            else expr_name
+        )
+
+        p = (
+            p9.ggplot(counts, p9.aes(x="category", y="count", fill="category"))
+            + p9.geom_col()
+            + p9.scale_fill_manual(
+                values=color_values,
+                name=legend_title,
+                guide=None,
+            )
+        )
+
+        p = self._apply_facet_layer(p)
+
+        if self._title_override is not _UNSET:
+            p = p + p9.labs(title=self._title_override)
+        else:
+            p = p + p9.labs(title=expr_name)
+
+        if self.fig_size is None:
+            if self._is_faceted():
+                n_col, n_row = self._facet_grid_dims(counts)
+                fig_size = (6 * n_col, 5 * n_row)
+            else:
+                fig_size = (6, 5)
+        else:
+            fig_size = self.fig_size
+
+        p = p + p9.theme_minimal(base_size=self.base_size)
+        p = p + p9.theme(
+            figure_size=fig_size,
+            panel_background=p9.element_rect(fill=self._bg_color, color=None),
+            panel_border=p9.element_rect(
+                color=self._spine_color, size=0.5, fill=None
+            ),
+            panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
+            panel_grid_minor=p9.element_blank(),
+            axis_text=p9.element_text(color=self._tick_color),
+            axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
+            axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
+            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
+        )
+
+        if self._fixed_panel_size is not None:
+            w, h = self._fixed_panel_size
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(
+                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
+            )
+
+        return p
+
     def plot_embedding_color(
         self,
         reference_embedding,
