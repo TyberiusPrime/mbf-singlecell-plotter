@@ -2072,14 +2072,37 @@ class ScatterPlotter:
             )
 
         if normalize_to is not None:
-            normalize = counts.loc[counts["category"] == normalize_to, "count"]
-            if len(normalize) == 0:
-                raise ValueError("That value was not in the column. Type issue maybe?")
-            normalize = normalize.sum()
-        else:
-            normalize = None
-
-        counts = _normalize_counts(counts, normalize)
+            if facet_cols:
+                norm_rows = counts[
+                    (counts["category"] == normalize_to) & (counts["count"] > 0)
+                ]
+                missing_facets = (
+                    counts[facet_cols]
+                    .drop_duplicates()
+                    .merge(
+                        norm_rows[facet_cols],
+                        on=facet_cols,
+                        how="left",
+                        indicator=True,
+                    )
+                    .query('_merge == "left_only"')
+                    .drop(columns=["_merge"])
+                )
+                if len(missing_facets) > 0:
+                    bad = missing_facets.to_dict("records")
+                    raise ValueError(
+                        f"normalize_to={normalize_to!r} not found in facet group(s): {bad}"
+                    )
+                counts = _normalize_counts_per_facet(counts, norm_rows, facet_cols)
+            else:
+                norm_rows = counts[
+                    (counts["category"] == normalize_to) & (counts["count"] > 0)
+                ]
+                if len(norm_rows) == 0:
+                    raise ValueError(
+                        f"normalize_to={normalize_to!r} not found in column. Type issue maybe?"
+                    )
+                counts = _normalize_counts(counts, norm_rows["count"].sum())
 
         colors = self._colors_as_list(cats_str)
         color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
@@ -2830,3 +2853,11 @@ def _normalize_counts(counts_df, factor):
     result = counts_df.copy()
     result["count"] = result["count"] / factor
     return result
+
+
+def _normalize_counts_per_facet(counts_df, norm_rows, facet_cols):
+    """Divide each facet group's counts by that group's normalize_to count."""
+    norm = norm_rows[facet_cols + ["count"]].rename(columns={"count": "_norm"})
+    result = counts_df.merge(norm, on=facet_cols, how="left")
+    result["count"] = result["count"] / result["_norm"]
+    return result.drop(columns=["_norm"])
