@@ -2164,6 +2164,137 @@ class ScatterPlotter:
 
         return p
 
+    def plot_violin(
+        self,
+        column: str,
+        group_by: Optional[str] = None,
+    ) -> p9.ggplot:
+        """Build violin plots for a numeric column, optionally grouped by a categorical.
+
+        Args:
+            column:   Numeric obs column or gene name (y-axis).
+            group_by: Optional categorical column whose unique values define the
+                      x-axis groups.  When ``None`` a single violin per facet
+                      panel is shown, labelled by *column*.
+
+        Honours the plotter's faceting (:meth:`facet` / :meth:`facet_2d`),
+        :meth:`title`, :meth:`panel_size`, and :meth:`theme` configuration.
+
+        The discrete fill palette is taken from :meth:`colormap_discrete`.
+
+        Raises:
+            RuntimeError: if no data source has been set.
+            ValueError:   if *column* is not numeric, or if *group_by* is numeric.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .plot_violin()")
+
+        data = self._data
+        expr, expr_name = data.get_column(column)
+
+        is_numerical = (
+            expr.dtype != "object" and expr.dtype != "category" and expr.dtype != "bool"
+        )
+        if not is_numerical:
+            raise ValueError(
+                f"plot_violin() is for numeric columns; {column!r} is not numeric"
+            )
+
+        df = pd.DataFrame({"value": expr})
+
+        if group_by is not None:
+            grp, grp_name = data.get_column(group_by)
+            grp_is_num = (
+                grp.dtype != "object"
+                and grp.dtype != "category"
+                and grp.dtype != "bool"
+            )
+            if grp_is_num:
+                raise ValueError(
+                    f"group_by={group_by!r} must be categorical, not numeric"
+                )
+            if grp.dtype == "category":
+                cats = list(grp.cat.categories)
+            else:
+                cats = natsorted([c for c in grp.unique() if not pd.isna(c)])
+            cats_str = [str(c) for c in cats]
+            df["group"] = pd.Categorical(grp.astype(str), categories=cats_str)
+        else:
+            cats_str = [expr_name]
+            df["group"] = pd.Categorical([expr_name] * len(df), categories=cats_str)
+
+        facet_cols = []
+        if self._facet_variable is not None:
+            fv, _ = data.get_column(self._facet_variable)
+            df["facet"] = pd.Categorical(fv.astype(str))
+            facet_cols.append("facet")
+        if self._facet_row_variable is not None:
+            rv, _ = data.get_column(self._facet_row_variable)
+            df["facet_row"] = pd.Categorical(rv.astype(str))
+            facet_cols.append("facet_row")
+        if self._facet_col_variable is not None:
+            cv, _ = data.get_column(self._facet_col_variable)
+            df["facet_col"] = pd.Categorical(cv.astype(str))
+            facet_cols.append("facet_col")
+
+        colors = self._colors_as_list(cats_str)
+        color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
+        legend_title = (
+            self._cat_colors_title
+            if self._cat_colors_title is not None
+            else (group_by if group_by is not None else expr_name)
+        )
+
+        p = (
+            p9.ggplot(df, p9.aes(x="group", y="value", fill="group"))
+            + p9.geom_violin()
+            + p9.scale_fill_manual(
+                values=color_values,
+                name=legend_title,
+                guide=None if group_by is None else p9.guide_legend(),
+            )
+            + p9.labs(x=group_by if group_by is not None else "", y=expr_name)
+        )
+
+        p = self._apply_facet_layer(p)
+
+        if self._title_override is not _UNSET:
+            p = p + p9.labs(title=self._title_override)
+        else:
+            p = p + p9.labs(title=expr_name)
+
+        if self.fig_size is None:
+            if self._is_faceted():
+                n_col, n_row = self._facet_grid_dims(df)
+                fig_size = (6 * n_col, 5 * n_row)
+            else:
+                fig_size = (6, 5)
+        else:
+            fig_size = self.fig_size
+
+        p = p + p9.theme_minimal(base_size=self.base_size)
+        p = p + p9.theme(
+            figure_size=fig_size,
+            panel_background=p9.element_rect(fill=self._bg_color, color=None),
+            panel_border=p9.element_rect(color=self._spine_color, size=0.5, fill=None),
+            panel_grid_major_x=p9.element_blank(),
+            panel_grid_minor=p9.element_blank(),
+            panel_grid_major_y=p9.element_line(color="#E0E0E0", size=0.3),
+            axis_text=p9.element_text(color=self._tick_color),
+            axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
+            axis_ticks_major_x=p9.element_blank(),
+            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
+        )
+
+        if self._fixed_panel_size is not None:
+            w, h = self._fixed_panel_size
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(
+                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
+            )
+
+        return p
+
     def plot_embedding_color(
         self,
         reference_embedding,

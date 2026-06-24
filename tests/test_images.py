@@ -547,6 +547,64 @@ class TestPlotHistogram:
         p = plotter_no_boundary.plot_histogram(CAT_COL, normalize_to="4")
         assert_image(p)
 
+    def test_facet_normalized(self, plotter_no_boundary, assert_image):
+        # bool facet splits cells 50/50; leiden "0" appears in both halves.
+        p = plotter_no_boundary.facet("bool").plot_histogram(CAT_COL, normalize_to="0")
+        assert_image(p)
+
+
+# ---------------------------------------------------------------------------
+# plot_violin — numeric distribution plots
+# ---------------------------------------------------------------------------
+
+
+class TestPlotViolin:
+    def test_basic(self, plotter_no_boundary, assert_image):
+        """Single violin per plot (no group_by)."""
+        p = plotter_no_boundary.plot_violin("S100A8")
+        assert_image(p)
+
+    def test_group_by(self, plotter_no_boundary, assert_image):
+        """One violin per leiden cluster."""
+        p = plotter_no_boundary.plot_violin("S100A8", group_by=CAT_COL)
+        assert_image(p)
+
+    def test_facet(self, plotter_no_boundary, assert_image):
+        """Faceted by coarse grouping; single violin per panel."""
+        p = plotter_no_boundary.facet("coarse", n_col=3).plot_violin("S100A8")
+        assert_image(p)
+
+    def test_facet_with_group_by(self, plotter_no_boundary, assert_image):
+        """Faceted by coarse grouping; violins split by leiden within each panel."""
+        p = (
+            plotter_no_boundary.facet("coarse", n_col=3)
+            .plot_violin("S100A8", group_by=CAT_COL)
+        )
+        assert_image(p)
+
+    def test_facet_2d(self, plotter_no_boundary, assert_image):
+        """2-D facet grid (bool × coarse) with group_by."""
+        p = (
+            plotter_no_boundary.facet_2d("bool", "coarse")
+            .plot_violin("S100A8", group_by=CAT_COL)
+        )
+        assert_image(p)
+
+    def test_fixed_panel(self, plotter_no_boundary, assert_image):
+        """panel_size applied to a violin plot."""
+        p = plotter_no_boundary.panel_size(3, 3).plot_violin("S100A8", group_by=CAT_COL)
+        assert_image(p)
+
+    def test_custom_colors(self, plotter_no_boundary, assert_image):
+        """Custom discrete palette applied via colormap_discrete."""
+        colors = ["#E41A1C", "#377EB8", "#4DAF4A", "#984EA3",
+                  "#FF7F00", "#A65628", "#F781BF", "#999999", "#FFFF33"]
+        p = (
+            plotter_no_boundary.colormap_discrete(colors)
+            .plot_violin("S100A8", group_by=CAT_COL)
+        )
+        assert_image(p)
+
 
 # ---------------------------------------------------------------------------
 # panel_size — fixed scatter-panel dimensions
