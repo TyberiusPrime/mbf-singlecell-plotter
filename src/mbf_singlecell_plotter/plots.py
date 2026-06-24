@@ -1794,6 +1794,82 @@ class ScatterPlotter:
 
         return p
 
+    def get_morans_i_markers(
+        self,
+        k: int = 20,
+        min_moran: float = 0.2,
+        min_cells: int = 3,
+        var_score_column: str | None = None,
+    ) -> pd.DataFrame:
+        """Return marker genes per current grid cell as a tidy DataFrame.
+
+        Bins the embedding at the plotter's grid resolution, computes Moran's I
+        for every gene, and returns the top-*k* markers (above *min_moran*) for
+        each occupied grid cell — one row per (cell, gene) pair, ready to plot
+        individually.  The bins align 1:1 with the visible grid cells shown by
+        :meth:`with_grid`.
+
+        Args:
+            k:                Maximum marker genes kept per grid cell (default 20).
+            min_moran:        Minimum Moran's I for a gene to qualify (default 0.2).
+            min_cells:        Minimum cells per bin (passed to compute_grid_moran).
+            var_score_column: If given, use ``adata.var[var_score_column]`` as the
+                              gene score instead of computing Moran's I on the fly.
+
+        Returns:
+            DataFrame with columns:
+
+            * ``cell``    — grid-cell label (e.g. ``"A1"``) of the gene's top bin
+            * ``gene``    — gene name
+            * ``moran_i`` — Moran's I score (or *var_score_column* value)
+            * ``rank``    — 1-based rank within the cell (1 = highest score)
+
+            Rows are sorted by ``cell`` then ``rank``. Grid cells with no
+            qualifying genes are omitted.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .get_morans_i_markers()")
+
+        from .transforms import compute_grid_moran
+
+        data = self._data
+        gs = data._grid_size
+        glv = data._grid_letters_on_vertical
+
+        gene_df = compute_grid_moran(
+            data, n_bins=gs, min_cells=min_cells, var_score_column=var_score_column
+        )
+
+        filtered = gene_df[gene_df["moran_i"] >= min_moran]
+        if filtered.empty:
+            return pd.DataFrame(columns=["cell", "gene", "moran_i", "rank"])
+
+        top = (
+            filtered.sort_values("moran_i", ascending=False)
+            .groupby("top_bin", group_keys=False)
+            .head(k)
+            .copy()
+        )
+
+        def _bin_to_label(b):
+            xi, yi = b
+            row_from_top = gs - 1 - yi
+            if glv:
+                return f"{_LETTERS[row_from_top]}{xi + 1}"
+            return f"{_LETTERS[xi]}{row_from_top + 1}"
+
+        top["cell"] = top["top_bin"].map(_bin_to_label)
+        top["rank"] = (
+            top.groupby("cell")["moran_i"]
+            .rank(ascending=False, method="first")
+            .astype(int)
+        )
+        return (
+            top[["cell", "gene", "moran_i", "rank"]]
+            .sort_values(["cell", "rank"])
+            .reset_index(drop=True)
+        )
+
     def save_interactive_moran(
         self,
         column: str,
