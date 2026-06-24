@@ -686,6 +686,7 @@ class ScatterPlotter:
         # 2D faceting (facet_grid rows ~ cols); mutually exclusive with facet().
         self._facet_row_variable: Optional[str] = None
         self._facet_col_variable: Optional[str] = None
+        self._facet_args: dict = {}
         self._title_override = _UNSET
 
         # embedding label
@@ -1239,20 +1240,51 @@ class ScatterPlotter:
 
     # ── faceting ─────────────────────────────────────────────────────────────
 
-    def facet(self, variable: str, n_col: int = 2, dir: str = "h") -> "ScatterPlotter":
+    def facet(
+        self,
+        variable: str,
+        n_col: int = 2,
+        n_row: Optional[int] = DoNotUpdate,
+        scales: str = DoNotUpdate,
+        shrink: bool = DoNotUpdate,
+        labeller: str = DoNotUpdate,
+        as_table: bool = DoNotUpdate,
+        drop: bool = DoNotUpdate,
+        dir: str = DoNotUpdate,
+    ) -> "ScatterPlotter":
         new = copy.copy(self)
         new._facet_variable = variable
-        if not dir in ("h", "v"):
+        if dir is not DoNotUpdate and dir not in ("h", "v"):
             raise ValueError("dir must be 'h' or 'v'")
-        new._facet_direction = dir
+        new._facet_direction = dir if dir is not DoNotUpdate else "h"
         new._n_col = n_col
         # facet() and facet_2d() are mutually exclusive.
         new._facet_row_variable = None
         new._facet_col_variable = None
+        raw: dict = {
+            "ncol": n_col,
+            "nrow": n_row,
+            "scales": scales,
+            "shrink": shrink,
+            "labeller": labeller,
+            "as_table": as_table,
+            "drop": drop,
+            "dir": dir,
+        }
+        new._facet_args = {k: v for k, v in raw.items() if v is not DoNotUpdate}
         return new
 
     def facet_2d(
-        self, row_variable: str, col_variable: str
+        self,
+        row_variable: str,
+        col_variable: str,
+        margins: bool = DoNotUpdate,
+        scales: str = DoNotUpdate,
+        space: str = DoNotUpdate,
+        shrink: bool = DoNotUpdate,
+        labeller: str = DoNotUpdate,
+        as_table: bool = DoNotUpdate,
+        drop: bool = DoNotUpdate,
     ) -> "ScatterPlotter":
         """Facet into a 2-D grid (``facet_grid(row ~ col)``).
 
@@ -1265,6 +1297,16 @@ class ScatterPlotter:
         new._facet_col_variable = col_variable
         # facet() and facet_2d() are mutually exclusive.
         new._facet_variable = None
+        raw: dict = {
+            "margins": margins,
+            "scales": scales,
+            "space": space,
+            "shrink": shrink,
+            "labeller": labeller,
+            "as_table": as_table,
+            "drop": drop,
+        }
+        new._facet_args = {k: v for k, v in raw.items() if v is not DoNotUpdate}
         return new
 
     def unfacet(self) -> "ScatterPlotter":
@@ -1272,6 +1314,7 @@ class ScatterPlotter:
         new._facet_variable = None
         new._facet_row_variable = None
         new._facet_col_variable = None
+        new._facet_args = {}
         return new
 
     # ── faceting (internals) ────────────────────────────────────────────────
@@ -1304,9 +1347,7 @@ class ScatterPlotter:
     def _apply_facet_layer(self, p: p9.ggplot) -> p9.ggplot:
         """Attach the configured facet_wrap / facet_grid to *p*."""
         if self._facet_variable is not None:
-            return p + p9.facet_wrap(
-                "~facet", ncol=self._n_col, dir=self._facet_direction
-            )
+            return p + p9.facet_wrap("~facet", **self._facet_args)
         if self._facet_row_variable is not None or (
             self._facet_col_variable is not None
         ):
@@ -1315,6 +1356,7 @@ class ScatterPlotter:
                 kwargs["rows"] = "facet_row"
             if self._facet_col_variable is not None:
                 kwargs["cols"] = "facet_col"
+            kwargs.update(self._facet_args)
             return p + p9.facet_grid(**kwargs)
         return p
 
