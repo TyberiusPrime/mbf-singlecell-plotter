@@ -1473,16 +1473,11 @@ class ScatterPlotter:
         if self._title_override is not _UNSET:
             p = p + p9.labs(title=self._title_override)
         else:
-            # expr_name is in var.index space (the gene symbol); if an
-            # alternative id column is configured, expand the title to read
-            # "alt_id (symbol)".  Only the title is affected — the colourbar
-            # name and is_gene detection keep using the bare symbol.
-            title_name = expr_name
-            if data._alternative_id_column is not None:
-                alt_id = data.alternative_id_for(expr_name)
-                if alt_id is not None:
-                    title_name = f"{alt_id} ({expr_name})"
-            p = p + p9.labs(title=title_name)
+            # expr_name is in var.index space (the gene symbol); _display_name
+            # expands it to "alt_id (symbol)" when an alternative id column is
+            # set.  The colourbar name and is_gene detection keep using the bare
+            # symbol.
+            p = p + p9.labs(title=self._display_name(data, expr_name))
 
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = p + embedding_theme(
@@ -2253,7 +2248,7 @@ class ScatterPlotter:
                 name=legend_title,
                 guide=None if group_by is None else p9.guide_legend(),
             )
-            + p9.labs(x=group_by if group_by is not None else "", y=expr_name)
+            + p9.labs(x=group_by if group_by is not None else "", y=self._display_name(data, expr_name))
         )
 
         p = self._apply_facet_layer(p)
@@ -2261,7 +2256,7 @@ class ScatterPlotter:
         if self._title_override is not _UNSET:
             p = p + p9.labs(title=self._title_override)
         else:
-            p = p + p9.labs(title=expr_name)
+            p = p + p9.labs(title=self._display_name(data, expr_name))
 
         if self.fig_size is None:
             if self._is_faceted():
@@ -2540,6 +2535,14 @@ class ScatterPlotter:
                 threshold=bc.threshold,
             )
         return self._boundary_cache["df"]
+
+    def _display_name(self, data, expr_name: str) -> str:
+        """Expand expr_name to 'alt_id (symbol)' when an alternative id column is set."""
+        if data._alternative_id_column is not None:
+            alt_id = data.alternative_id_for(expr_name)
+            if alt_id is not None:
+                return f"{alt_id} ({expr_name})"
+        return expr_name
 
     def _border_cat_to_color(self) -> dict:
         """Return ordered {category: hex_color} mapping for the border palette."""
