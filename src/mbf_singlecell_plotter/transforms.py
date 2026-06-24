@@ -350,7 +350,11 @@ def compute_grid_moran(
     ad = data.ad
     X = ad.X  # (n_cells, n_genes) — may be sparse
 
-    cell_df = pd.DataFrame({"xi": x_bin, "yi": y_bin, "ci": np.arange(len(x))})
+    # coords may be a filtered subset of the cells; map its (obs_names) index
+    # back to positional rows in the full X matrix so the mean is taken over
+    # the right gene-expression rows.
+    ci = ad.obs_names.get_indexer(coords.index)
+    cell_df = pd.DataFrame({"xi": x_bin, "yi": y_bin, "ci": ci})
     groups = cell_df.groupby(["xi", "yi"])
 
     bins_xy, counts, grid_expr_rows = [], [], []

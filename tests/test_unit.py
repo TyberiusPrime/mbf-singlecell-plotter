@@ -1365,4 +1365,210 @@ class TestDerivedSourcesPlotter:
         assert "expression" in p.data.columns
 
 
+# ---------------------------------------------------------------------------
+# Cell filtering (set_filter / unfilter)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterEmbeddingData:
+    def test_has_filter_default_false(self, data):
+        assert data.has_filter is False
+
+    def test_set_filter_returns_copy_and_sets_flag(self, data):
+        filtered = data.set_filter(lambda d: d.get_column("leiden").series == "0")
+        assert data.has_filter is False
+        assert filtered.has_filter is True
+
+    def test_coordinates_subsetted(self, data, ad):
+        full = data.coordinates()
+        keep = ad.obs["leiden"] == "0"
+        filtered = data.set_filter(lambda d, m=keep.values: m)
+        sub = filtered.coordinates()
+        assert len(sub) == int(keep.sum())
+        assert len(sub) < ad.n_obs
+        # kept cells are exactly the leiden-0 cells
+        assert set(sub.index) == set(ad.obs_names[keep])
+
+    def test_get_column_subsetted(self, data, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = data.set_filter(lambda d, m=keep.values: m)
+        series, _ = filtered.get_column("S100A8")
+        assert len(series) == int(keep.sum())
+
+    def test_get_column_preserves_index_order(self, data, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = data.set_filter(lambda d, m=keep.values: m)
+        series, _ = filtered.get_column("leiden")
+        coords = filtered.coordinates()
+        assert list(series.index) == list(coords.index)
+
+    def test_filter_sees_full_dataset(self, data, ad):
+        """The filter callable must operate on the complete (unfiltered) data."""
+        seen_n = []
+        n_total = ad.n_obs
+
+        def fn(d):
+            seen_n.append(len(d.coordinates()))
+            return d.get_column("leiden").series == "0"
+
+        filtered = data.set_filter(fn)
+        filtered.coordinates()
+        assert seen_n == [n_total]
+
+    def test_bounds_ignore_filter(self, data, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = data.set_filter(lambda d, m=keep.values: m)
+        full_coords = data.coordinates()
+        fb = filtered.bounds()
+        fb_full = filtered.full_bounds()
+        assert fb == pytest.approx(
+            (
+                float(full_coords["x"].min()),
+                float(full_coords["x"].max()),
+                float(full_coords["y"].min()),
+                float(full_coords["y"].max()),
+            )
+        )
+        assert fb_full == pytest.approx(fb)
+
+    def test_filter_evaluated_once_and_cached(self, data):
+        calls = []
+
+        def fn(d):
+            calls.append(1)
+            return d.get_column("leiden").series == "0"
+
+        filtered = data.set_filter(fn)
+        filtered.coordinates()
+        filtered.get_column("S100A8")
+        filtered.coordinates()
+        assert len(calls) == 1
+
+    def test_set_filter_recomputes_mask(self, data):
+        calls = []
+
+        def fn(d):
+            calls.append(1)
+            return d.get_column("leiden").series == "0"
+
+        filtered = data.set_filter(fn)
+        filtered.coordinates()  # first eval
+        assert len(calls) == 1
+        refiltered = filtered.set_filter(fn)
+        refiltered.coordinates()  # cache reset → re-eval
+        assert len(calls) == 2
+
+    def test_unfilter_removes_mask(self, data, ad):
+        filtered = data.set_filter(lambda d: d.get_column("leiden").series == "0")
+        assert filtered.has_filter is True
+        unfiltered = filtered.unfilter()
+        assert unfiltered.has_filter is False
+        assert len(unfiltered.coordinates()) == ad.n_obs
+
+    def test_set_filter_none_removes_mask(self, data, ad):
+        filtered = data.set_filter(lambda d: d.get_column("leiden").series == "0")
+        cleared = filtered.set_filter(None)
+        assert cleared.has_filter is False
+        assert len(cleared.coordinates()) == ad.n_obs
+
+    def test_wrong_length_mask_raises(self, data):
+        filtered = data.set_filter(lambda d: np.array([True, False]))
+        with pytest.raises(ValueError, match="n_obs"):
+            filtered.coordinates()
+
+    def test_series_mask_supported(self, data, ad):
+        keep = ad.obs["leiden"] == "0"
+
+        def fn(d):
+            return pd.Series(keep.values, index=ad.obs_names)
+
+        filtered = data.set_filter(fn)
+        sub = filtered.coordinates()
+        assert len(sub) == int(keep.sum())
+
+    def test_int_mask_coerced_to_bool(self, data, ad):
+        keep = (ad.obs["leiden"] == "0").astype(int).values
+
+        def fn(d, m=keep):
+            return m
+
+        filtered = data.set_filter(fn)
+        sub = filtered.coordinates()
+        assert len(sub) == int((ad.obs["leiden"] == "0").sum())
+
+    def test_immutability(self, data, ad):
+        filtered = data.set_filter(lambda d: d.get_column("leiden").series == "0")
+        assert data.has_filter is False
+        assert len(data.coordinates()) == ad.n_obs
+
+    def test_derived_source_called_with_filter_disabled(self, data, ad):
+        """A derived source inside the filter callable sees full data; the
+        resulting column from get_column still respects the active filter."""
+        calls = []
+
+        def derived_fn(d):
+            calls.append(len(d.coordinates()))
+            return d.get_column("n_genes").series * 2
+
+        enriched = data.add_derived_source({"dbl": derived_fn})
+        filtered = enriched.set_filter(
+            lambda d: d.get_column("dbl").series > d.get_column("n_genes").series
+        )
+        # every cell satisfies dbl > n_genes, so nothing is dropped
+        sub, _ = filtered.get_column("dbl")
+        assert len(sub) == ad.n_obs
+        # the derived callable is invoked once for the filter mask and once for
+        # the public get_column — both times it sees the full dataset
+        assert calls == [ad.n_obs, ad.n_obs]
+
+
+class TestFilterPlotter:
+    def test_plotter_requires_source_first(self):
+        with pytest.raises(RuntimeError):
+            ScatterPlotter().set_filter(lambda d: d.get_column("x"))
+
+    def test_plot_subset_uses_filtered_cells(self, plotter_no_boundary, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered_pt = plotter_no_boundary.set_filter(
+            lambda d, m=keep.values: m
+        )
+        # categorical plot: p.data holds every kept cell (no zero/clip split)
+        p = filtered_pt.plot("leiden")
+        assert len(p.data) == int(keep.sum())
+
+    def test_plot_bounds_match_full_dataset(self, plotter_no_boundary, data):
+        keep_mask = data.get_column("leiden").series == "0"
+        filtered_pt = plotter_no_boundary.set_filter(lambda d, m=keep_mask.values: m)
+        x_min, x_max, y_min, y_max = filtered_pt._data.bounds()
+        full = plotter_no_boundary._data.bounds()
+        assert (x_min, x_max, y_min, y_max) == pytest.approx(full)
+
+    def test_unfilter_restores_all_cells(self, plotter_no_boundary, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = plotter_no_boundary.set_filter(lambda d, m=keep.values: m)
+        restored = filtered.unfilter()
+        p = restored.plot("leiden")
+        assert len(p.data) == ad.n_obs
+
+    def test_filter_survives_with_grid(self, ad):
+        keep = ad.obs["leiden"] == "0"
+        sp = (
+            ScatterPlotter()
+            .set_source(ad, "umap")
+            .set_filter(lambda d, m=keep.values: m)
+            .with_grid(grid_size=8)
+        )
+        assert sp._data.has_filter is True
+        p = sp.plot("leiden")
+        assert len(p.data) == int(keep.sum())
+        assert sp._data._grid_size == 8
+
+    def test_filter_immutability(self, plotter_no_boundary, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = plotter_no_boundary.set_filter(lambda d, m=keep.values: m)
+        assert plotter_no_boundary._data.has_filter is False
+        assert filtered._data.has_filter is True
+        # original still plots all cells
+        p = plotter_no_boundary.plot("leiden")
+        assert len(p.data) == ad.n_obs
 

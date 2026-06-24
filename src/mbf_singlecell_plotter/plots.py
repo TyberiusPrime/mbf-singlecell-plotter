@@ -1133,8 +1133,10 @@ class ScatterPlotter:
                 ),
                 alternative_id_column=new._data._alternative_id_column,
                 alternative_sources=new._data._alternative_sources,
+                derived_sources=new._data._derived_sources,
                 grid_size=resolved_grid_size,
                 grid_letters_on_vertical=resolved_vl,
+                filter_fn=new._data._filter,
             )
         return new
 
@@ -1187,6 +1189,41 @@ class ScatterPlotter:
             raise RuntimeError("call .set_source() before .unfocus()")
         new = copy.copy(self)
         new._data = self._data.unfocus()
+        return new
+
+    # ── cell filtering ──────────────────────────────────────────────────────
+
+    def set_filter(self, filter_fn) -> "ScatterPlotter":
+        """Keep only the cells selected by *filter_fn* in subsequent plots.
+
+        *filter_fn* is a callable that receives the underlying
+        :class:`EmbeddingData` (with the filter disabled, so it sees the full
+        dataset) and returns a boolean vector (array or ``Series``) of length
+        ``n_obs`` marking the cells to keep.  The filter is evaluated lazily
+        (on first use) and cached until the next :meth:`set_filter` call.
+
+        The filter restricts the cells shown by :meth:`plot` and friends, but
+        **not** the coordinate bounds — the embedding frame always reflects the
+        full dataset, matching :meth:`focus_on`.
+
+        Pass ``None`` to remove an existing filter.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .set_filter()")
+        new = copy.copy(self)
+        new._data = self._data.set_filter(filter_fn)
+        # Boundaries are derived from coordinates()/get_column(), which respect
+        # the filter — drop any cached boundary image so it is recomputed.
+        new._boundary_cache = {"df": None}
+        return new
+
+    def unfilter(self) -> "ScatterPlotter":
+        """Remove any cell filter set via :meth:`set_filter`."""
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .unfilter()")
+        new = copy.copy(self)
+        new._data = self._data.unfilter()
+        new._boundary_cache = {"df": None}
         return new
 
     def panel_size(self, width: float, height: float) -> "ScatterPlotter":

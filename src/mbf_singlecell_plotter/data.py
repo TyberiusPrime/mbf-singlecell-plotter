@@ -111,6 +111,7 @@ class EmbeddingData:
         derived_sources: Optional[list] = None,
         grid_size: int = 12,
         grid_letters_on_vertical: bool = False,
+        filter_fn: Optional[Callable[["EmbeddingData"], "pd.Series | np.ndarray"]] = None,
     ):
         self.ad = ad
         if grid_size > 26:
@@ -162,6 +163,10 @@ class EmbeddingData:
                 f"embedding must be a string or 3-tuple, got {type(embedding)}"
             )
         self._focus: Optional[tuple] = None  # (x_min, x_max, y_min, y_max)
+        self._filter: Optional[
+            Callable[["EmbeddingData"], "pd.Series | np.ndarray"]
+        ] = filter_fn
+        self._filter_cache: Optional[np.ndarray] = None
 
     @property
     def embedding(self) -> str:
@@ -410,11 +415,86 @@ class EmbeddingData:
         new._focus = None
         return new
 
+    # ── cell filtering ──────────────────────────────────────────────────────
+
+    @property
+    def has_filter(self) -> bool:
+        return self._filter is not None
+
+    def set_filter(
+        self,
+        filter_fn: Optional[Callable[["EmbeddingData"], "pd.Series | np.ndarray"]],
+    ) -> "EmbeddingData":
+        """Return a copy that keeps only the cells selected by *filter_fn*.
+
+        *filter_fn* is a callable that receives this :class:`EmbeddingData`
+        (with the filter *disabled*, so it sees the full dataset — avoiding
+        recursion) and returns a boolean vector (array or ``Series``) of length
+        ``n_obs`` marking the cells to keep.
+
+        The filter is evaluated lazily, every time :meth:`coordinates` or
+        :meth:`get_column` is called — there is no caching.  It restricts the
+        cells returned by those two accessors, but **not** the coordinate
+        bounds: :meth:`bounds` / :meth:`full_bounds` always reflect the full
+        dataset so the embedding frame stays stable.
+
+        Pass ``None`` (or call :meth:`unfilter`) to remove an existing filter.
+        """
+        new = copy.copy(self)
+        new._filter = filter_fn
+        new._filter_cache = None
+        return new
+
+    def unfilter(self) -> "EmbeddingData":
+        """Return a new EmbeddingData with any cell filter removed."""
+        return self.set_filter(None)
+
+    def _filter_mask(self) -> "Optional[np.ndarray]":
+        """Evaluate the active filter against the full data, caching the result.
+
+        Returns a boolean ``ndarray`` of length ``n_obs`` (in ``obs_names``
+        order) marking the cells to keep, or ``None`` when no filter is set.
+
+        The mask is computed on first use and cached on the instance; it stays
+        valid until the next :meth:`set_filter` / :meth:`unfilter` call (which
+        resets the cache).
+
+        The filter callable is handed an *unfiltered* shallow copy of this
+        :class:`EmbeddingData` so that its own :meth:`get_column` /
+        :meth:`coordinates` calls return the complete dataset — this prevents
+        the recursion that would otherwise occur when a filter calls
+        :meth:`get_column` to derive its mask.
+        """
+        if self._filter is None:
+            return None
+        if self._filter_cache is None:
+            unfiltered = copy.copy(self)
+            unfiltered._filter = None
+            mask = self._filter(unfiltered)
+            if isinstance(mask, pd.Series):
+                mask = mask.reindex(self.ad.obs_names).fillna(False).values
+            else:
+                mask = np.asarray(mask)
+            if mask.dtype != bool:
+                mask = mask.astype(bool)
+            if len(mask) != self.ad.n_obs:
+                raise ValueError(
+                    f"filter must return a boolean vector of length "
+                    f"{self.ad.n_obs} (n_obs), got length {len(mask)}"
+                )
+            self._filter_cache = mask
+        return self._filter_cache
+
+
     def bounds(self) -> tuple:
-        """Return (x_min, x_max, y_min, y_max) — from focus if set, else full data range."""
+        """Return (x_min, x_max, y_min, y_max) — from focus if set, else full data range.
+
+        Always reflects the *full* dataset: an active cell filter
+        (:meth:`set_filter`) is ignored so the embedding frame stays stable.
+        """
         if self._focus is not None:
             return self._focus
-        coords = self.coordinates()
+        coords = self._full_coordinates()
         return (
             float(coords["x"].min()),
             float(coords["x"].max()),
@@ -441,6 +521,23 @@ class EmbeddingData:
           then each alternative source in registration order.  The first hit
           is reindexed to the primary ``obs_names`` (extra cells dropped,
           missing cells → NaN).
+
+        When a cell filter is active (:meth:`set_filter`), the returned series
+        is restricted to the kept cells.  The filter is evaluated lazily (on
+        first use) and cached until the next :meth:`set_filter` call.
+        """
+        result = self._get_column_raw(name)
+        mask = self._filter_mask()
+        if mask is not None:
+            result = ColumnData(result.series[mask], result.name)
+        return result
+
+    def _get_column_raw(self, name) -> ColumnData:
+        """Resolve *name* to a full-length ColumnData, ignoring any cell filter.
+
+        Internal helper behind :meth:`get_column`; the public wrapper applies
+        the active filter mask to the result.  See :meth:`get_column` for the
+        documented resolution order.
         """
         # Explicit routing to a named source.
         if isinstance(name, tuple):
@@ -509,6 +606,12 @@ class EmbeddingData:
     def _compute_derived(self, col, derived) -> pd.Series:
         """Run the callable for *col* of *derived*, returning its pandas Series.
 
+        The callable receives an *unfiltered* view of this
+        :class:`EmbeddingData` so that any :meth:`get_column` / coordinates
+        calls it makes operate on the complete dataset — derived columns are
+        defined over the full ``obs_names``, and the cell filter is applied
+        only at the public :meth:`get_column` boundary.
+
         Raises ``KeyError`` if *col* is not a registered column of this derived
         source, and ``TypeError`` if the callable does not return a Series.
         """
@@ -519,7 +622,10 @@ class EmbeddingData:
                 f"Derived source {derived.name!r} has no column {col!r}; "
                 f"available: {list(derived.columns)}"
             )
-        series = fn(self)
+        unfiltered = copy.copy(self)
+        unfiltered._filter = None
+        unfiltered._filter_cache = None
+        series = fn(unfiltered)
         if not isinstance(series, pd.Series):
             raise TypeError(
                 f"Derived column {col!r} callable must return a pandas Series, "
@@ -647,7 +753,25 @@ class EmbeddingData:
         return False
 
     def coordinates(self) -> pd.DataFrame:
-        """Return DataFrame with x, y columns, indexed by obs index."""
+        """Return DataFrame with x, y columns, indexed by obs index.
+
+        When a cell filter is active (:meth:`set_filter`), only the kept cells
+        are returned (the filter is evaluated lazily on first use and cached
+        until the next :meth:`set_filter` call).  Use
+        :meth:`_full_coordinates` to ignore the filter.
+        """
+        coords = self._full_coordinates()
+        mask = self._filter_mask()
+        if mask is not None:
+            coords = coords[mask]
+        return coords
+
+    def _full_coordinates(self) -> pd.DataFrame:
+        """Return x, y DataFrame for *every* cell, ignoring the active filter.
+
+        Index is the primary ``obs_names``.  Used by bounds/grid helpers so the
+        embedding frame always reflects the complete dataset.
+        """
         if self._embedding_cols is not None:
             c1, c2 = self._embedding_cols
             arr = self.ad.obsm[self._embedding][:, [c1, c2]]
@@ -730,8 +854,12 @@ class EmbeddingData:
         return pd.Series(labels, index=coords.index)
 
     def full_bounds(self) -> tuple:
-        """Return (x_min, x_max, y_min, y_max) from the full data range, ignoring focus."""
-        coords = self.coordinates()
+        """Return (x_min, x_max, y_min, y_max) from the full data range.
+
+        Ignores both the focus window and any active cell filter, so the bounds
+        always reflect the complete dataset.
+        """
+        coords = self._full_coordinates()
         return (
             float(coords["x"].min()),
             float(coords["x"].max()),
