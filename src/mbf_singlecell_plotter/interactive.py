@@ -3,6 +3,7 @@
 import base64
 import io
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +20,7 @@ def save_interactive_moran(
     var_score_column: str | None = None,
     dpi: int = 150,
     debug: bool = False,
-    gene_url: str | None = None,
+    gene_url: str | Callable[[str, str | None], str] | None = None,
     gene_url_inline: bool = False,
 ) -> None:
     """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
@@ -48,6 +49,19 @@ def save_interactive_moran(
                           from the embedding.
         dpi:              PNG resolution (default 150).  Display size is always
                           fixed at 96 dpi CSS pixels regardless of this value.
+        gene_url:         URL template (a ``str`` with a ``{gene}`` placeholder)
+                          **or** a callable ``gene_url(gene_id, alt_gene_id=None)``
+                          returning a URL ``str`` (or ``None`` to skip a gene).
+                          ``gene_id`` is the bare ``var_index`` symbol;
+                          ``alt_gene_id`` is the value from the alternative id
+                          column when one is configured, else ``None``.  The
+                          callable is resolved once per gene at export time, so
+                          it can choose which id to embed (or fall back to
+                          ``gene_id`` when ``alt_gene_id`` is ``None``).  When
+                          ``None`` (default) genes are plain text.
+        gene_url_inline:  If ``True`` the linked resource is displayed in an
+                          ``<img>`` panel below rather than opened in a new
+                          browser tab (default ``False``).
     """
     from .transforms import compute_grid_moran, marker_genes_by_region
     from .plots import _PlotWithPostDraw
@@ -147,6 +161,21 @@ def save_interactive_moran(
                 (g, float(gene_moran.get(g, 0.0)))
             )
 
+    # ── Resolve gene→URL strategy ─────────────────────────────────────────────
+    # `gene_url` may be a "{gene}" template (substituted client-side) or a
+    # callable `gene_url(gene_id, alt_gene_id=None)`.  The callable is invoked
+    # once per gene here, receiving the bare var_index and — when an
+    # alternative id column is configured — the alternative id, so callers can
+    # build database-specific URLs and pick which id to embed.
+    _cb = gene_url if callable(gene_url) else None
+    gene_url_template = gene_url if isinstance(gene_url, str) else ""
+    has_gene_urls = gene_url is not None
+
+    def _gene_url(g: str):
+        if _cb is not None:
+            return _cb(g, data.alternative_id_for(g))
+        return None
+
     # ── Build overlay cells for ALL occupied bins ─────────────────────────────
     cells = []
     for (xi, yi), n_cells in sorted(bin_cell_counts.items()):
@@ -166,7 +195,17 @@ def save_interactive_moran(
         for gene, mi in sorted(gene_list, key=lambda t: -t[1]):
             if gene not in seen:
                 seen.add(gene)
-                deduped.append({"name": gene, "mi": round(mi, 3)})
+                # `gene` is the bare var_index (symbol); `_display_name`
+                # expands it to "alt_id (symbol)" when an alternative id
+                # column is configured.  `url` is precomputed here when a
+                # callable gene_url was given (string templates are resolved
+                # client-side); the bare symbol drives external links.
+                deduped.append({
+                    "name": plotter._display_name(data, gene),
+                    "gene": gene,
+                    "url": _gene_url(gene),
+                    "mi": round(mi, 3),
+                })
         deduped = deduped[:k]
 
         svg_x = _dx(x0_d)
@@ -228,7 +267,9 @@ def save_interactive_moran(
                 )
 
     html = _build_html(img_b64, css_w, css_h, cells, column, debug_svg,
-                       gene_url=gene_url, gene_url_inline=gene_url_inline)
+                       gene_url_template=gene_url_template,
+                       has_gene_urls=has_gene_urls,
+                       gene_url_inline=gene_url_inline)
     Path(output_path).write_text(html, encoding="utf-8")
 
 
@@ -240,12 +281,13 @@ def _build_html(
     column: str,
     debug_svg: str = "",
     *,
-    gene_url: str | None = None,
+    gene_url_template: str = "",
+    has_gene_urls: bool = False,
     gene_url_inline: bool = False,
 ) -> str:
     cells_json = json.dumps(cells, separators=(",", ":"))
-    gene_url_js = json.dumps(gene_url or "")
-    gene_url_inline_js = "true" if (gene_url and gene_url_inline) else "false"
+    gene_url_js = json.dumps(gene_url_template)
+    gene_url_inline_js = "true" if (has_gene_urls and gene_url_inline) else "false"
 
     rect_tags = []
     for i, c in enumerate(cells):
@@ -428,8 +470,8 @@ h1 {{
   const rects = [...document.querySelectorAll('#overlay .gc')];
   let active = null;   // index into rects / CELLS, or null
 
-  function geneUrl(name) {{
-    return GENE_URL ? GENE_URL.replace('{{gene}}', encodeURIComponent(name)) : null;
+  function geneUrl(name, precomputed) {{
+    return precomputed || (GENE_URL ? GENE_URL.replace('{{gene}}', encodeURIComponent(name)) : null);
   }}
 
   function flashBtn(btn) {{
@@ -456,9 +498,9 @@ h1 {{
       : '';
     const body = n > 0
       ? `<div class="chips">${{c.genes.map(g => {{
-          const url = geneUrl(g.name);
+          const url = geneUrl(g.gene, g.url);
           const cls = url ? 'chip link' : 'chip';
-          const da = url ? ` data-gene="${{g.name}}" data-url="${{url}}"` : '';
+          const da = url ? ` data-gene="${{g.gene}}" data-url="${{url}}"` : '';
           return `<span class="${{cls}}"${{da}}><span>${{g.name}}</span>` +
                  `<span class="mi">I\u202f=\u202f${{g.mi.toFixed(3)}}</span></span>`;
         }}).join('')}}</div>`

@@ -1886,7 +1886,7 @@ class ScatterPlotter:
         var_score_column: str | None = None,
         dpi: int = 150,
         debug: bool = False,
-        gene_url: str | None = None,
+        gene_url: str | Callable[[str, str | None], str] | None = None,
         gene_url_inline: bool = False,
     ) -> None:
         """Save an interactive HTML scatter plot with marker gene tooltips.
@@ -1915,8 +1915,15 @@ class ScatterPlotter:
                               Must be numeric; higher = more informative.
                               When ``None`` (default), Moran's I is computed.
             dpi:              PNG resolution for the scatter image (default 150).
-            gene_url:         URL template for gene links.  ``{gene}`` is
-                              replaced with the gene name.  When ``None``
+            gene_url:         URL template for gene links, or a callable.
+                              A ``str`` is treated as a template with a
+                              ``{gene}`` placeholder (replaced with the gene
+                              name).  Alternatively pass a callable
+                              ``gene_url(gene_id, alt_gene_id=None)`` returning a
+                              URL ``str`` (or ``None`` to skip a gene);
+                              ``gene_id`` is the bare ``var_index`` symbol and
+                              ``alt_gene_id`` the alternative id value when an
+                              alternative id column is configured.  When ``None``
                               (default) genes are plain text.
             gene_url_inline:  If ``True`` the linked resource is displayed in
                               an ``<img>`` panel below rather than opened in a
