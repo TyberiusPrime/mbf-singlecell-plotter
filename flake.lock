@@ -31,11 +31,11 @@
         "utils": "utils"
       },
       "locked": {
-        "lastModified": 1782138472,
-        "narHash": "sha256-1sax+nLUaHK2juFAn/pfjm8dEI4PUu5HzrLRdXERLd4=",
+        "lastModified": 1782380802,
+        "narHash": "sha256-/3lpdObQzagk5vvGXj6qt2ZSJDO01SrQh7zM+Sa9GLk=",
         "owner": "tyberiusPrime",
         "repo": "h5ad_inspect",
-        "rev": "b81bddcd59a6638c88b5009b2bc2b5b48c4f35c9",
+        "rev": "458bbe49ecea5c03673529e12b2650551b50acd2",
         "type": "github"
       },
       "original": {

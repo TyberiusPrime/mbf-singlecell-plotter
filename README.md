@@ -491,9 +491,13 @@ data = EmbeddingData(ad, embedding="umap")
 | `var.index` / `var[key]` | gene index and var columns |
 | `obsm[key]` | embedding arrays |
 | `X[:, i]` | gene-expression column by integer position |
+| `get_X_csr()` | full `X` as a scipy CSR matrix (bulk access; used by Moran's I) |
 
 Columns are cached after the first access, so repeated `get_column` calls for
-the same gene or annotation do not re-invoke `h5ad-inspect`.
+the same gene or annotation do not re-invoke `h5ad-inspect`. `get_X_csr()`
+loads the whole matrix in one `export matrix_csr` call and is the fast path
+for analyses that touch every gene at once; `X[:, i]` stays cheap for the
+common single-gene plotting case.
 
 ---
 

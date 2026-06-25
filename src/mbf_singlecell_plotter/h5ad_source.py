@@ -1,8 +1,10 @@
 """h5ad-inspect backed data source — fast selective reads from .h5ad files."""
 
+import io
 import json
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -105,6 +107,29 @@ def _read_obsm(path: Path, key: str, n_cells: int) -> np.ndarray:
     return arr.reshape(n_cells, -1)
 
 
+def _load_matrix_csr(path: Path):
+    """Load the full ``X`` matrix as a scipy CSR sparse matrix in one shot.
+
+    Uses ``h5ad-inspect export matrix_csr``, which emits a zip archive of
+    numpy arrays (``csr_data`` / ``csr_indices`` / ``csr_indptr`` /
+    ``csr_shape``).  The resulting columns are in the file's native gene
+    order, i.e. the same order as :meth:`H5adFacade.var_names`
+    (``export var _index``) — which mirrors real ``AnnData``.
+    """
+    from scipy import sparse as sp
+
+    raw = _run_inspect(path, "export", "matrix_csr")
+    parts: dict = {}
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        for name in z.namelist():
+            key = name[:-4] if name.endswith(".npy") else name
+            parts[key] = np.load(io.BytesIO(z.read(name)))
+    return sp.csr_matrix(
+        (parts["csr_data"], parts["csr_indices"], parts["csr_indptr"]),
+        shape=tuple(int(v) for v in parts["csr_shape"]),
+    )
+
+
 # ── AnnData-compatible facade classes ─────────────────────────────────────────
 
 
@@ -191,27 +216,22 @@ class _ObsmProxy:
 
 
 class _XProxy:
-    """Mimics ``AnnData.X`` — gene-expression access via h5ad-inspect ``--binary``.
+    """Mimics ``AnnData.X`` for single-gene column access.
 
-    Supports the numpy-style indexing patterns used throughout the library:
+    Only ``X[:, int]`` and ``X[:, str]`` are supported here — they fetch one
+    gene column lazily via ``export --binary column <gene>`` and cache it.
+    This keeps the common "colour by one gene" plotting path cheap (a single
+    small subprocess payload).
 
-    * ``X[:, int]`` / ``X[:, str]``             — single column → 1-D ``(n_cells,)``
-    * ``X[:, [i, j]]`` / ``X[:, name_array]``   — selected columns → 2-D ``(n_cells, k)``
-    * ``X[row_array]`` / ``X[boolean_mask]``    — selected rows, all genes → 2-D ``(k, n_genes)``
-    * ``X[int]``                                — single row → 1-D ``(n_genes,)``
-    * ``X[:]`` / ``X[...]``                     — full ``(n_cells, n_genes)`` matrix
-
-    Individual gene columns are fetched lazily via ``export --binary column
-    <gene>`` and cached, so repeated slicing reuses prior work.  The ``row``
-    subcommand is deliberately *not* used: its column ordering does not match
-    ``var_index``, whereas named columns are reliably ordered per gene.
+    For bulk access over many genes (e.g. Moran's I, which needs the whole
+    matrix row-sliced per bin) use :meth:`H5adFacade.get_X_csr`, which loads
+    the full ``X`` in one shot via ``export matrix_csr``.
     """
 
     def __init__(self, path: Path, var_names: pd.Index) -> None:
         self._path = path
         self._var_names = var_names
         self._col_cache: dict = {}
-        self._full: Optional[np.ndarray] = None
 
     def _column(self, gene: str) -> np.ndarray:
         """Full ``(n_cells,)`` expression vector for one gene, cached by name."""
@@ -220,61 +240,26 @@ class _XProxy:
             self._col_cache[gene] = np.frombuffer(raw, dtype="<f8").copy()
         return self._col_cache[gene]
 
-    def _full_matrix(self) -> np.ndarray:
-        """Lazily-built ``(n_cells, n_genes)`` matrix in ``var_names`` order."""
-        if self._full is None:
-            cols = [self._column(str(g)) for g in self._var_names]
-            self._full = np.column_stack(cols) if cols else np.empty((0, 0))
-        return self._full
-
-    @staticmethod
-    def _split(idx) -> tuple:
-        """Split an indexer into ``(rows, cols)``, defaulting the missing axis."""
-        if isinstance(idx, tuple):
-            if len(idx) == 2:
-                return idx[0], idx[1]
-            if len(idx) == 1:
-                return idx[0], slice(None)
-            raise NotImplementedError(
-                f"H5adFacade.X only supports 1-D or 2-D indexing; got {idx!r}"
-            )
-        return idx, slice(None)
-
-    def _resolve_cols(self, cols) -> tuple:
-        """Map a column indexer to ``(gene_names, is_scalar)``.
-
-        ``is_scalar`` is True for a bare ``int``/``str`` (which drops the column
-        dimension, matching numpy semantics) and False for slices and array-like
-        indexers (which keep it).
-        """
-        if isinstance(cols, slice):
-            return [str(g) for g in self._var_names[cols]], False
-        if isinstance(cols, (int, np.integer)):
-            return [str(self._var_names[cols])], True
-        if isinstance(cols, str):
-            return [cols], True
-        arr = np.asarray(cols)
-        if arr.dtype.kind == "b":
-            positions = np.nonzero(arr)[0]
-            return [str(self._var_names[i]) for i in positions], False
-        if arr.dtype.kind in ("i", "u"):
-            return [str(self._var_names[i]) for i in arr], False
-        return [str(g) for g in arr], False
-
     def __getitem__(self, idx):
-        rows, cols = self._split(idx)
-
-        # All-gene selections go through the cached full matrix (row slicing is
-        # the hot path for compute_grid_moran: ``X[grp["ci"].values]``).
-        if isinstance(cols, slice) and cols == slice(None):
-            return self._full_matrix()[rows]
-
-        names, scalar_cols = self._resolve_cols(cols)
-        block = np.column_stack([self._column(n) for n in names])
-        block = block[rows]
-        if scalar_cols:
-            block = block[..., 0]
-        return block
+        if (
+            isinstance(idx, tuple)
+            and len(idx) == 2
+            and idx[0] == slice(None)
+            and isinstance(idx[1], (int, np.integer))
+        ):
+            return self._column(str(self._var_names[idx[1]]))
+        if (
+            isinstance(idx, tuple)
+            and len(idx) == 2
+            and idx[0] == slice(None)
+            and isinstance(idx[1], str)
+        ):
+            return self._column(idx[1])
+        raise NotImplementedError(
+            "H5adFacade.X only supports [:, int] / [:, str] single-column "
+            f"indexing; got {idx!r}. For bulk/multi-gene access (e.g. Moran's "
+            "I) use H5adFacade.get_X_csr()."
+        )
 
 
 # ── main facade ───────────────────────────────────────────────────────────────
@@ -301,6 +286,7 @@ class H5adFacade:
         self._var: Optional[_VarProxy] = None
         self._obsm_proxy: Optional[_ObsmProxy] = None
         self._x_proxy: Optional[_XProxy] = None
+        self._x_csr = None
 
     @property
     def obs_names(self) -> pd.Index:
@@ -310,8 +296,15 @@ class H5adFacade:
 
     @property
     def var_names(self) -> pd.Index:
+        # ``export var _index`` returns the file's native gene order — the same
+        # order the ``X`` matrix columns and ``var`` columns are stored in, and
+        # the order a real ``AnnData`` exposes as ``var.index``.  (``export
+        # var_index`` instead returns the names *sorted*, which would misalign
+        # ``X`` and ``var`` against the indices.)
         if self._var_names is None:
-            self._var_names = pd.Index(_run_lines(self._path, "export", "var_index"))
+            self._var_names = pd.Index(
+                _run_lines(self._path, "export", "var", "_index")
+            )
         return self._var_names
 
     @property
@@ -337,3 +330,14 @@ class H5adFacade:
         if self._x_proxy is None:
             self._x_proxy = _XProxy(self._path, self.var_names)
         return self._x_proxy
+
+    def get_X_csr(self):
+        """Return the full ``X`` matrix as a scipy CSR sparse matrix.
+
+        Loaded once via ``h5ad-inspect export matrix_csr`` and cached.  CSR is
+        row-major, so ``X[row_array]`` slicing (the access pattern used by
+        :func:`compute_grid_moran`) is cheap.  Columns follow :attr:`var_names`.
+        """
+        if self._x_csr is None:
+            self._x_csr = _load_matrix_csr(self._path)
+        return self._x_csr

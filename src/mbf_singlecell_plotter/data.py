@@ -783,6 +783,30 @@ class EmbeddingData:
             .set_index("index")
         )
 
+    def get_X_csr(self):
+        """Return the primary source's ``X`` as a scipy CSR sparse matrix.
+
+        This is the bulk-access entry point used by analyses that touch many
+        genes at once (e.g. :func:`~mbf_singlecell_plotter.transforms.compute_grid_moran`,
+        which row-slices ``X`` per embedding bin).  CSR is row-major, so
+        ``X[row_array]`` slicing is cheap.
+
+        For :class:`H5adFacade` sources the whole matrix is loaded in one
+        ``h5ad-inspect`` call (``export matrix_csr``) and cached.  For real
+        ``AnnData`` (or anything exposing a ``get_X_csr`` method) it forwards
+        directly, converting dense/sparse matrices to CSR as needed.
+        """
+        ad = self.ad
+        getter = getattr(ad, "get_X_csr", None)
+        if getter is not None:
+            return getter()
+        from scipy import sparse as sp
+
+        X = ad.X
+        if sp.issparse(X):
+            return X.tocsr()
+        return sp.csr_matrix(np.asarray(X))
+
     # ── grid helpers ────────────────────────────────────────────────────────
 
     def point_to_grid(

@@ -164,59 +164,73 @@ class TestXBinary:
         gene = str(facade.var_names[2])
         np.testing.assert_array_equal(facade.X[:, gene], facade.X[:, 2])
 
-    def test_column_array_shape(self, facade):
-        block = facade.X[:, [0, 2, 3]]
-        assert block.shape == (len(facade.obs_names), 3)
+    def test_rejects_bulk_indexing(self, facade):
+        # Single-column access only on .X; bulk must go through get_X_csr()
+        import pytest as _pytest
 
-    def test_column_array_matches_stacked_singletons(self, facade):
-        block = facade.X[:, [0, 2]]
-        stacked = np.column_stack([facade.X[:, 0], facade.X[:, 2]])
-        np.testing.assert_array_equal(block, stacked)
+        with _pytest.raises(NotImplementedError):
+            facade.X[np.array([0, 1])]
+        with _pytest.raises(NotImplementedError):
+            facade.X[:, [0, 1]]
 
-    def test_column_array_keeps_2d_for_single_element(self, facade):
-        # numpy semantics: list indexing keeps the dimension
-        assert facade.X[:, [0]].shape == (len(facade.obs_names), 1)
 
-    def test_row_array_shape(self, facade):
-        block = facade.X[np.array([0, 1, 5, 10])]
-        assert block.shape == (4, len(facade.var_names))
+# ── bulk X matrix (get_X_csr) ────────────────────────────────────────────────
 
-    def test_row_array_matches_column_slices(self, facade):
-        rows = np.array([3, 7, 100])
-        block = facade.X[rows]
+
+class TestGetXCsr:
+    def test_returns_csr(self, facade):
+        from scipy import sparse as sp
+
+        X = facade.get_X_csr()
+        assert sp.issparse(X)
+        assert X.format == "csr"
+
+    def test_shape(self, facade):
+        X = facade.get_X_csr()
+        assert X.shape == (len(facade.obs_names), len(facade.var_names))
+
+    def test_columns_align_with_var_names(self, facade):
+        # column j of the bulk matrix must match X[:, j] (single-column fetch)
+        X = facade.get_X_csr().toarray()
+        for j in range(len(facade.var_names)):
+            np.testing.assert_array_equal(X[:, j], facade.X[:, j])
+
+    def test_row_slicing_matches_single_columns(self, facade):
+        # the access pattern used by compute_grid_moran
+        rows = np.array([3, 7, 100, 500])
+        block = facade.get_X_csr()[rows].toarray()
         for j in range(len(facade.var_names)):
             np.testing.assert_array_equal(block[:, j], facade.X[:, j][rows])
 
-    def test_single_row_is_1d(self, facade):
-        assert facade.X[0].ndim == 1
-        assert facade.X[0].shape == (len(facade.var_names),)
+    def test_row_mean_matches_column_mean(self, facade):
+        rows = np.array([0, 4, 9, 200, 1000])
+        block = facade.get_X_csr()[rows]
+        row_mean = np.asarray(block.mean(axis=0)).ravel()
+        col_means = np.array([facade.X[:, j][rows].mean() for j in range(len(facade.var_names))])
+        np.testing.assert_allclose(row_mean, col_means)
 
-    def test_scalar_indexing_matches_column_access(self, facade):
-        # X[i, j] must equal column j at row i
-        assert facade.X[5, 2] == facade.X[:, 2][5]
+    def test_cached(self, facade):
+        assert facade.get_X_csr() is facade.get_X_csr()
 
-    def test_row_and_column_array(self, facade):
-        sub = facade.X[np.array([0, 4]), np.array([1, 3])]
-        assert sub.shape == (2, 2)
+
+# ── var_names ordering (physical / AnnData order) ────────────────────────────
+
+
+class TestVarNamesOrder:
+    def test_matches_var_index_column(self, facade):
+        # var_names must be in the same order as var columns / X columns
+        # (the file's native order), not alphabetically sorted.
+        n_cells = facade.var["n_cells"]
+        # n_cells is fetched in native order, so it must align positionally
+        # with var_names by gene.
+        assert list(facade.var_names) == list(n_cells.index)
+
+    def test_var_names_column_aligned_with_get_X_csr(self, facade):
+        # The gene at var_names[0] must correspond to column 0 of the bulk X.
+        first_gene = str(facade.var_names[0])
         np.testing.assert_array_equal(
-            sub,
-            np.array([[facade.X[0, 1], facade.X[0, 3]],
-                      [facade.X[4, 1], facade.X[4, 3]]]),
+            facade.get_X_csr().toarray()[:, 0], facade.X[:, first_gene]
         )
-
-    def test_full_matrix_shape(self, facade):
-        full = facade.X[:]
-        assert full.shape == (
-            len(facade.obs_names),
-            len(facade.var_names),
-        )
-
-    def test_row_indexing_caches_columns(self, facade):
-        proxy = facade.X
-        proxy[np.array([0, 1])]  # warm the cache
-        before = len(proxy._col_cache)
-        proxy[np.array([2, 3])]  # should reuse cached columns, no new fetches
-        assert len(proxy._col_cache) == before
 
 
 # ── EmbeddingData integration ─────────────────────────────────────────────────
