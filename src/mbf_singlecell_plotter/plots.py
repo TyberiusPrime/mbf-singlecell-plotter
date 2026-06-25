@@ -3,7 +3,7 @@
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union, List, Dict
+from typing import Optional, Union, List, Dict, Callable
 
 
 class _DoNotUpdateType:
@@ -664,7 +664,9 @@ class ScatterPlotter:
         self._background_dot_size: float = 1
 
         # categorical colormap
-        self._cat_colors: Optional[ List[str] | Dict[str,str]] = None  # None → DEFAULT_COLORS_CATEGORIES
+        self._cat_colors: Optional[List[str] | Dict[str, str]] = (
+            None  # None → DEFAULT_COLORS_CATEGORIES
+        )
         self._cat_colors_title: Optional[str] = None  # None → auto from column name
 
         # layer visibility
@@ -683,7 +685,7 @@ class ScatterPlotter:
         self._facet_row_variable: Optional[str] = None
         self._facet_col_variable: Optional[str] = None
         self._facet_args: dict = {}
-        self._title_override = _UNSET
+        self._title_override: str | Callable[[str], str] | _UnsetType = _UNSET
 
         # embedding label
         self._embedding_label: bool = False
@@ -901,7 +903,7 @@ class ScatterPlotter:
 
     def colormap_discrete(
         self,
-        cmap_or_list_or_dict: None | List[str] | Dict[str, str]=DoNotUpdate,
+        cmap_or_list_or_dict: None | List[str] | Dict[str, str] = DoNotUpdate,
         *,
         title: str | _DoNotUpdateType = DoNotUpdate,
     ) -> "ScatterPlotter":
@@ -1361,7 +1363,7 @@ class ScatterPlotter:
 
     # ── title ────────────────────────────────────────────────────────────────
 
-    def title(self, t: str) -> "ScatterPlotter":
+    def title(self, t: str | Callable[[str], str]) -> "ScatterPlotter":
         new = copy.copy(self)
         new._title_override = t
         return new
@@ -1471,14 +1473,17 @@ class ScatterPlotter:
         p = self._apply_facet_layer(p)
 
         # Title
-        if self._title_override is not _UNSET:
-            p = p + p9.labs(title=self._title_override)
+        if callable(self._title_override):
+            title = self._title_override(self._display_name(data, expr_name))
+        elif self._title_override is not _UNSET:
+            title = self._title_override
         else:
             # expr_name is in var.index space (the gene symbol); _display_name
             # expands it to "alt_id (symbol)" when an alternative id column is
             # set.  The colourbar name and is_gene detection keep using the bare
             # symbol.
-            p = p + p9.labs(title=self._display_name(data, expr_name))
+            title = self._display_name(data, expr_name)
+        p = p + p9.labs(title=title)
 
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = p + embedding_theme(
@@ -1830,45 +1835,46 @@ class ScatterPlotter:
         if self._data is None:
             raise RuntimeError("call .set_source() before .get_morans_i_markers()")
 
-        from .transforms import compute_grid_moran
-
-        data = self._data
-        gs = data._grid_size
-        glv = data._grid_letters_on_vertical
+        from .transforms import compute_grid_moran, marker_genes_by_region
 
         gene_df = compute_grid_moran(
-            data, n_bins=gs, min_cells=min_cells, var_score_column=var_score_column
+            self._data, n_bins=self._data._grid_size, min_cells=min_cells
         )
+        markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
 
-        filtered = gene_df[gene_df["moran_i"] >= min_moran]
-        if filtered.empty:
-            return pd.DataFrame(columns=["cell", "gene", "moran_i", "rank"])
-
-        top = (
-            filtered.sort_values("moran_i", ascending=False)
-            .groupby("top_bin", group_keys=False)
-            .head(k)
-            .copy()
-        )
-
-        def _bin_to_label(b):
-            xi, yi = b
-            row_from_top = gs - 1 - yi
-            if glv:
-                return f"{_LETTERS[row_from_top]}{xi + 1}"
-            return f"{_LETTERS[xi]}{row_from_top + 1}"
-
-        top["cell"] = top["top_bin"].map(_bin_to_label)
-        top["rank"] = (
-            top.groupby("cell")["moran_i"]
-            .rank(ascending=False, method="first")
-            .astype(int)
-        )
-        return (
-            top[["cell", "gene", "moran_i", "rank"]]
-            .sort_values(["cell", "rank"])
-            .reset_index(drop=True)
-        )
+        out = {
+            "grid_cell": [],
+            "grid_cell_numeric": [],
+            "gene": [],
+            "morans_i": [],
+            "rank_in_grid_cell": [],
+        }
+        if self._data._alternative_id_column is not None:
+            out["alternative_id"] = []
+            alternative_ids = self._data.ad.var[
+                self._data._alternative_id_column
+            ].to_dict()
+        else:
+            alternative_ids = {} # so we get a key error
+        _, _, grid_labels_x, grid_labels_ys = self._data.grid_labels()
+        for (xi, yi), genes in markers.items():
+            for rank, gene in enumerate(genes, start=1):
+                x_label = grid_labels_x[xi]
+                y_label = grid_labels_ys[yi]
+                grid_cell_label = f"{x_label}{y_label}"
+                out["grid_cell"].append(grid_cell_label)
+                out["grid_cell_numeric"].append((xi, yi))
+                out["gene"].append(gene)
+                out["morans_i"].append(
+                    gene_df.loc[
+                        (gene_df["top_bin"] == (xi, yi)) & (gene_df["gene"] == gene),
+                        "moran_i",
+                    ].values[0]
+                )
+                out["rank_in_grid_cell"].append(rank)
+                if self._data._alternative_id_column is not None:
+                    out["alternative_id"].append(alternative_ids[gene])
+        return pd.DataFrame(out)
 
     def save_interactive_moran(
         self,
@@ -2325,7 +2331,10 @@ class ScatterPlotter:
                 name=legend_title,
                 guide=None if group_by is None else p9.guide_legend(),
             )
-            + p9.labs(x=group_by if group_by is not None else "", y=self._display_name(data, expr_name))
+            + p9.labs(
+                x=group_by if group_by is not None else "",
+                y=self._display_name(data, expr_name),
+            )
         )
 
         p = self._apply_facet_layer(p)
