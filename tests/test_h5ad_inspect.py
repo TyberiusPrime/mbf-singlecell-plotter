@@ -157,6 +157,67 @@ class TestXBinary:
         # np.frombuffer produces read-only; the facade must return a copy
         col[0] = col[0]  # should not raise ValueError
 
+    def test_single_column_is_1d(self, facade):
+        assert facade.X[:, 0].ndim == 1
+
+    def test_column_by_name_matches_positional(self, facade):
+        gene = str(facade.var_names[2])
+        np.testing.assert_array_equal(facade.X[:, gene], facade.X[:, 2])
+
+    def test_column_array_shape(self, facade):
+        block = facade.X[:, [0, 2, 3]]
+        assert block.shape == (len(facade.obs_names), 3)
+
+    def test_column_array_matches_stacked_singletons(self, facade):
+        block = facade.X[:, [0, 2]]
+        stacked = np.column_stack([facade.X[:, 0], facade.X[:, 2]])
+        np.testing.assert_array_equal(block, stacked)
+
+    def test_column_array_keeps_2d_for_single_element(self, facade):
+        # numpy semantics: list indexing keeps the dimension
+        assert facade.X[:, [0]].shape == (len(facade.obs_names), 1)
+
+    def test_row_array_shape(self, facade):
+        block = facade.X[np.array([0, 1, 5, 10])]
+        assert block.shape == (4, len(facade.var_names))
+
+    def test_row_array_matches_column_slices(self, facade):
+        rows = np.array([3, 7, 100])
+        block = facade.X[rows]
+        for j in range(len(facade.var_names)):
+            np.testing.assert_array_equal(block[:, j], facade.X[:, j][rows])
+
+    def test_single_row_is_1d(self, facade):
+        assert facade.X[0].ndim == 1
+        assert facade.X[0].shape == (len(facade.var_names),)
+
+    def test_scalar_indexing_matches_column_access(self, facade):
+        # X[i, j] must equal column j at row i
+        assert facade.X[5, 2] == facade.X[:, 2][5]
+
+    def test_row_and_column_array(self, facade):
+        sub = facade.X[np.array([0, 4]), np.array([1, 3])]
+        assert sub.shape == (2, 2)
+        np.testing.assert_array_equal(
+            sub,
+            np.array([[facade.X[0, 1], facade.X[0, 3]],
+                      [facade.X[4, 1], facade.X[4, 3]]]),
+        )
+
+    def test_full_matrix_shape(self, facade):
+        full = facade.X[:]
+        assert full.shape == (
+            len(facade.obs_names),
+            len(facade.var_names),
+        )
+
+    def test_row_indexing_caches_columns(self, facade):
+        proxy = facade.X
+        proxy[np.array([0, 1])]  # warm the cache
+        before = len(proxy._col_cache)
+        proxy[np.array([2, 3])]  # should reuse cached columns, no new fetches
+        assert len(proxy._col_cache) == before
+
 
 # ── EmbeddingData integration ─────────────────────────────────────────────────
 

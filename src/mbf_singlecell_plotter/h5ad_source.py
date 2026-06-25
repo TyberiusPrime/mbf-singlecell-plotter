@@ -191,24 +191,90 @@ class _ObsmProxy:
 
 
 class _XProxy:
-    """Mimics ``AnnData.X`` — fetches gene-expression columns via ``--binary``."""
+    """Mimics ``AnnData.X`` — gene-expression access via h5ad-inspect ``--binary``.
+
+    Supports the numpy-style indexing patterns used throughout the library:
+
+    * ``X[:, int]`` / ``X[:, str]``             — single column → 1-D ``(n_cells,)``
+    * ``X[:, [i, j]]`` / ``X[:, name_array]``   — selected columns → 2-D ``(n_cells, k)``
+    * ``X[row_array]`` / ``X[boolean_mask]``    — selected rows, all genes → 2-D ``(k, n_genes)``
+    * ``X[int]``                                — single row → 1-D ``(n_genes,)``
+    * ``X[:]`` / ``X[...]``                     — full ``(n_cells, n_genes)`` matrix
+
+    Individual gene columns are fetched lazily via ``export --binary column
+    <gene>`` and cached, so repeated slicing reuses prior work.  The ``row``
+    subcommand is deliberately *not* used: its column ordering does not match
+    ``var_index``, whereas named columns are reliably ordered per gene.
+    """
 
     def __init__(self, path: Path, var_names: pd.Index) -> None:
         self._path = path
         self._var_names = var_names
+        self._col_cache: dict = {}
+        self._full: Optional[np.ndarray] = None
+
+    def _column(self, gene: str) -> np.ndarray:
+        """Full ``(n_cells,)`` expression vector for one gene, cached by name."""
+        if gene not in self._col_cache:
+            raw = _run_inspect(self._path, "export", "--binary", "column", gene)
+            self._col_cache[gene] = np.frombuffer(raw, dtype="<f8").copy()
+        return self._col_cache[gene]
+
+    def _full_matrix(self) -> np.ndarray:
+        """Lazily-built ``(n_cells, n_genes)`` matrix in ``var_names`` order."""
+        if self._full is None:
+            cols = [self._column(str(g)) for g in self._var_names]
+            self._full = np.column_stack(cols) if cols else np.empty((0, 0))
+        return self._full
+
+    @staticmethod
+    def _split(idx) -> tuple:
+        """Split an indexer into ``(rows, cols)``, defaulting the missing axis."""
+        if isinstance(idx, tuple):
+            if len(idx) == 2:
+                return idx[0], idx[1]
+            if len(idx) == 1:
+                return idx[0], slice(None)
+            raise NotImplementedError(
+                f"H5adFacade.X only supports 1-D or 2-D indexing; got {idx!r}"
+            )
+        return idx, slice(None)
+
+    def _resolve_cols(self, cols) -> tuple:
+        """Map a column indexer to ``(gene_names, is_scalar)``.
+
+        ``is_scalar`` is True for a bare ``int``/``str`` (which drops the column
+        dimension, matching numpy semantics) and False for slices and array-like
+        indexers (which keep it).
+        """
+        if isinstance(cols, slice):
+            return [str(g) for g in self._var_names[cols]], False
+        if isinstance(cols, (int, np.integer)):
+            return [str(self._var_names[cols])], True
+        if isinstance(cols, str):
+            return [cols], True
+        arr = np.asarray(cols)
+        if arr.dtype.kind == "b":
+            positions = np.nonzero(arr)[0]
+            return [str(self._var_names[i]) for i in positions], False
+        if arr.dtype.kind in ("i", "u"):
+            return [str(self._var_names[i]) for i in arr], False
+        return [str(g) for g in arr], False
 
     def __getitem__(self, idx):
-        # EmbeddingData.get_column calls ad.X[:, int_index]
-        if isinstance(idx, tuple) and len(idx) == 2:
-            _rows, col = idx
-            if isinstance(col, (int, np.integer)):
-                gene = str(self._var_names[col])
-                raw = _run_inspect(self._path, "export", "--binary", "column", gene)
-                # little-endian float64 bytes → writable numpy array
-                return np.frombuffer(raw, dtype="<f8").copy()
-        raise NotImplementedError(
-            f"H5adFacade.X only supports [:, int] indexing; got {idx!r}"
-        )
+        rows, cols = self._split(idx)
+
+        # All-gene selections go through the cached full matrix (row slicing is
+        # the hot path for compute_grid_moran: ``X[grp["ci"].values]``).
+        if isinstance(cols, slice) and cols == slice(None):
+            return self._full_matrix()[rows]
+
+        names, scalar_cols = self._resolve_cols(cols)
+        block = np.column_stack([self._column(n) for n in names])
+        block = block[rows]
+        if scalar_cols:
+            block = block[..., 0]
+        return block
 
 
 # ── main facade ───────────────────────────────────────────────────────────────
