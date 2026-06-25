@@ -3,7 +3,7 @@
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, List, Dict
 
 
 class _DoNotUpdateType:
@@ -28,7 +28,7 @@ import pandas as pd
 import plotnine as p9
 from natsort import natsorted
 
-from .data import EmbeddingData, ColumnData, _LETTERS
+from .data import EmbeddingData, _LETTERS
 from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_theme
 from .colorbar import sc_guide_colorbar
 
@@ -376,7 +376,7 @@ def _draw_numerical_legend(
     labels: list,
     base_size: float = 12,
     title_position: str = "side",
-    border_cats: dict = None,
+    border_cats: Optional[dict] = None,
     border_legend_dot_size: float = 4,
 ) -> None:
     """Add a custom colorbar with rectangular extension boxes to a plotnine figure."""
@@ -664,7 +664,7 @@ class ScatterPlotter:
         self._background_dot_size: float = 1
 
         # categorical colormap
-        self._cat_colors: Optional[list] = None  # None → DEFAULT_COLORS_CATEGORIES
+        self._cat_colors: Optional[ List[str] | Dict[str,str]] = None  # None → DEFAULT_COLORS_CATEGORIES
         self._cat_colors_title: Optional[str] = None  # None → auto from column name
 
         # layer visibility
@@ -678,7 +678,6 @@ class ScatterPlotter:
         self._boundary_cache: dict = {"df": None}
         self._grid_config: Optional[GridConfig] = GridConfig(coords=True)
         self._facet_variable: Optional[str] = None
-        self._facet_direction: Optional[str] = "h"
         self._n_col: int = 2
         # 2D faceting (facet_grid rows ~ cols); mutually exclusive with facet().
         self._facet_row_variable: Optional[str] = None
@@ -902,9 +901,9 @@ class ScatterPlotter:
 
     def colormap_discrete(
         self,
-        cmap_or_list_or_dict=DoNotUpdate,
+        cmap_or_list_or_dict: None | List[str] | Dict[str, str]=DoNotUpdate,
         *,
-        title=DoNotUpdate,
+        title: str | _DoNotUpdateType = DoNotUpdate,
     ) -> "ScatterPlotter":
         """Set the discrete color palette and/or legend title for categorical data.
 
@@ -919,12 +918,15 @@ class ScatterPlotter:
         """
         new = copy.copy(self)
         if cmap_or_list_or_dict is not DoNotUpdate:
-            if isinstance(cmap_or_list_or_dict, (dict, list)):
+            if cmap_or_list_or_dict is None:
+                new._cat_colors = None
+            elif isinstance(cmap_or_list_or_dict, (dict, list)):
                 new._cat_colors = cmap_or_list_or_dict
             else:
                 # Assume matplotlib ListedColormap or similar
                 new._cat_colors = list(cmap_or_list_or_dict.colors)
         if title is not DoNotUpdate:
+            assert not isinstance(title, _DoNotUpdateType)
             new._cat_colors_title = title
         return new
 
@@ -1250,7 +1252,6 @@ class ScatterPlotter:
         new._facet_variable = variable
         if dir is not DoNotUpdate and dir not in ("h", "v"):
             raise ValueError("dir must be 'h' or 'v'")
-        new._facet_direction = dir if dir is not DoNotUpdate else "h"
         new._n_col = n_col
         # facet() and facet_2d() are mutually exclusive.
         new._facet_row_variable = None
