@@ -1928,6 +1928,54 @@ class TestFilterPlotter:
         assert len(p.data) == ad.n_obs
 
 
+# ---------------------------------------------------------------------------
+# alternative_id_column: duplicate resolution
+# ---------------------------------------------------------------------------
+
+
+class TestAlternativeIdDuplicate:
+    """_resolve_column_from must raise KeyError when the alternative-id column
+    contains more than one row matching the requested name."""
+
+    @staticmethod
+    def _make_ad_with_dup_alt_id():
+        """Minimal AnnData with a var column where two genes share the same alt id."""
+        n_cells, n_genes = 10, 3
+        ad = anndata.AnnData(X=np.zeros((n_cells, n_genes), dtype=np.float32))
+        ad.obs_names = [f"c{i}" for i in range(n_cells)]
+        ad.var_names = ["GENE_A", "GENE_B", "GENE_C"]
+        ad.var["alt_id"] = ["DUP_ID", "DUP_ID", "UNIQUE_ID"]
+        ad.obsm["X_umap"] = np.column_stack(
+            [np.linspace(0, 1, n_cells), np.linspace(0, 1, n_cells)]
+        )
+        return ad
+
+    def test_duplicate_alt_id_raises_key_error(self):
+        ad = self._make_ad_with_dup_alt_id()
+        data = EmbeddingData(ad, "umap", alternative_id_column="alt_id")
+        with pytest.raises(KeyError, match="Duplicate"):
+            data.get_column("DUP_ID")
+
+    def test_duplicate_alt_id_error_mentions_count(self):
+        ad = self._make_ad_with_dup_alt_id()
+        data = EmbeddingData(ad, "umap", alternative_id_column="alt_id")
+        with pytest.raises(KeyError, match="n=2"):
+            data.get_column("DUP_ID")
+
+    def test_duplicate_alt_id_error_mentions_column_name(self):
+        ad = self._make_ad_with_dup_alt_id()
+        data = EmbeddingData(ad, "umap", alternative_id_column="alt_id")
+        with pytest.raises(KeyError, match="alt_id"):
+            data.get_column("DUP_ID")
+
+    def test_unique_alt_id_still_resolves(self):
+        ad = self._make_ad_with_dup_alt_id()
+        data = EmbeddingData(ad, "umap", alternative_id_column="alt_id")
+        series, name = data.get_column("UNIQUE_ID")
+        assert name == "GENE_C"
+        assert len(series) == ad.n_obs
+
+
 class TestThemeIndependence:
     def test_themes_are_not_the_same(self, ad):
         sp = ScatterPlotter().set_source(ad, "umap")

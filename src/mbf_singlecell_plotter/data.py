@@ -661,7 +661,11 @@ class EmbeddingData:
             return self._resolve_column_from(
                 self.ad, name, self._layer, self._transform
             )
-        except KeyError:
+        except KeyError as exc:
+            # Ambiguous matches (e.g. duplicate alternative ids) must bubble up
+            # rather than being silently swallowed and re-raised as "not found".
+            if "Duplicate" in str(exc):
+                raise
             pass
 
         for d in self._derived_sources:
@@ -761,6 +765,11 @@ class EmbeddingData:
             alt_hits = ad.var[self._alternative_id_column] == name
             if alt_hits.sum() == 1:
                 return _extract(alt_hits)
+            if alt_hits.sum() > 1:
+                raise KeyError(
+                    f"Duplicate (n={alt_hits.sum()} in alternative-id column {self._alternative_id_column} \
+                cannot resolve {name!r}"
+                )
         if ad.var.index.str.contains(" ").any():
             name_hits = ad.var.index.str.startswith(name + " ")
             if name_hits.sum() == 1:
@@ -1130,7 +1139,7 @@ class EmbeddingData:
             "frequency": [],
             "total": [],
         }
-        for (ix, iy), sub in df_cells.groupby(["x_bin", "y_bin"]): # ty: ignore
+        for (ix, iy), sub in df_cells.groupby(["x_bin", "y_bin"]):  # ty: ignore
             if len(sub) >= min_cells:
                 freqs = sub["category"].value_counts(normalize=True)
                 for cat, freq in freqs.items():
