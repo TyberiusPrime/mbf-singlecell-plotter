@@ -97,7 +97,8 @@ def _terminal_pixel_width() -> int:
     """Best-effort terminal width in pixels."""
     # Try TIOCGWINSZ ioctl (gives both cell and pixel dimensions)
     try:
-        import fcntl, struct
+        import fcntl
+        import struct
 
         packed = fcntl.ioctl(
             sys.stdout.fileno(),
@@ -125,7 +126,6 @@ def _show_composite(
         return
     try:
         from PIL import Image
-        import io
 
         img = _composite_side_by_side(left, right)
         w, h = img.size
@@ -147,7 +147,6 @@ def _show_composite(
 def _print_stats(path: Path, label: str = "") -> None:
     try:
         from PIL import Image
-        import numpy as np
 
         img = Image.open(path).convert("RGB")
         arr = __import__("numpy").array(img)
@@ -279,7 +278,7 @@ def review(
                 break
             # any other key: redraw
 
-    print(f"\nDone.")
+    print("\nDone.")
 
 
 # ---------------------------------------------------------------------------

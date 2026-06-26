@@ -21,9 +21,8 @@ import io
 from pathlib import Path
 
 import numpy as np
-import matplotlib
 import matplotlib.pyplot as plt
-from PIL import Image, ImageChops, ImageEnhance
+from PIL import Image
 
 TESTS_DIR = Path(__file__).parent
 REFERENCE_DIR = TESTS_DIR / "reference_images"

@@ -123,7 +123,8 @@ print(f"  → {plain_path}")
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 
-import re, json
+import re
+import json
 
 for path, label in [(debug_path, "debug"), (plain_path, "plain")]:
     html = open(path).read()

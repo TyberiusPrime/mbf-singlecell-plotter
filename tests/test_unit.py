@@ -1244,7 +1244,6 @@ class TestLayerAndTransform:
         np.testing.assert_allclose(out.values, base.values * 10.0 + 1.0)
 
     def test_get_X_csr_respects_layer(self, ad):
-        import scipy.sparse as sp
 
         base = EmbeddingData(ad, "umap").get_X_csr().toarray()
         lad = _ad_with_layer(ad, factor=10.0)
@@ -1891,5 +1890,5 @@ class TestThemeIndependence:
     def test_themes_are_not_the_same(self, ad):
         sp = ScatterPlotter().set_source(ad, "umap")
         sp2 = sp.theme(panel_border=p9.element_blank())
-        assert not sp is sp2
-        assert not sp._theme_overwrites is sp2._theme_overwrites
+        assert sp is not sp2
+        assert sp._theme_overwrites is not sp2._theme_overwrites
