@@ -54,10 +54,4 @@ def embedding_theme(
         ),
         panel_border=border,
         plot_margin=0.02,
-        # plot_background=p9.element_rect(fill=bg_color, color=None),
-        # panel_background=p9.element_rect(fill=bg_color),
-        # panel_border=border,
-        # legend_background=p9.element_rect(fill=bg_color, color=bg_color, size=0.0),
-        # legend_box_background=p9.element_blank(),
-        # plot_margin=0.05,
     )
