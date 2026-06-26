@@ -1136,8 +1136,8 @@ class ScatterPlotter:
                 grid_size=resolved_grid_size,
                 grid_letters_on_vertical=resolved_vl,
                 filter_fn=new._data._filter,
-                layer = new._data.layer,
-                transform = new._data._transform
+                layer=new._data.layer,
+                transform=new._data._transform,
             )
         return new
 

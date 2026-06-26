@@ -80,9 +80,7 @@ def _parse_series(
         return pd.Series([], index=index, name=name, dtype=object)
 
     if encoding == "categorical":
-        return pd.Series(
-            pd.Categorical(lines, categories), index=index, name=name
-        )
+        return pd.Series(pd.Categorical(lines, categories), index=index, name=name)
 
     if encoding == "bool":
         lower = [ln.lower() for ln in lines]
@@ -253,8 +251,12 @@ class _XProxy:
         """Full ``(n_cells,)`` expression vector for one gene, cached by name."""
         if gene not in self._col_cache:
             raw = _run_inspect(
-                self._path, "export", "--binary", *_layer_args(self._layer),
-                "column", gene,
+                self._path,
+                "export",
+                "--binary",
+                *_layer_args(self._layer),
+                "column",
+                gene,
             )
             self._col_cache[gene] = np.frombuffer(raw, dtype="<f8").copy()
         return self._col_cache[gene]

@@ -30,6 +30,7 @@ NUMERIC_COL = "n_genes"
 # map_to_integers / unmap
 # ---------------------------------------------------------------------------
 
+
 class TestMapToIntegers:
     def test_full_range(self):
         s = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0])
@@ -74,6 +75,7 @@ class TestUnmap:
 # ---------------------------------------------------------------------------
 # EmbeddingData: data accessors
 # ---------------------------------------------------------------------------
+
 
 class TestGetColumn:
     def test_categorical_obs_column(self, data):
@@ -134,7 +136,9 @@ class TestGetClusterCenters:
         centers = data.cluster_centers(CAT_COL)
         for label in centers["grid"]:
             assert isinstance(label, str) and len(label) >= 2
-            assert label[0].isalpha(), f"Grid label '{label}' should start with a letter"
+            assert label[0].isalpha(), (
+                f"Grid label '{label}' should start with a letter"
+            )
 
     def test_coordinates_within_embedding_range(self, data):
         centers = data.cluster_centers(CAT_COL)
@@ -158,7 +162,9 @@ class TestPointToGrid:
         r = data.point_to_grid(0, 12, 0, 12, 0.01, 0.01)
         letter, number = r
         assert letter == "A"
-        assert number == 12  # bottom row is highest number when letters_on_vertical=False
+        assert (
+            number == 12
+        )  # bottom row is highest number when letters_on_vertical=False
 
     def test_out_of_x_range_raises(self, data):
         with pytest.raises(ValueError):
@@ -300,7 +306,9 @@ class TestPrepareDensityDf:
         from mbf_singlecell_plotter.transforms import prepare_density_df
 
         facet_vals, _ = data.get_column(CAT_COL)
-        facet_total = prepare_density_df(data, bins=80, facet=facet_vals)["density"].sum()
+        facet_total = prepare_density_df(data, bins=80, facet=facet_vals)[
+            "density"
+        ].sum()
         plain_total = prepare_density_df(data, bins=80)["density"].sum()
         assert facet_total == pytest.approx(plain_total)
 
@@ -313,9 +321,7 @@ class TestPrepareDensityDf2D:
 
         row_vals, _ = data.get_column("bool")
         col_vals, _ = data.get_column("coarse")
-        df = prepare_density_df(
-            data, bins=80, facet_row=row_vals, facet_col=col_vals
-        )
+        df = prepare_density_df(data, bins=80, facet_row=row_vals, facet_col=col_vals)
         assert "facet_row" in df.columns
         assert "facet_col" in df.columns
         assert isinstance(df["facet_row"].dtype, pd.CategoricalDtype)
@@ -327,16 +333,12 @@ class TestPrepareDensityDf2D:
 
         row_vals, _ = data.get_column("bool")
         col_vals, _ = data.get_column("coarse")
-        df = prepare_density_df(
-            data, bins=80, facet_row=row_vals, facet_col=col_vals
-        )
+        df = prepare_density_df(data, bins=80, facet_row=row_vals, facet_col=col_vals)
         coords = data.coordinates()
         r = row_vals.reindex(coords.index)
         c = col_vals.reindex(coords.index)
         true = coords.groupby([r, c], observed=True).size()
-        for (rv, cv), sub in df.groupby(
-            ["facet_row", "facet_col"], observed=True
-        ):
+        for (rv, cv), sub in df.groupby(["facet_row", "facet_col"], observed=True):
             assert sub["density"].sum() == pytest.approx(true[(rv, cv)])
 
     def test_2d_preserves_total(self, data):
@@ -400,11 +402,7 @@ class TestPlotDensityParity:
         coords = data.coordinates()
         xlo, xhi = float(coords["x"].min()), float(coords["x"].median())
         ylo, yhi = float(coords["y"].min()), float(coords["y"].median())
-        p = (
-            plotter_no_boundary
-            .focus_on(x=(xlo, xhi), y=(ylo, yhi))
-            .plot_density()
-        )
+        p = plotter_no_boundary.focus_on(x=(xlo, xhi), y=(ylo, yhi)).plot_density()
         assert isinstance(p.coordinates, p9.coords.coord_cartesian)
         assert p.coordinates.limits.x == (xlo, xhi)
         assert p.coordinates.limits.y == (ylo, yhi)
@@ -443,8 +441,17 @@ class TestPlotHistogram:
         """Rendered bars must use the colormap_discrete palette."""
         import matplotlib.colors as mc
 
-        colors = ["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff",
-                  "#00ffff", "#000000", "#ffffff", "#888888"]
+        colors = [
+            "#ff0000",
+            "#00ff00",
+            "#0000ff",
+            "#ffff00",
+            "#ff00ff",
+            "#00ffff",
+            "#000000",
+            "#ffffff",
+            "#888888",
+        ]
         p = plotter_no_boundary.colormap_discrete(colors).plot_histogram(CAT_COL)
         ax = p.draw().axes[0]
         # geom_col bars are a PolyCollection in current plotnine
@@ -504,6 +511,7 @@ class TestPlotHistogram:
     def test_normalize_to_missing_raises(self, plotter_no_boundary):
         """normalize_to with a value not in the column raises ValueError."""
         import pytest
+
         with pytest.raises(ValueError, match="not found in column"):
             plotter_no_boundary.plot_histogram(CAT_COL, normalize_to="__nonexistent__")
 
@@ -511,6 +519,7 @@ class TestPlotHistogram:
 # ---------------------------------------------------------------------------
 # Constructor edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestConstructor:
     def test_invalid_embedding_raises(self, ad):
@@ -552,9 +561,9 @@ class TestConstructor:
         n = 20
         ad = anndata.AnnData(X=np.zeros((n, 2)))
         ad.obs["flag"] = [i % 2 == 0 for i in range(n)]
-        ad.obsm["X_umap"] = np.column_stack([
-            np.linspace(0, 1, n), np.linspace(0, 1, n)
-        ])
+        ad.obsm["X_umap"] = np.column_stack(
+            [np.linspace(0, 1, n), np.linspace(0, 1, n)]
+        )
         return ad
 
     def test_bool_column_expression_is_categorical_str(self):
@@ -577,6 +586,7 @@ class TestPanelSize:
     def test_attributes_set(self, plotter_no_boundary):
         """panel_size() registers a fixed-panel post-draw hook on the ggplot."""
         from mbf_singlecell_plotter.plots import _PlotWithPostDraw
+
         p = plotter_no_boundary.panel_size(2.0, 3.0).plot("S100A8")
         assert isinstance(p, _PlotWithPostDraw)
         assert len(p._post_draw_fns) == 1
@@ -745,17 +755,13 @@ class TestFacet2D:
         ad = anndata.AnnData(X=np.zeros((n, 1), dtype=np.float32))
         ad.obs_names = [f"c{i}" for i in range(n)]
         ad.var_names = ["gene0"]
-        ad.obsm["X_umap"] = np.column_stack([
-            np.random.rand(n), np.random.rand(n)
-        ])
+        ad.obsm["X_umap"] = np.column_stack([np.random.rand(n), np.random.rand(n)])
         # Row variable: a clean categorical.
-        ad.obs["row_var"] = pd.Categorical(
-            np.random.choice(["a", "b", "c"], n)
-        )
+        ad.obs["row_var"] = pd.Categorical(np.random.choice(["a", "b", "c"], n))
         # Column variable: 3 categories with some unannotated (NaN) cells.
-        col = np.random.choice(
-            ["Missense", "Synonymous", "Frameshift"], n
-        ).astype(object)
+        col = np.random.choice(["Missense", "Synonymous", "Frameshift"], n).astype(
+            object
+        )
         col[:25] = None
         ad.obs["col_var"] = pd.Categorical(col)
 
@@ -777,6 +783,7 @@ class TestFacet2D:
 #   Labels (default):          Labels (vertical-letters):
 #     A1 (top-left)   B1          1A (top-left)   2A
 #     A2 (bottom-left) B2         1B (bottom-left) 2B
+
 
 @pytest.fixture(scope="module")
 def grid2_ad():
@@ -940,8 +947,14 @@ class TestBackground:
 # ---------------------------------------------------------------------------
 
 
-def _make_alt_ad(primary, extra_gene="EXTRA_GENE", extra_obs="extra_annot",
-                 shuffle=False, drop=0, superset_extra=0):
+def _make_alt_ad(
+    primary,
+    extra_gene="EXTRA_GENE",
+    extra_obs="extra_annot",
+    shuffle=False,
+    drop=0,
+    superset_extra=0,
+):
     """Build a secondary AnnData sharing primary's obs_names.
 
     shuffle: reverse the obs_names order so the alternative stores values in a
@@ -1012,9 +1025,7 @@ class TestAlternativeSourcesEmbeddingData:
         data2 = data.add_alternative_source(alt)
         series, _ = data2.get_column("EXTRA_GENE")
         # After reindex onto primary obs_names, value i must sit at primary position i
-        expected = pd.Series(
-            np.arange(ad.n_obs, dtype=np.float32), index=ad.obs_names
-        )
+        expected = pd.Series(np.arange(ad.n_obs, dtype=np.float32), index=ad.obs_names)
         np.testing.assert_allclose(series.values, expected.values)
         assert series.index.equals(ad.obs_names)
 
@@ -1088,9 +1099,9 @@ class TestAlternativeSourcesEmbeddingData:
     def test_coerce_unwraps_embedding_data(self, ad):
         alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
         # alt has no embedding; add one so it can be wrapped as EmbeddingData
-        alt.obsm["X_umap"] = np.column_stack([
-            np.linspace(0, 1, alt.n_obs), np.linspace(0, 1, alt.n_obs)
-        ])
+        alt.obsm["X_umap"] = np.column_stack(
+            [np.linspace(0, 1, alt.n_obs), np.linspace(0, 1, alt.n_obs)]
+        )
         alt_data = EmbeddingData(alt, "umap")
         data = EmbeddingData(ad, "umap").add_alternative_source(alt_data)
         series, _ = data.get_column("EXTRA_GENE")
@@ -1201,7 +1212,9 @@ class TestLayerAndTransform:
     def test_primary_layer_reads_named_layer(self, ad):
         base, _ = EmbeddingData(ad, "umap").get_column(GENE)
         lad = _ad_with_layer(ad, factor=10.0)
-        scaled, name = EmbeddingData(ad=lad, embedding="umap", layer="scaled").get_column(GENE)
+        scaled, name = EmbeddingData(
+            ad=lad, embedding="umap", layer="scaled"
+        ).get_column(GENE)
         assert name == GENE
         np.testing.assert_allclose(scaled.values, base.values * 10.0)
 
@@ -1353,9 +1366,7 @@ class TestAlternativeSourceNames:
         alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE", shuffle=True)
         data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
         series, _ = data.get_column(("imp", "EXTRA_GENE"))
-        expected = pd.Series(
-            np.arange(ad.n_obs, dtype=np.float32), index=ad.obs_names
-        )
+        expected = pd.Series(np.arange(ad.n_obs, dtype=np.float32), index=ad.obs_names)
         np.testing.assert_allclose(series.values, expected.values)
 
     def test_tuple_routes_to_named_not_primary(self, ad):
@@ -1472,7 +1483,9 @@ class TestDerivedSources:
         )
         series, _ = data.get_column("ratio")
         assert series.index.equals(ad.obs_names)
-        expected = ad.obs["n_genes"].astype(float) / ad.obs["total_counts"].astype(float)
+        expected = ad.obs["n_genes"].astype(float) / ad.obs["total_counts"].astype(
+            float
+        )
         np.testing.assert_allclose(series.values, expected.values)
 
     def test_named_tuple_routing(self, ad):
@@ -1530,9 +1543,7 @@ class TestDerivedSources:
         data = (
             EmbeddingData(ad, "umap")
             .add_alternative_source(alt)
-            .add_derived_source(
-                {"DUP": lambda d: pd.Series(42.0, index=ad.obs_names)}
-            )
+            .add_derived_source({"DUP": lambda d: pd.Series(42.0, index=ad.obs_names)})
         )
         series, _ = data.get_column("DUP")
         # derived (42.0) wins over the alternative (0..n-1)
@@ -1571,14 +1582,18 @@ class TestDerivedSources:
         alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
         data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="dup")
         with pytest.raises(ValueError):
-            data.add_derived_source({"x": lambda d: d.get_column("n_genes").series}, name="dup")
+            data.add_derived_source(
+                {"x": lambda d: d.get_column("n_genes").series}, name="dup"
+            )
 
     def test_duplicate_name_among_derived_raises(self, ad):
         data = EmbeddingData(ad, "umap").add_derived_source(
             {"x": lambda d: d.get_column("n_genes").series}, name="d"
         )
         with pytest.raises(ValueError):
-            data.add_derived_source({"y": lambda d: d.get_column("n_genes").series}, name="d")
+            data.add_derived_source(
+                {"y": lambda d: d.get_column("n_genes").series}, name="d"
+            )
 
     def test_immutability(self, ad):
         data = EmbeddingData(ad, "umap")
@@ -1600,7 +1615,9 @@ class TestDerivedSources:
         data = EmbeddingData(
             ad,
             "umap",
-            derived_sources=[("calc", {"x": lambda d: d.get_column("n_genes").series * 3})],
+            derived_sources=[
+                ("calc", {"x": lambda d: d.get_column("n_genes").series * 3})
+            ],
         )
         assert data.derived_sources[0].name == "calc"
         series, _ = data.get_column(("calc", "x"))
@@ -1828,9 +1845,7 @@ class TestFilterPlotter:
 
     def test_plot_subset_uses_filtered_cells(self, plotter_no_boundary, ad):
         keep = ad.obs["leiden"] == "0"
-        filtered_pt = plotter_no_boundary.set_filter(
-            lambda d, m=keep.values: m
-        )
+        filtered_pt = plotter_no_boundary.set_filter(lambda d, m=keep.values: m)
         # categorical plot: p.data holds every kept cell (no zero/clip split)
         p = filtered_pt.plot("leiden")
         assert len(p.data) == int(keep.sum())
@@ -1875,6 +1890,6 @@ class TestFilterPlotter:
 class TestThemeIndependence:
     def test_themes_are_not_the_same(self, ad):
         sp = ScatterPlotter().set_source(ad, "umap")
-        sp2 = sp.theme(panel_border = p9.element_blank())
+        sp2 = sp.theme(panel_border=p9.element_blank())
         assert not sp is sp2
         assert not sp._theme_overwrites is sp2._theme_overwrites

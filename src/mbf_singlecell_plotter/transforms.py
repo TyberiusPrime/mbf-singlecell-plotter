@@ -130,9 +130,9 @@ def prepare_density_df(
         for cv in col_cats:
             mask = np.ones(len(coords), dtype=bool)
             if facet_row is not None:
-                mask &= (facet_row.values == rv)
+                mask &= facet_row.values == rv
             if facet_col is not None:
-                mask &= (facet_col.values == cv)
+                mask &= facet_col.values == cv
             sub = coords[mask]
             if len(sub) == 0:
                 continue
@@ -213,12 +213,8 @@ def compute_boundaries(
 
     for cat_no, cat in enumerate(cats):
         sdf = pdf[pdf.cell_type == cat]
-        mapped_x = map_to_integers(
-            sdf["x"], resolution, pdf["x"].min(), pdf["x"].max()
-        )
-        mapped_y = map_to_integers(
-            sdf["y"], resolution, pdf["y"].min(), pdf["y"].max()
-        )
+        mapped_x = map_to_integers(sdf["x"], resolution, pdf["x"].min(), pdf["x"].max())
+        mapped_y = map_to_integers(sdf["y"], resolution, pdf["y"].min(), pdf["y"].max())
         color = cmap(cat_no)
         for x, y in zip(mapped_x, mapped_y):
             img[x][y] = 255
@@ -376,7 +372,7 @@ def compute_grid_moran(
             "Reduce min_cells or increase n_bins."
         )
 
-    grid_expr = np.vstack(grid_expr_rows)   # (B, G)
+    grid_expr = np.vstack(grid_expr_rows)  # (B, G)
     counts = np.array(counts)
     B = len(bins_xy)
 
@@ -398,24 +394,22 @@ def compute_grid_moran(
                         rows_w.append(i)
                         cols_w.append(j)
 
-        W = sp.csr_matrix(
-            (np.ones(len(rows_w)), (rows_w, cols_w)), shape=(B, B)
-        )
+        W = sp.csr_matrix((np.ones(len(rows_w)), (rows_w, cols_w)), shape=(B, B))
         row_sums = np.asarray(W.sum(axis=1)).ravel()
         row_sums[row_sums == 0] = 1.0
         W = W.multiply(1.0 / row_sums[:, None])
         S0 = float(W.sum())
 
         # ── Moran's I, all genes simultaneously ──────────────────────────────
-        Z = grid_expr - grid_expr.mean(axis=0)   # (B, G)
-        WZ = W @ Z                                # (B, G)
+        Z = grid_expr - grid_expr.mean(axis=0)  # (B, G)
+        WZ = W @ Z  # (B, G)
         numerator = (Z * WZ).sum(axis=0)
-        denominator = (Z ** 2).sum(axis=0)
+        denominator = (Z**2).sum(axis=0)
         moran_i = (B / S0) * numerator / np.maximum(denominator, 1e-12)
 
     # ── top bin per gene (weighted by log1p cell count) ───────────────────────
-    score = grid_expr * np.log1p(counts)[:, None]   # (B, G)
-    top_idx = score.argmax(axis=0)                  # (G,)
+    score = grid_expr * np.log1p(counts)[:, None]  # (B, G)
+    top_idx = score.argmax(axis=0)  # (G,)
 
     gene_names = list(ad.var_names)
     G = len(gene_names)
@@ -423,14 +417,16 @@ def compute_grid_moran(
     top_bin_xs = [x_centers[b[0]] for b in top_bins]
     top_bin_ys = [y_centers[b[1]] for b in top_bins]
 
-    return pd.DataFrame({
-        "gene":          gene_names,
-        "moran_i":       moran_i,
-        "top_bin":       top_bins,
-        "top_bin_score": score[top_idx, np.arange(G)],
-        "top_bin_x":     top_bin_xs,
-        "top_bin_y":     top_bin_ys,
-    })
+    return pd.DataFrame(
+        {
+            "gene": gene_names,
+            "moran_i": moran_i,
+            "top_bin": top_bins,
+            "top_bin_score": score[top_idx, np.arange(G)],
+            "top_bin_x": top_bin_xs,
+            "top_bin_y": top_bin_ys,
+        }
+    )
 
 
 def marker_genes_by_region(
@@ -499,36 +495,41 @@ def _inverse_bilinear(pts, p00, p10, p01, p11):
     Returns:
         lr, bt — (N,) arrays.  Points inside the quad have lr, bt ∈ [0, 1].
     """
-    E = p10 - p00        # (2,)
-    F = p01 - p00        # (2,)
-    G = p00 - p10 - p01 + p11   # (2,)  zero for rectangles
-    H = pts - p00        # (N, 2)
+    E = p10 - p00  # (2,)
+    F = p01 - p00  # (2,)
+    G = p00 - p10 - p01 + p11  # (2,)  zero for rectangles
+    H = pts - p00  # (N, 2)
 
-    EcG = _cross2d(E, G)   # scalar
-    EcF = _cross2d(E, F)   # scalar
-    HcG = _cross2d(H, G)   # (N,)
-    HcF = _cross2d(H, F)   # (N,)
+    EcG = _cross2d(E, G)  # scalar
+    EcF = _cross2d(E, F)  # scalar
+    HcG = _cross2d(H, G)  # (N,)
+    HcF = _cross2d(H, F)  # (N,)
 
-    a = -EcG              # scalar
-    b = HcG - EcF         # (N,)
-    c = HcF               # (N,)
+    a = -EcG  # scalar
+    b = HcG - EcF  # (N,)
+    c = HcF  # (N,)
 
     def _bt_from_lr(lr):
         dx = F[0] + lr * G[0]
         dy = F[1] + lr * G[1]
-        bt_x = np.where(dx != 0, (H[:, 0] - lr * E[0]) / np.where(dx != 0, dx, 1.0), 0.0)
-        bt_y = np.where(dy != 0, (H[:, 1] - lr * E[1]) / np.where(dy != 0, dy, 1.0), 0.0)
+        bt_x = np.where(
+            dx != 0, (H[:, 0] - lr * E[0]) / np.where(dx != 0, dx, 1.0), 0.0
+        )
+        bt_y = np.where(
+            dy != 0, (H[:, 1] - lr * E[1]) / np.where(dy != 0, dy, 1.0), 0.0
+        )
         return np.where(np.abs(dx) >= np.abs(dy), bt_x, bt_y)
 
     def _penalty(s, t):
-        return (np.maximum(0, np.maximum(-s, s - 1))
-                + np.maximum(0, np.maximum(-t, t - 1)))
+        return np.maximum(0, np.maximum(-s, s - 1)) + np.maximum(
+            0, np.maximum(-t, t - 1)
+        )
 
     if abs(a) < 1e-10:
         # Degenerate / rectangular — linear equation
         lr = np.where(np.abs(b) > 1e-10, -c / b, 0.0)
     else:
-        disc = np.maximum(b ** 2 - 4 * a * c, 0.0)
+        disc = np.maximum(b**2 - 4 * a * c, 0.0)
         sd = np.sqrt(disc)
         lr0 = (-b + sd) / (2 * a)
         lr1 = (-b - sd) / (2 * a)
@@ -614,14 +615,14 @@ def prepare_embedding_color_df(
         pts = np.column_stack([rx.values, ry.values])
         lr_arr, bt_arr = _inverse_bilinear(pts, p00=bl, p10=br, p01=tl, p11=tr)
         in_region = (lr_arr >= 0) & (lr_arr <= 1) & (bt_arr >= 0) & (bt_arr <= 1)
-        t = pd.Series(lr_arr, index=rx.index)   # left → right
-        s = pd.Series(bt_arr, index=rx.index)   # bottom → top
+        t = pd.Series(lr_arr, index=rx.index)  # left → right
+        s = pd.Series(bt_arr, index=rx.index)  # bottom → top
     else:
         x_min, x_max = rx.min(), rx.max()
         y_min, y_max = ry.min(), ry.max()
         in_region = None
-        t = (rx - x_min) / (x_max - x_min + 1e-12)   # [0,1] left → right
-        s = (ry - y_min) / (y_max - y_min + 1e-12)   # [0,1] bottom → top
+        t = (rx - x_min) / (x_max - x_min + 1e-12)  # [0,1] left → right
+        s = (ry - y_min) / (y_max - y_min + 1e-12)  # [0,1] bottom → top
 
     tl_c = np.array(mcolors.to_rgb(corner_colors[0]))
     tr_c = np.array(mcolors.to_rgb(corner_colors[1]))
@@ -639,14 +640,12 @@ def prepare_embedding_color_df(
     rgb = np.clip(rgb, 0, 1)
 
     hex_colors = [
-        f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
-        for r, g, b in rgb
+        f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}" for r, g, b in rgb
     ]
 
     if in_region is not None:
         hex_colors = [
-            hc if flag else outside_color
-            for hc, flag in zip(hex_colors, in_region)
+            hc if flag else outside_color for hc, flag in zip(hex_colors, in_region)
         ]
 
     df = current_coords.copy()

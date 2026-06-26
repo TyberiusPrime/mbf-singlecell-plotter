@@ -90,7 +90,7 @@ def save_interactive_moran(
 
     # ── Stable axes geometry (read AFTER layout is frozen) ───────────────────
     ax = fig.axes[0]
-    ax_pos = ax.get_position()   # fractions of figure in [0, 1]
+    ax_pos = ax.get_position()  # fractions of figure in [0, 1]
     xlim = ax.get_xlim()
     ylim = ax.get_ylim()
 
@@ -100,9 +100,9 @@ def save_interactive_moran(
     css_h = round(fig_h_in * 96)
 
     # Axes bounding box in CSS pixels (SVG y=0 is at the top)
-    ax_left   = ax_pos.x0 * css_w
-    ax_right  = ax_pos.x1 * css_w
-    ax_top    = (1.0 - ax_pos.y1) * css_h
+    ax_left = ax_pos.x0 * css_w
+    ax_right = ax_pos.x1 * css_w
+    ax_top = (1.0 - ax_pos.y1) * css_h
     ax_bottom = (1.0 - ax_pos.y0) * css_h
 
     def _dx(x):
@@ -124,7 +124,7 @@ def save_interactive_moran(
     from .data import _LETTERS
 
     data_full = data.unfocus()
-    gs  = data_full._grid_size
+    gs = data_full._grid_size
     glv = data_full._grid_letters_on_vertical
     x_min_d, x_max_d, y_min_d, y_max_d = data_full.full_bounds()
     cell_w = (x_max_d - x_min_d) / gs
@@ -141,7 +141,7 @@ def save_interactive_moran(
 
     def _bin_to_label(xi: int, yi: int) -> str:
         """Convert (xi, yi) bin indices directly to a grid label."""
-        row_from_top = gs - 1 - yi   # yi=0 is bottom → last row from top
+        row_from_top = gs - 1 - yi  # yi=0 is bottom → last row from top
         if glv:
             return f"{_LETTERS[row_from_top]}{xi + 1}"
         return f"{_LETTERS[xi]}{row_from_top + 1}"
@@ -154,7 +154,7 @@ def save_interactive_moran(
     gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
 
     # ── Map bin (xi, yi) → gene list (index arithmetic, no coordinate lookup) ─
-    grid_cell_genes: dict = defaultdict(list)   # (xi,yi) → [(gene, score)]
+    grid_cell_genes: dict = defaultdict(list)  # (xi,yi) → [(gene, score)]
     for (xi, yi), genes in markers.items():
         for g in genes:
             grid_cell_genes[(int(xi), int(yi))].append(
@@ -185,8 +185,8 @@ def save_interactive_moran(
         # Data-space bounds of this grid cell
         x0_d = x_min_d + xi * cell_w
         x1_d = x0_d + cell_w
-        y1_d = y_max_d - row_from_top * cell_h   # top edge in data coords
-        y0_d = y1_d - cell_h                      # bottom edge
+        y1_d = y_max_d - row_from_top * cell_h  # top edge in data coords
+        y0_d = y1_d - cell_h  # bottom edge
 
         # Genes (may be empty if none pass the threshold)
         gene_list = grid_cell_genes.get((xi, yi), [])
@@ -200,12 +200,14 @@ def save_interactive_moran(
                 # column is configured.  `url` is precomputed here when a
                 # callable gene_url was given (string templates are resolved
                 # client-side); the bare symbol drives external links.
-                deduped.append({
-                    "name": plotter._display_name(data, gene),
-                    "gene": gene,
-                    "url": _gene_url(gene),
-                    "mi": round(mi, 3),
-                })
+                deduped.append(
+                    {
+                        "name": plotter._display_name(data, gene),
+                        "gene": gene,
+                        "url": _gene_url(gene),
+                        "mi": round(mi, 3),
+                    }
+                )
         deduped = deduped[:k]
 
         svg_x = _dx(x0_d)
@@ -213,20 +215,24 @@ def save_interactive_moran(
         svg_rect_w = _dx(x1_d) - svg_x
         svg_rect_h = _dy(y0_d) - svg_y
 
-        cells.append({
-            "label": label,
-            "x": round(svg_x, 1), "y": round(svg_y, 1),
-            "w": round(svg_rect_w, 1), "h": round(svg_rect_h, 1),
-            "genes": deduped,
-            "n_cells": n_cells,
-        })
+        cells.append(
+            {
+                "label": label,
+                "x": round(svg_x, 1),
+                "y": round(svg_y, 1),
+                "w": round(svg_rect_w, 1),
+                "h": round(svg_rect_h, 1),
+                "genes": deduped,
+                "n_cells": n_cells,
+            }
+        )
 
     # ── Debug overlay elements ────────────────────────────────────────────────
     debug_svg = ""
     if debug:
         # 1. Red dashed rect: computed axes bounding box
         debug_svg += (
-            f'<!-- axes bbox -->'
+            f"<!-- axes bbox -->"
             f'<rect x="{ax_left:.1f}" y="{ax_top:.1f}"'
             f' width="{ax_right - ax_left:.1f}" height="{ax_bottom - ax_top:.1f}"'
             f' fill="none" stroke="red" stroke-width="2"'
@@ -234,10 +240,10 @@ def save_interactive_moran(
         )
         # Corner labels: data coords at the four corners of the axes
         corners = [
-            (ax_left,  ax_top,    f"{xlim[0]:.2f},{ylim[1]:.2f}", "start", "hanging"),
-            (ax_right, ax_top,    f"{xlim[1]:.2f},{ylim[1]:.2f}", "end",   "hanging"),
-            (ax_left,  ax_bottom, f"{xlim[0]:.2f},{ylim[0]:.2f}", "start", "auto"),
-            (ax_right, ax_bottom, f"{xlim[1]:.2f},{ylim[0]:.2f}", "end",   "auto"),
+            (ax_left, ax_top, f"{xlim[0]:.2f},{ylim[1]:.2f}", "start", "hanging"),
+            (ax_right, ax_top, f"{xlim[1]:.2f},{ylim[1]:.2f}", "end", "hanging"),
+            (ax_left, ax_bottom, f"{xlim[0]:.2f},{ylim[0]:.2f}", "start", "auto"),
+            (ax_right, ax_bottom, f"{xlim[1]:.2f},{ylim[0]:.2f}", "end", "auto"),
         ]
         for cx2, cy2, lbl, anchor, baseline in corners:
             debug_svg += (
@@ -266,10 +272,17 @@ def save_interactive_moran(
                     f' stroke-width="0.6" pointer-events="none"/>'
                 )
 
-    html = _build_html(img_b64, css_w, css_h, cells, column, debug_svg,
-                       gene_url_template=gene_url_template,
-                       has_gene_urls=has_gene_urls,
-                       gene_url_inline=gene_url_inline)
+    html = _build_html(
+        img_b64,
+        css_w,
+        css_h,
+        cells,
+        column,
+        debug_svg,
+        gene_url_template=gene_url_template,
+        has_gene_urls=has_gene_urls,
+        gene_url_inline=gene_url_inline,
+    )
     Path(output_path).write_text(html, encoding="utf-8")
 
 

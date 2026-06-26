@@ -34,7 +34,6 @@ DEFAULT_COLORS_CATEGORIES = [
 ]
 
 
-
 def embedding_theme(
     base_size,
     show_spines: bool = True,

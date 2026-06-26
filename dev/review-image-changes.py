@@ -35,10 +35,12 @@ DEFAULT_REFERENCE = TESTS_DIR / "reference_images"
 # Image display helpers
 # ---------------------------------------------------------------------------
 
+
 def _send_kitty(path: Path, max_width: int) -> None:
     try:
         from PIL import Image
         import io
+
         img = Image.open(path).convert("RGB")
         w, h = img.size
         if w > max_width:
@@ -48,7 +50,7 @@ def _send_kitty(path: Path, max_width: int) -> None:
         img.save(buf, format="PNG")
         data = base64.standard_b64encode(buf.getvalue())
         chunk = 4096
-        chunks = [data[i:i + chunk] for i in range(0, len(data), chunk)]
+        chunks = [data[i : i + chunk] for i in range(0, len(data), chunk)]
         for i, c in enumerate(chunks):
             m = 0 if i == len(chunks) - 1 else 1
             hdr = f"a=T,f=100,m={m}" if i == 0 else f"m={m}"
@@ -63,6 +65,7 @@ def _send_iterm2(path: Path, max_width: int) -> None:
     try:
         from PIL import Image
         import io
+
         img = Image.open(path).convert("RGB")
         w, h = img.size
         if w > max_width:
@@ -79,6 +82,7 @@ def _send_iterm2(path: Path, max_width: int) -> None:
 
 def _composite_side_by_side(left: Path, right: Path, gap: int = 20) -> "Image":
     from PIL import Image
+
     a = Image.open(left).convert("RGB")
     b = Image.open(right).convert("RGB")
     h = max(a.height, b.height)
@@ -94,8 +98,12 @@ def _terminal_pixel_width() -> int:
     # Try TIOCGWINSZ ioctl (gives both cell and pixel dimensions)
     try:
         import fcntl, struct
-        packed = fcntl.ioctl(sys.stdout.fileno(), 0x5413,  # TIOCGWINSZ
-                             b"\x00" * 8)
+
+        packed = fcntl.ioctl(
+            sys.stdout.fileno(),
+            0x5413,  # TIOCGWINSZ
+            b"\x00" * 8,
+        )
         _rows, _cols, px_w, _px_h = struct.unpack("HHHH", packed)
         if px_w > 0:
             return px_w
@@ -106,7 +114,9 @@ def _terminal_pixel_width() -> int:
     return cols * 9
 
 
-def _show_composite(left: Path, right: Path, protocol: str, max_width: Optional[int] = None) -> None:
+def _show_composite(
+    left: Path, right: Path, protocol: str, max_width: Optional[int] = None
+) -> None:
     if max_width is None:
         max_width = _terminal_pixel_width()
     if protocol == "none":
@@ -116,6 +126,7 @@ def _show_composite(left: Path, right: Path, protocol: str, max_width: Optional[
     try:
         from PIL import Image
         import io
+
         img = _composite_side_by_side(left, right)
         w, h = img.size
         if w > max_width:
@@ -133,11 +144,11 @@ def _show_composite(left: Path, right: Path, protocol: str, max_width: Optional[
         _print_stats(right, "ACTUAL")
 
 
-
 def _print_stats(path: Path, label: str = "") -> None:
     try:
         from PIL import Image
         import numpy as np
+
         img = Image.open(path).convert("RGB")
         arr = __import__("numpy").array(img)
         tag = f"  {label:<12}" if label else "  "
@@ -149,6 +160,7 @@ def _print_stats(path: Path, label: str = "") -> None:
 # ---------------------------------------------------------------------------
 # Keyboard
 # ---------------------------------------------------------------------------
+
 
 def _getch() -> str:
     fd = sys.stdin.fileno()
@@ -164,6 +176,7 @@ def _getch() -> str:
 # ---------------------------------------------------------------------------
 # Failure discovery
 # ---------------------------------------------------------------------------
+
 
 def find_failures(failures_dir: Path, pattern: Optional[str] = None):
     if not failures_dir.exists():
@@ -182,6 +195,7 @@ def find_failures(failures_dir: Path, pattern: Optional[str] = None):
 # Accept helper
 # ---------------------------------------------------------------------------
 
+
 def _accept(f: dict) -> None:
     """Copy actual → canonical reference and clean up failures dir."""
     dest = DEFAULT_REFERENCE / f"{f['name']}.png"
@@ -198,12 +212,15 @@ def _accept(f: dict) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def _clear() -> None:
     sys.stdout.write("\033[2J\033[H")
     sys.stdout.flush()
 
 
-def review(failures_dir: Path, pattern: Optional[str], protocol: str, interactive: bool) -> None:
+def review(
+    failures_dir: Path, pattern: Optional[str], protocol: str, interactive: bool
+) -> None:
     failures = list(find_failures(failures_dir, pattern))
     if not failures:
         print(f"No failures found in {failures_dir}")
@@ -222,7 +239,7 @@ def review(failures_dir: Path, pattern: Optional[str], protocol: str, interactiv
 
         while True:
             _clear()
-            print(f"  [{i+1}/{len(failures)}]  {f['name']}")
+            print(f"  [{i + 1}/{len(failures)}]  {f['name']}")
             print(f"  ref:    file://{f['reference'].resolve()}")
             print(f"  actual: file://{f['actual'].resolve()}")
             if flipped:
@@ -238,7 +255,9 @@ def review(failures_dir: Path, pattern: Optional[str], protocol: str, interactiv
                 i += 1
                 break
 
-            print("\n  Space=swap  a=accept  Enter/n=next  q=quit  ", end="", flush=True)
+            print(
+                "\n  Space=swap  a=accept  Enter/n=next  q=quit  ", end="", flush=True
+            )
             try:
                 ch = _getch()
             except Exception:
@@ -267,6 +286,7 @@ def review(failures_dir: Path, pattern: Optional[str], protocol: str, interactiv
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def _detect_protocol() -> str:
     term = os.environ.get("TERM", "").lower()
     term_program = os.environ.get("TERM_PROGRAM", "").lower()
@@ -289,7 +309,9 @@ def main():
 
     protocol = _detect_protocol() if args.protocol == "auto" else args.protocol
     if protocol == "none" and args.protocol == "auto":
-        print("No graphics protocol detected; falling back to text.  Use --protocol to force.")
+        print(
+            "No graphics protocol detected; falling back to text.  Use --protocol to force."
+        )
 
     interactive = not args.no_interactive and sys.stdin.isatty()
     review(

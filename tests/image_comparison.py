@@ -31,7 +31,7 @@ FAILURES_DIR = TESTS_DIR / "failures"
 REGENERATE = os.environ.get("REGENERATE_REFS", "").strip() not in ("", "0")
 
 # Pixel-level tolerance: fraction of pixels allowed to differ
-DEFAULT_TOLERANCE = 0.001   # 0.1 %
+DEFAULT_TOLERANCE = 0.001  # 0.1 %
 # Per-pixel difference magnitude threshold (0-255) before a pixel counts as "different"
 DEFAULT_PIXEL_THRESHOLD = 5
 
@@ -149,12 +149,15 @@ def assert_image_matches(
             f"  diff:      {FAILURES_DIR / (name + '_diff.png')}"
         )
 
-    diff_mask = np.abs(ref.astype(int) - actual.astype(int)).max(axis=2) > pixel_threshold
+    diff_mask = (
+        np.abs(ref.astype(int) - actual.astype(int)).max(axis=2) > pixel_threshold
+    )
     bad_fraction = diff_mask.mean()
 
     if bad_fraction > tolerance:
         _save_png(actual, FAILURES_DIR / f"{name}_actual.png")
         import shutil
+
         shutil.copy(ref_path, FAILURES_DIR / f"{name}_reference.png")
         diff = _build_diff_image(ref, actual)
         _save_png(diff, FAILURES_DIR / f"{name}_diff.png")
@@ -193,7 +196,9 @@ def assert_array_matches(
             f"reference={ref.shape}, actual={actual.shape}"
         )
 
-    diff_mask = np.abs(ref.astype(int) - actual.astype(int)).max(axis=2) > pixel_threshold
+    diff_mask = (
+        np.abs(ref.astype(int) - actual.astype(int)).max(axis=2) > pixel_threshold
+    )
     bad_fraction = diff_mask.mean()
     if bad_fraction > tolerance:
         _save_png(actual, FAILURES_DIR / f"{name}_actual.png")
@@ -251,7 +256,10 @@ def assert_plotnine_matches(
         )
 
     import shutil
-    diff_mask = np.abs(ref.astype(int) - actual.astype(int)).max(axis=2) > pixel_threshold
+
+    diff_mask = (
+        np.abs(ref.astype(int) - actual.astype(int)).max(axis=2) > pixel_threshold
+    )
     bad_fraction = diff_mask.mean()
     if bad_fraction > tolerance:
         _save_png(actual, FAILURES_DIR / f"{name}_actual.png")

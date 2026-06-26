@@ -14,6 +14,7 @@ focus      : off | on
 import itertools
 
 import matplotlib
+
 matplotlib.use("Agg")
 import pytest
 
@@ -21,9 +22,9 @@ from image_comparison import assert_plotnine_matches
 from conftest import CELL_TYPE_COLUMN
 
 DATA_TYPES = ["numerical", "categorical"]
-BORDERS    = [False, True]
+BORDERS = [False, True]
 GRID_MODES = ["off", "plain", "labels", "coords"]
-FOCUS      = [False, True]
+FOCUS = [False, True]
 
 GENE_FOR = {"numerical": "S100A8", "categorical": CELL_TYPE_COLUMN}
 DOT_SIZE = 5
@@ -59,10 +60,14 @@ def _build_plotter(data, borders, grid_mode, focus):
 )
 def test_plot_matrix(data, data_type, borders, grid_mode, focus):
     if borders:
-        pytest.importorskip("skimage", reason="scikit-image required for boundary computation")
+        pytest.importorskip(
+            "skimage", reason="scikit-image required for boundary computation"
+        )
 
     sp = _build_plotter(data, borders, grid_mode, focus)
     gene = GENE_FOR[data_type]
-    name = f"matrix_{data_type}_borders{int(borders)}_grid_{grid_mode}_focus{int(focus)}"
+    name = (
+        f"matrix_{data_type}_borders{int(borders)}_grid_{grid_mode}_focus{int(focus)}"
+    )
     p = sp.plot(gene)
     assert_plotnine_matches(p, name)

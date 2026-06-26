@@ -206,7 +206,9 @@ class TestGetXCsr:
         rows = np.array([0, 4, 9, 200, 1000])
         block = facade.get_X_csr()[rows]
         row_mean = np.asarray(block.mean(axis=0)).ravel()
-        col_means = np.array([facade.X[:, j][rows].mean() for j in range(len(facade.var_names))])
+        col_means = np.array(
+            [facade.X[:, j][rows].mean() for j in range(len(facade.var_names))]
+        )
         np.testing.assert_allclose(row_mean, col_means)
 
     def test_cached(self, facade):
@@ -270,9 +272,7 @@ class TestEmbeddingDataFromFacade:
 
 class TestSetSourcePath:
     def test_string_path(self):
-        plotter = ScatterPlotter().set_source(
-            str(EXAMPLE_H5AD), embedding="umap"
-        )
+        plotter = ScatterPlotter().set_source(str(EXAMPLE_H5AD), embedding="umap")
         series, name = plotter.get_column("leiden")
         assert isinstance(series.dtype, pd.CategoricalDtype)
 
@@ -283,18 +283,14 @@ class TestSetSourcePath:
 
     def test_plot_categorical_runs(self):
         plotter = (
-            ScatterPlotter()
-            .set_source(EXAMPLE_H5AD, embedding="umap")
-            .without_grid()
+            ScatterPlotter().set_source(EXAMPLE_H5AD, embedding="umap").without_grid()
         )
         p = plotter.plot("leiden")
         assert p is not None
 
     def test_plot_numeric_runs(self):
         plotter = (
-            ScatterPlotter()
-            .set_source(EXAMPLE_H5AD, embedding="umap")
-            .without_grid()
+            ScatterPlotter().set_source(EXAMPLE_H5AD, embedding="umap").without_grid()
         )
         p = plotter.plot("n_genes")
         assert p is not None
@@ -355,10 +351,7 @@ class TestAlternativeIdLabel:
 
     def test_user_colorbar_title_not_overwritten_by_alt_id(self, ed_alt):
         sp = (
-            ScatterPlotter()
-            .set_source(ed_alt)
-            .without_grid()
-            .colormap(title="my cbar")
+            ScatterPlotter().set_source(ed_alt).without_grid().colormap(title="my cbar")
         )
         p = sp.plot("S100A8")
         assert p.labels.get("title", None) == "ENSG00000143546 (S100A8)"
