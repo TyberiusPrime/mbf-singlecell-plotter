@@ -137,7 +137,9 @@ class EmbeddingData:
         derived_sources: Optional[list] = None,
         grid_size: int = 12,
         grid_letters_on_vertical: bool = False,
-        filter_fn: Optional[Callable[["EmbeddingData"], "pd.Series | np.ndarray"]] = None,
+        filter_fn: Optional[
+            Callable[["EmbeddingData"], "pd.Series | np.ndarray"]
+        ] = None,
         layer: str = "X",
         transform: Optional[Callable[["np.ndarray"], "np.ndarray"]] = None,
     ):
@@ -151,8 +153,7 @@ class EmbeddingData:
             )
         if transform is not None and not callable(transform):
             raise TypeError(
-                f"transform must be a callable or None, got "
-                f"{type(transform).__name__}"
+                f"transform must be a callable or None, got {type(transform).__name__}"
             )
         self._layer = layer
         self._transform = transform
@@ -286,18 +287,14 @@ class EmbeddingData:
                 name, src = item.name, item.ad
                 layer, transform = item.layer, item.transform
             elif (
-                isinstance(item, tuple)
-                and len(item) == 2
-                and isinstance(item[0], str)
+                isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
             ):
                 name, src = item
             else:
                 name, src = None, item
             if name is not None:
                 if name in seen:
-                    raise ValueError(
-                        f"Duplicate alternative source name {name!r}"
-                    )
+                    raise ValueError(f"Duplicate alternative source name {name!r}")
                 seen.add(name)
             result.append(
                 AlternativeSource(name, self._coerce_ad(src), layer, transform)
@@ -417,8 +414,8 @@ class EmbeddingData:
     def focus_on(
         self,
         *args,
-        x: tuple = None,
-        y: tuple = None,
+        x: Optional[tuple] = None,
+        y: Optional[tuple] = None,
     ) -> "EmbeddingData":
         """Return a new EmbeddingData restricted to the given coordinate window.
 
@@ -441,6 +438,9 @@ class EmbeddingData:
                 f"positional arguments must be two grid label strings "
                 f"(e.g. focus_on('A1', 'C5')), got {args!r}"
             )
+        else:
+            if (x is None) or (y is None):
+                raise TypeError("Either use positional arguments, or set both x and y")
         new = copy.copy(self)
         new._focus = (x[0], x[1], y[0], y[1])
         return new
@@ -549,7 +549,6 @@ class EmbeddingData:
             self._filter_cache = mask
         return self._filter_cache
 
-
     def bounds(self) -> tuple:
         """Return (x_min, x_max, y_min, y_max) — from focus if set, else full data range.
 
@@ -607,8 +606,7 @@ class EmbeddingData:
         if isinstance(name, tuple):
             if len(name) != 2:
                 raise KeyError(
-                    "Tuple column lookup must be (source_name, column), "
-                    f"got {name!r}"
+                    f"Tuple column lookup must be (source_name, column), got {name!r}"
                 )
             src_name, col = name
             for d in self._derived_sources:
@@ -631,8 +629,7 @@ class EmbeddingData:
                 if s.name is not None
             ]
             raise KeyError(
-                f"No source named {src_name!r}. "
-                f"Registered names: {registered!r}"
+                f"No source named {src_name!r}. Registered names: {registered!r}"
             )
 
         # Plain string: primary first, then derived, then alternative fallback.
@@ -733,7 +730,10 @@ class EmbeddingData:
 
         if name in ad.var.index:
             return _extract(ad.var.index == name, name)
-        if self._alternative_id_column is not None and self._alternative_id_column in ad.var.columns:
+        if (
+            self._alternative_id_column is not None
+            and self._alternative_id_column in ad.var.columns
+        ):
             alt_hits = ad.var[self._alternative_id_column] == name
             if alt_hits.sum() == 1:
                 return _extract(alt_hits)
@@ -901,14 +901,12 @@ class EmbeddingData:
         """Map a single point to a (letter, number) or (number, letter) grid cell."""
         x_step = (x_max - x_min) / self._grid_size
         y_step = (y_max - y_min) / self._grid_size
-        assert x <= x_max, "x outside of x_max range"
-        assert y <= y_max, "y outside of y_max range"
-        x_index = min(
-            int(round((x - x_min) / x_step)), self._grid_size - 1
-        )
-        y_index = min(
-            int(round((y - y_min) / y_step)), self._grid_size - 1
-        )
+        if (x < x_min) or (x > x_max):
+            raise ValueError(f"x={x} is outside of x_min={x_min}..x_max={x_max} range")
+        if (y < y_min) or (y > y_max):
+            raise ValueError(f"y={y} is outside of y_min={y_min}..y_max={y_max} range")
+        x_index = min(int(round((x - x_min) / x_step)), self._grid_size - 1)
+        y_index = min(int(round((y - y_min) / y_step)), self._grid_size - 1)
         letters = _LETTERS[: self._grid_size]
         non_letters = list(range(1, self._grid_size + 1))
         if self._grid_letters_on_vertical:
@@ -1012,8 +1010,10 @@ class EmbeddingData:
         if self._focus is not None:
             x_min, x_max, y_min, y_max = self._focus
             mask = (
-                (coords["x"] >= x_min) & (coords["x"] <= x_max)
-                & (coords["y"] >= y_min) & (coords["y"] <= y_max)
+                (coords["x"] >= x_min)
+                & (coords["x"] <= x_max)
+                & (coords["y"] >= y_min)
+                & (coords["y"] <= y_max)
             )
             coords = coords[mask]
         merged = coords.copy()
@@ -1095,7 +1095,7 @@ class EmbeddingData:
                 }
             )
         except ValueError as e:
-            raise ValueError("Make sure your obs.keys are distinct!", e)
+            raise ValueError(f"Make sure your obs.keys are distinct!. Was: {e}")
 
         histogram: dict = {
             "x": [],

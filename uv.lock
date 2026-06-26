@@ -407,14 +407,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anndata", specifier = ">=0.12.6" },
+    { name = "anndata", specifier = ">=0.12.0" },
     { name = "dppd", specifier = ">=0.31" },
     { name = "dppd-plotnine", specifier = ">=0.2.9" },
     { name = "natsort", specifier = ">=8.4.0" },
     { name = "numpy", specifier = ">=2.2.3" },
     { name = "pandas", specifier = ">=2.0.1" },
-    { name = "pillow", specifier = ">=12.1.1" },
-    { name = "plotnine", specifier = ">=0.15.3" },
+    { name = "pillow", specifier = ">=12.0.0" },
+    { name = "plotnine", specifier = ">=0.15.0" },
     { name = "scikit-image", specifier = ">=0.26.0" },
 ]
 

@@ -1136,6 +1136,8 @@ class ScatterPlotter:
                 grid_size=resolved_grid_size,
                 grid_letters_on_vertical=resolved_vl,
                 filter_fn=new._data._filter,
+                layer = new._data.layer,
+                transform = new._data._transform
             )
         return new
 
@@ -1398,7 +1400,7 @@ class ScatterPlotter:
         p = p.theme(strip_text=p9.element_text(size=24))
         """
         new = copy.copy(self)
-        new._theme_overwrites.update(theme_args)
+        new._theme_overwrites = {**self._theme_overwrites, **theme_args}
         return new
 
     # ── terminal ─────────────────────────────────────────────────────────────
@@ -1855,7 +1857,7 @@ class ScatterPlotter:
                 self._data._alternative_id_column
             ].to_dict()
         else:
-            alternative_ids = {} # so we get a key error
+            alternative_ids = {}  # so we get a key error
         _, _, grid_labels_x, grid_labels_ys = self._data.grid_labels()
         for (xi, yi), genes in markers.items():
             for rank, gene in enumerate(genes, start=1):

@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import shutil
+import plotnine as p9
 
 from mbf_singlecell_plotter import (
     EmbeddingData,
@@ -160,11 +161,11 @@ class TestPointToGrid:
         assert number == 12  # bottom row is highest number when letters_on_vertical=False
 
     def test_out_of_x_range_raises(self, data):
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError):
             data.point_to_grid(0, 10, 0, 10, 11, 5)
 
     def test_out_of_y_range_raises(self, data):
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError):
             data.point_to_grid(0, 10, 0, 10, 5, 11)
 
 
@@ -365,7 +366,6 @@ class TestPlotDensityParity:
     """plot_density honours focus_on / focus_on_grid and title like plot()."""
 
     def test_default_title_is_embedding_name(self, plotter_no_boundary):
-        import plotnine as p9
 
         p = plotter_no_boundary.plot_density()
         assert isinstance(p, p9.ggplot)
@@ -1871,3 +1871,10 @@ class TestFilterPlotter:
         p = plotter_no_boundary.plot("leiden")
         assert len(p.data) == ad.n_obs
 
+
+class TestThemeIndependence:
+    def test_themes_are_not_the_same(self, ad):
+        sp = ScatterPlotter().set_source(ad, "umap")
+        sp2 = sp.theme(panel_border = p9.element_blank())
+        assert not sp is sp2
+        assert not sp._theme_overwrites is sp2._theme_overwrites
