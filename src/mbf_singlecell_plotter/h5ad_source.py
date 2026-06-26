@@ -39,12 +39,20 @@ def _require_h5ad_inspect() -> None:
 
 def _run_inspect(path: Path, *args: str) -> bytes:
     """Run ``h5ad-inspect <path> <args…>`` and return stdout bytes."""
-    result = subprocess.run(
-        ["h5ad-inspect", path, *args],
-        capture_output=True,
-        check=True,
-    )
-    return result.stdout
+    try:
+        result = subprocess.run(
+            ["h5ad-inspect", path, *args],
+            capture_output=True,
+            check=True,
+            timeout=60,  # if it's that slow, something is seriously wrong. Best case your file is CSR and gigantic
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"h5ad-inspect failed on {path!r} with args {args!r}:\n"
+            f"stdout:\n{e.stdout.decode()}\n"
+            f"stderr:\n{e.stderr.decode()}"
+        ) from e
 
 
 def _run_lines(path: Path, *args: str) -> list:
