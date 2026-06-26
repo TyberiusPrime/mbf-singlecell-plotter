@@ -1118,23 +1118,9 @@ class ScatterPlotter:
             new._data._grid_size != resolved_grid_size
             or new._data._grid_letters_on_vertical != resolved_vl
         ):
-            new._data = EmbeddingData(
-                new._data.ad,
-                new._data._embedding
-                if new._data._embedding_cols is None
-                else (
-                    new._data._embedding,
-                    new._data._embedding_cols[0],
-                    new._data._embedding_cols[1],
-                ),
-                alternative_id_column=new._data._alternative_id_column,
-                alternative_sources=new._data._alternative_sources,
-                derived_sources=new._data._derived_sources,
+            new._data = new._data._replace(
                 grid_size=resolved_grid_size,
                 grid_letters_on_vertical=resolved_vl,
-                filter_fn=new._data._filter,
-                layer=new._data.layer,
-                transform=new._data._transform,
             )
         return new
 

@@ -206,6 +206,22 @@ class EmbeddingData:
         ] = filter_fn
         self._filter_cache: Optional[np.ndarray] = None
 
+    def _replace(self, **changes) -> "EmbeddingData":
+        """Return a shallow copy with the specified private attributes replaced.
+
+        Mirrors :func:`dataclasses.replace`: ``changes`` maps attribute names
+        (without leading underscore) to new values.  The returned object is a
+        shallow copy — mutable shared state like ``self.ad`` is **not** copied.
+
+        Example::
+
+            data2 = data._replace(grid_size=16, grid_letters_on_vertical=True)
+        """
+        new = copy.copy(self)
+        for k, v in changes.items():
+            setattr(new, "_" + k, v)
+        return new
+
     @property
     def embedding(self) -> str:
         return self._embedding

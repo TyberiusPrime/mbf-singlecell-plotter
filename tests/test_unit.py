@@ -811,6 +811,50 @@ def grid2_plotter(grid2_ad):
     return ScatterPlotter().set_source(grid2_ad, "test").with_grid(grid_size=2)
 
 
+class TestReplace:
+    """EmbeddingData._replace() -- shallow-copy-and-mutate helper."""
+
+    def test_no_changes_returns_copy(self, data):
+        new = data._replace()
+        assert new is not data
+        assert new.ad is data.ad  # shared primary AnnData (shallow)
+
+    def test_replace_single_field(self, data):
+        new = data._replace(grid_size=16)
+        assert new.grid_size == 16
+        assert data.grid_size != 16
+
+    def test_replace_multiple_fields(self, data):
+        new = data._replace(
+            grid_size=8, grid_letters_on_vertical=True, layer="raw"
+        )
+        assert new.grid_size == 8
+        assert new._grid_letters_on_vertical is True
+        assert new.layer == "raw"
+
+    def test_replace_all_private_fields(self, data):
+        from mbf_singlecell_plotter.data import EmbeddingData as ED
+
+        new = data._replace(
+            embedding="new",
+            embedding_cols=("col1", "col2"),
+            focus=(0, 1, 2, 3),
+            filter=lambda d: True,
+            grid_size=99,
+            grid_letters_on_vertical=True,
+            layer="new_layer",
+            transform=lambda x: x * 2,
+            alternative_sources=("alt1",),
+            derived_sources=("der1",),
+        )
+        assert new.embedding == "new"
+        assert new._embedding_cols == ("col1", "col2")
+        assert new._focus == (0, 1, 2, 3)
+        assert new.grid_size == 99
+        assert new._grid_letters_on_vertical is True
+        assert new.layer == "new_layer"
+
+
 class TestFocusOn:
     # ── happy-path: default orientation (grid-label form) ────────────────────
 
