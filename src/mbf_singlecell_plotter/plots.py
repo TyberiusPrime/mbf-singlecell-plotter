@@ -3,7 +3,7 @@
 import copy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union, List, Dict, Callable
+from typing import Optional, Union, List, Dict, Callable, override, Any
 
 import numpy as np
 import pandas as pd
@@ -25,6 +25,7 @@ class _DoNotUpdateType:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    @override
     def __repr__(self):
         return "DoNotUpdate"
 
@@ -50,10 +51,12 @@ class _PlotWithPostDraw(p9.ggplot):
       :func:`_patch_composition_post_draw`, which makes ``Compose.draw`` run
       every member plot's hooks once the shared figure has been laid out.
     """
+    _post_draw_fns: list[Any] 
 
-    def save_helper(self, **kwargs):
-        sv = super().save_helper(**kwargs)
-        for fn in self._post_draw_fns:
+    @override
+    def save_helper(self, *args, **kwargs):
+        sv = super().save_helper(*args, **kwargs)
+        for fn in self._post_draw_fns:  
             fn(sv.figure)
         return sv
 
@@ -62,8 +65,8 @@ def _ensure_post_draw(p: p9.ggplot) -> "_PlotWithPostDraw":
     """Promote *p* to _PlotWithPostDraw (idempotent); initialise _post_draw_fns."""
     if not isinstance(p, _PlotWithPostDraw):
         p.__class__ = _PlotWithPostDraw
-        p._post_draw_fns = []
-    return p
+        p._post_draw_fns = [] # ty: ignore
+    return p # ty: ignore
 
 
 def _first_panel_axes(fig):
@@ -211,7 +214,7 @@ def _patch_composition_post_draw() -> None:
         figure = _orig_draw(self, show=show)
         if getattr(figure, "_msp_post_draw_done", False):
             return figure
-        plots: list = []
+        plots = []
         _collect_plots(self, plots)
         hook_plots = [
             p

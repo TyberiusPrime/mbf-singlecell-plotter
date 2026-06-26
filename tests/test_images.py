@@ -458,9 +458,6 @@ class TestPlotScatterLimits:
         assert_image(p)
 
     def test_grid_limits(self, plotter_no_boundary, data, assert_image):
-        coords = data.coordinates()
-        x_mid = coords["x"].median()
-        y_mid = coords["y"].median()
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
             .focus_on_grid("K12", "G9")

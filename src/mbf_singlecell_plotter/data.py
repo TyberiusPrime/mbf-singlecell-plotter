@@ -2,9 +2,10 @@
 
 import copy
 from pathlib import Path
-from typing import Callable, Dict, NamedTuple, Optional, Union
+from typing import Callable, Dict, NamedTuple, Optional, Union, Any
 
 import numpy as np
+from numpy.typing import NDArray
 import pandas as pd
 import scipy.sparse as sp
 
@@ -29,7 +30,9 @@ def _source_matrix(ad, layer: str):
     return ad.layers[layer]
 
 
-def _parse_grid_label(label: str, gs: int, letters_on_vertical: bool) -> tuple:
+def _parse_grid_label(
+    label: str, gs: int, letters_on_vertical: bool
+) -> tuple[int, int]:
     """Parse a grid label string → (col_idx, row_from_top), both 0-indexed.
 
     Default orientation (letters_on_vertical=False): format '{letter}{number}',
@@ -130,8 +133,10 @@ class EmbeddingData:
         ad,
         embedding,
         alternative_id_column: Optional[str] = None,
-        alternative_sources: Optional[list] = None,
-        derived_sources: Optional[list] = None,
+        alternative_sources: Optional[list["EmbeddingData"]] = None,
+        derived_sources: Optional[
+            list[dict[str, Callable[["EmbeddingData"], pd.Series]]]
+        ] = None,
         grid_size: int = 12,
         grid_letters_on_vertical: bool = False,
         filter_fn: Optional[
@@ -184,7 +189,7 @@ class EmbeddingData:
                     + ", ".join(sorted(ad.obsm.keys()))
                 )
             self._embedding = key
-            self._embedding_cols: Optional[tuple] = (c1, c2)
+            self._embedding_cols: Optional[tuple[int, int]] = (c1, c2)
         elif isinstance(embedding, str):
             if embedding in ad.obsm:
                 self._embedding = embedding
@@ -200,7 +205,9 @@ class EmbeddingData:
             raise ValueError(
                 f"embedding must be a string or 3-tuple, got {type(embedding)}"
             )
-        self._focus: Optional[tuple] = None  # (x_min, x_max, y_min, y_max)
+        self._focus: Optional[tuple[float, float, float, float]] = (
+            None  # (x_min, x_max, y_min, y_max)
+        )
         self._filter: Optional[
             Callable[["EmbeddingData"], "pd.Series | np.ndarray"]
         ] = filter_fn
@@ -232,7 +239,7 @@ class EmbeddingData:
         return self._layer
 
     @property
-    def transform(self) -> Optional[Callable]:
+    def transform(self) -> Optional[Callable[["np.ndarray"], "np.ndarray"]]:
         """Callable applied to primary-source feature columns, or ``None``."""
         return self._transform
 
@@ -245,12 +252,12 @@ class EmbeddingData:
         return self._focus is not None
 
     @property
-    def alternative_sources(self) -> list:
+    def alternative_sources(self) -> list[AlternativeSource]:
         """List of :class:`AlternativeSource` fallbacks consulted by :meth:`get_column`."""
         return list(self._alternative_sources)
 
     @property
-    def derived_sources(self) -> list:
+    def derived_sources(self) -> list[DerivedSource]:
         """List of :class:`DerivedSource` computed-column sources consulted by :meth:`get_column`."""
         return list(self._derived_sources)
 
@@ -315,7 +322,11 @@ class EmbeddingData:
         return result
 
     def add_alternative_source(
-        self, source, name=None, layer="X", transform=None
+        self,
+        source: Any,
+        name=None,
+        layer="X",
+        transform=None,
     ) -> "EmbeddingData":
         """Return a copy with an additional fallback source appended.
 
@@ -426,9 +437,9 @@ class EmbeddingData:
 
     def focus_on(
         self,
-        *args,
-        x: Optional[tuple] = None,
-        y: Optional[tuple] = None,
+        *args: list[str],
+        x: Optional[tuple[float, float]] = None,
+        y: Optional[tuple[float, float]] = None,
     ) -> "EmbeddingData":
         """Return a new EmbeddingData restricted to the given coordinate window.
 
@@ -562,7 +573,7 @@ class EmbeddingData:
             self._filter_cache = mask
         return self._filter_cache
 
-    def bounds(self) -> tuple:
+    def bounds(self) -> tuple[float, float, float, float]:
         """Return (x_min, x_max, y_min, y_max) — from focus if set, else full data range.
 
         Always reflects the *full* dataset: an active cell filter
@@ -808,7 +819,7 @@ class EmbeddingData:
                 return True
         return None
 
-    def is_gene(self, name: Union[str, tuple]) -> bool:
+    def is_gene(self, name: Union[str, tuple[str, str]]) -> bool:
         """Return ``True`` if *name* resolves to a feature (``var`` row) rather
         than an ``obs`` column.
 
@@ -867,7 +878,7 @@ class EmbeddingData:
         else:
             arr = self.ad.obsm[self._embedding][:, :2]
         return (
-            pd.DataFrame(arr, columns=["x", "y"])
+            pd.DataFrame(arr, columns=np.array(["x", "y"]))
             .assign(index=self.ad.obs.index)
             .set_index("index")
         )
@@ -910,7 +921,7 @@ class EmbeddingData:
         y_max: float,
         x: float,
         y: float,
-    ) -> tuple:
+    ) -> tuple[str, str]:
         """Map a single point to a (letter, number) or (number, letter) grid cell."""
         x_step = (x_max - x_min) / self._grid_size
         y_step = (y_max - y_min) / self._grid_size
@@ -926,11 +937,11 @@ class EmbeddingData:
             letters_rev = letters[::-1]
             letter = letters_rev[y_index]
             number = non_letters[x_index]
-            return (number, letter)
+            return (str(number), letter)
         else:
             letter = letters[x_index]
             number = non_letters[self._grid_size - 1 - y_index]
-            return (letter, number)
+            return (letter, str(number))
 
     def grid_coordinate(self, x: float, y: float) -> str:
         """Return grid label (e.g. 'A1') for embedding coordinates."""
@@ -968,7 +979,7 @@ class EmbeddingData:
             labels = [f"{ltr}{n}" for ltr, n in zip(letter_col, number_col)]
         return pd.Series(labels, index=coords.index)
 
-    def full_bounds(self) -> tuple:
+    def full_bounds(self) -> tuple[float, float, float, float]:
         """Return (x_min, x_max, y_min, y_max) from the full data range.
 
         Ignores both the focus window and any active cell filter, so the bounds
@@ -982,7 +993,9 @@ class EmbeddingData:
             float(coords["y"].max()),
         )
 
-    def grid_labels(self) -> tuple:
+    def grid_labels(
+        self,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], list[str], list[str]]:
         """Return (x_positions, y_positions, x_labels, y_labels) for grid axis ticks.
 
         Always computed in the original (unfocused) coordinate space so that
@@ -1000,12 +1013,12 @@ class EmbeddingData:
         letters = list(_LETTERS[:gs])
         if self._grid_letters_on_vertical:
             # x-axis: numbers 1..gs; y-axis: letters (A at top = max y)
-            x_labels = list(range(1, gs + 1))
+            x_labels = list([str(x) for x in range(1, gs + 1)])
             y_labels = letters[::-1]
         else:
             # x-axis: letters A..Z; y-axis: numbers (1 at top = max y)
             x_labels = letters
-            y_labels = list(range(gs, 0, -1))
+            y_labels = list([str(x) for x in range(gs, 0, -1)])
 
         return x_positions, y_positions, x_labels, y_labels
 
@@ -1046,7 +1059,7 @@ class EmbeddingData:
         min_cells: int = 3,
         k: int = 20,
         min_moran: float = 0.2,
-    ) -> dict:
+    ) -> dict[tuple[int, int], list[str]]:
         """Identify marker genes per UMAP region using Moran's I spatial autocorrelation.
 
         Bins cells into an ``n_bins × n_bins`` grid, computes Moran's I for every
@@ -1110,14 +1123,14 @@ class EmbeddingData:
         except ValueError as e:
             raise ValueError(f"Make sure your obs.keys are distinct!. Was: {e}")
 
-        histogram: dict = {
+        histogram: dict[str, list[Any]] = {
             "x": [],
             "y": [],
             "category": [],
             "frequency": [],
             "total": [],
         }
-        for (ix, iy), sub in df_cells.groupby(["x_bin", "y_bin"]):
+        for (ix, iy), sub in df_cells.groupby(["x_bin", "y_bin"]): # ty: ignore
             if len(sub) >= min_cells:
                 freqs = sub["category"].value_counts(normalize=True)
                 for cat, freq in freqs.items():

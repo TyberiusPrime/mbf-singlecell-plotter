@@ -1,0 +1,47 @@
+# This is a configuration file for the bacon tool
+#
+# Bacon repository: https://github.com/Canop/bacon
+# Complete help on configuration: https://dystroy.org/bacon/config/
+# You can also check bacon's own bacon.toml file
+#  as an example: https://github.com/Canop/bacon/blob/main/bacon.toml
+
+default_job = "ruff"
+
+[jobs.ruff]
+  env.FORCE_COLOR = "1"
+  command = [
+    "ruff",
+    "check",
+  ]
+  need_stdout = true
+  analyzer = "python_ruff"
+  watch = ["*"]
+
+[jobs.pytest]
+command = [
+    "pytest"
+]
+need_stdout = true
+analyzer = "python_pytest"
+watch = ["."]
+
+[jobs.ty]
+command = [
+    "ty", 'check'
+]
+need_stdout = true
+analyzer = "python_ruff"
+watch = ["."]
+
+[keybindings]
+  # alt-m = "job:my-job"
+  t = 'job:pytest'
+  r = 'job:ruff'
+  y = 'job:ty'
+
+[exports.locations]
+auto = true
+path = ".bacon-locations"
+line_format = "{item-idx}: {kind} {path}:{line}:{column} {message}"
+
+listen = true

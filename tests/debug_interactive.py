@@ -50,6 +50,8 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 import anndata as ad
+import re
+import json
 from mbf_singlecell_plotter import ScatterPlotter
 
 # ── Build synthetic data ──────────────────────────────────────────────────────
@@ -123,8 +125,6 @@ print(f"  → {plain_path}")
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 
-import re
-import json
 
 for path, label in [(debug_path, "debug"), (plain_path, "plain")]:
     html = open(path).read()

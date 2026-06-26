@@ -3,6 +3,7 @@
 import base64
 import io
 import json
+from typing import Any
 from collections.abc import Callable
 from pathlib import Path
 
@@ -137,7 +138,7 @@ def save_interactive_moran(
     y_edges = np.linspace(y_min_d, y_max_d, gs + 1)
     xi_all = np.clip(np.searchsorted(x_edges[1:-1], all_coords["x"].values), 0, gs - 1)
     yi_all = np.clip(np.searchsorted(y_edges[1:-1], all_coords["y"].values), 0, gs - 1)
-    bin_cell_counts: Counter = Counter(zip(xi_all.tolist(), yi_all.tolist()))
+    bin_cell_counts = Counter(zip(xi_all.tolist(), yi_all.tolist()))
 
     def _bin_to_label(xi: int, yi: int) -> str:
         """Convert (xi, yi) bin indices directly to a grid label."""
@@ -154,7 +155,7 @@ def save_interactive_moran(
     gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
 
     # ── Map bin (xi, yi) → gene list (index arithmetic, no coordinate lookup) ─
-    grid_cell_genes: dict = defaultdict(list)  # (xi,yi) → [(gene, score)]
+    grid_cell_genes = defaultdict(list)  # (xi,yi) → [(gene, score)]
     for (xi, yi), genes in markers.items():
         for g in genes:
             grid_cell_genes[(int(xi), int(yi))].append(
@@ -173,7 +174,7 @@ def save_interactive_moran(
 
     def _gene_url(g: str):
         if _cb is not None:
-            return _cb(g, data.alternative_id_for(g))
+            return _cb(g, data.alternative_id_for(g)) # ty: ignore
         return None
 
     # ── Build overlay cells for ALL occupied bins ─────────────────────────────
@@ -190,7 +191,7 @@ def save_interactive_moran(
 
         # Genes (may be empty if none pass the threshold)
         gene_list = grid_cell_genes.get((xi, yi), [])
-        seen: set = set()
+        seen = set()
         deduped = []
         for gene, mi in sorted(gene_list, key=lambda t: -t[1]):
             if gene not in seen:
@@ -290,7 +291,7 @@ def _build_html(
     img_b64: str,
     css_w: int,
     css_h: int,
-    cells: list,
+    cells: list[Any],
     column: str,
     debug_svg: str = "",
     *,

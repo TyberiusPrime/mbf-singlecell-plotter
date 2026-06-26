@@ -6,7 +6,8 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
+from numpy.typing import NDArray
 
 import numpy as np
 import pandas as pd
@@ -55,13 +56,13 @@ def _run_inspect(path: Path, *args: str) -> bytes:
         ) from e
 
 
-def _run_lines(path: Path, *args: str) -> list:
+def _run_lines(path: Path, *args: str) -> list[str]:
     """Run h5ad-inspect and return a list of non-empty output lines."""
     raw = _run_inspect(path, *args).decode().strip()
     return [line for line in raw.split("\n") if line] if raw else []
 
 
-def _col_encoding(path: Path, group: str, key: str) -> tuple:
+def _col_encoding(path: Path, group: str, key: str) -> tuple[str, Optional[list[str]]]:
     """Return ``(encoding, categories)`` for an obs/var column.
 
     Uses ``h5ad-inspect export <group>_encoding <key>``, which emits a JSON
@@ -81,7 +82,7 @@ def _col_encoding(path: Path, group: str, key: str) -> tuple:
 
 
 def _parse_series(
-    lines: list, name: str, index: pd.Index, encoding: str, categories
+    lines: list[str], name: str, index: pd.Index, encoding: str, categories
 ) -> pd.Series:
     """Parse text lines from an ``export`` subcommand into a typed Series."""
     if not lines:
@@ -113,7 +114,7 @@ def _read_obsm(path: Path, key: str, n_cells: int) -> np.ndarray:
     return arr.reshape(n_cells, -1)
 
 
-def _layer_args(layer: str) -> tuple:
+def _layer_args(layer: str) -> tuple[()] | tuple[str, str]:
     """Return the ``--layer`` CLI flag for *layer*, empty for the default ``'X'``.
 
     ``h5ad-inspect`` reads ``.X`` by default and any named layer via
@@ -138,7 +139,7 @@ def _load_matrix_csr(path: Path, layer: str = "X"):
     from scipy import sparse as sp
 
     raw = _run_inspect(path, "export", *_layer_args(layer), "matrix_csr")
-    parts: dict = {}
+    parts = {}
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         for name in z.namelist():
             key = name[:-4] if name.endswith(".npy") else name
@@ -159,10 +160,10 @@ class _ColProxy:
         self._path = path
         self._h5_group = h5_group  # "obs" or "var"
         self._index = row_index
-        self._available: Optional[set] = None
-        self._cache: dict = {}
+        self._available: Optional[set[str]] = None
+        self._cache: dict[str, pd.Series] = {}
 
-    def _available_columns(self) -> set:
+    def _available_columns(self) -> set[str]:
         if self._available is None:
             self._available = set(_run_lines(self._path, self._h5_group))
         return self._available
@@ -212,15 +213,15 @@ class _ObsmProxy:
     def __init__(self, path: Path, n_cells: int) -> None:
         self._path = path
         self._n_cells = n_cells
-        self._keys_list: Optional[list] = None
-        self._cache: dict = {}
+        self._keys_list: Optional[list[str]] = None
+        self._cache: dict[str, NDArray[Any]] = {}
 
-    def _list_keys(self) -> list:
+    def _list_keys(self) -> list[str]:
         if self._keys_list is None:
             self._keys_list = _run_lines(self._path, "obsm")
         return self._keys_list
 
-    def keys(self) -> list:
+    def keys(self) -> list[str]:
         return self._list_keys()
 
     def __contains__(self, key: str) -> bool:
@@ -253,7 +254,7 @@ class _XProxy:
         self._path = path
         self._var_names = var_names
         self._layer = layer
-        self._col_cache: dict = {}
+        self._col_cache: dict[str, NDArray] = {}
 
     def _column(self, gene: str) -> np.ndarray:
         """Full ``(n_cells,)`` expression vector for one gene, cached by name."""
@@ -314,8 +315,8 @@ class H5adFacade:
         self._obs: Optional[_ObsProxy] = None
         self._var: Optional[_VarProxy] = None
         self._obsm_proxy: Optional[_ObsmProxy] = None
-        self._matrix_proxies: dict = {}  # layer key → _XProxy
-        self._x_csr_cache: dict = {}  # layer key → CSR matrix
+        self._matrix_proxies: dict[str, _XProxy] = {}  # layer key → _XProxy
+        self._x_csr_cache: dict[str,Any]  = {}  # layer key → CSR matrix
 
     @property
     def obs_names(self) -> pd.Index:

@@ -163,7 +163,7 @@ class TestPointToGrid:
         letter, number = r
         assert letter == "A"
         assert (
-            number == 12
+            number == '12'
         )  # bottom row is highest number when letters_on_vertical=False
 
     def test_out_of_x_range_raises(self, data):
@@ -833,7 +833,6 @@ class TestReplace:
         assert new.layer == "raw"
 
     def test_replace_all_private_fields(self, data):
-        from mbf_singlecell_plotter.data import EmbeddingData as ED
 
         new = data._replace(
             embedding="new",
@@ -1337,7 +1336,7 @@ class TestLayerAndTransform:
         np.testing.assert_allclose(series.values, np.arange(ad.n_obs) * 2.0 + 7.0)
 
     def test_alternative_source_records_layer_and_transform(self, ad):
-        fn = lambda x: x
+        fn = lambda x: x # noqa: E731
         data = EmbeddingData(ad, "umap").add_alternative_source(
             _make_alt_ad(ad), name="a", layer="scaled", transform=fn
         )
@@ -1739,7 +1738,6 @@ class TestFilterEmbeddingData:
         assert filtered.has_filter is True
 
     def test_coordinates_subsetted(self, data, ad):
-        full = data.coordinates()
         keep = ad.obs["leiden"] == "0"
         filtered = data.set_filter(lambda d, m=keep.values: m)
         sub = filtered.coordinates()
@@ -1856,7 +1854,7 @@ class TestFilterEmbeddingData:
         assert len(sub) == int((ad.obs["leiden"] == "0").sum())
 
     def test_immutability(self, data, ad):
-        filtered = data.set_filter(lambda d: d.get_column("leiden").series == "0")
+        data.set_filter(lambda d: d.get_column("leiden").series == "0")
         assert data.has_filter is False
         assert len(data.coordinates()) == ad.n_obs
 

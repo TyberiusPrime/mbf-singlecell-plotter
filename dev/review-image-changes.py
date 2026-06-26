@@ -24,7 +24,8 @@ import base64
 import termios
 import tty
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
+from PIL import Image
 
 TESTS_DIR = Path(__file__).parent.parent / "tests"
 DEFAULT_FAILURES = TESTS_DIR / "failures"
@@ -45,7 +46,7 @@ def _send_kitty(path: Path, max_width: int) -> None:
         w, h = img.size
         if w > max_width:
             scale = max_width / w
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         data = base64.standard_b64encode(buf.getvalue())
@@ -70,7 +71,7 @@ def _send_iterm2(path: Path, max_width: int) -> None:
         w, h = img.size
         if w > max_width:
             scale = max_width / w
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         data = base64.standard_b64encode(buf.getvalue()).decode()
@@ -80,8 +81,7 @@ def _send_iterm2(path: Path, max_width: int) -> None:
         print(f"  [iterm2 error: {e}] {path}")
 
 
-def _composite_side_by_side(left: Path, right: Path, gap: int = 20) -> "Image":
-    from PIL import Image
+def _composite_side_by_side(left: Path, right: Path, gap: int = 20) -> "Image.Image":
 
     a = Image.open(left).convert("RGB")
     b = Image.open(right).convert("RGB")
@@ -131,7 +131,7 @@ def _show_composite(
         w, h = img.size
         if w > max_width:
             scale = max_width / w
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
         tmp = Path("/tmp/_review_composite.png")
         img.save(tmp)
         if protocol == "kitty":
@@ -195,7 +195,7 @@ def find_failures(failures_dir: Path, pattern: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 
-def _accept(f: dict) -> None:
+def _accept(f: dict[Any,Any]) -> None:
     """Copy actual → canonical reference and clean up failures dir."""
     dest = DEFAULT_REFERENCE / f"{f['name']}.png"
     shutil.copy2(f["actual"], dest)

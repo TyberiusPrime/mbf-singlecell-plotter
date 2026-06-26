@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, override
 
 import plotnine as p9
 from plotnine.guides.guide_colorbar import guide_colorbar
@@ -27,6 +27,7 @@ class sc_guide_colorbar(guide_colorbar):
     # When set, use this value directly instead of computing from figure height.
     key_height_pt: Optional[float] = None
 
+    @override
     def draw(self):
         # theme + … drops the `targets` attr (set by setup(), not a dataclass
         # field).  Save and restore it so super().draw() can still write to it.
@@ -50,7 +51,7 @@ class sc_guide_colorbar(guide_colorbar):
             self.theme.targets = saved_targets
 
         # Recreate elements so cached properties pick up the updated theme values.
-        self.elements = self._elements_cls(self.theme, self)
+        self.elements = self._elements_cls(self.theme, self) # ty: ignore
 
         # Drop boundary tick/label that would duplicate the extension box label.
         if self.zero_color is not None and len(self.key) > 1:
