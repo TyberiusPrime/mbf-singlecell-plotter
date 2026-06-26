@@ -1,5 +1,3 @@
-import numpy as np
-import pandas as pd
 
 
 def map_to_integers(series, upper, min=None, max=None):

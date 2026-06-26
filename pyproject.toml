@@ -26,9 +26,16 @@ build-backend = "setuptools.build_meta"
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "ruff>=0.9",
     "scikit-image>=0.24",
     "scipy>=1.14",
+    "ty>=0.0.1a9",
 ]
+
+[tool.ty.rules]
+# Advisory mode: all rules are warnings while type coverage is being built up.
+# Promote rules to "error" as they become clean.
+all = "warn"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

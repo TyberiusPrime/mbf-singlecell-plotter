@@ -5,6 +5,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union, List, Dict, Callable
 
+import numpy as np
+import pandas as pd
+import plotnine as p9
+from natsort import natsorted
+
+from .data import EmbeddingData, _LETTERS
+from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_theme
+from .colorbar import sc_guide_colorbar
+
 
 class _DoNotUpdateType:
     """Sentinel type — distinguishes 'not supplied' from explicit None."""
@@ -22,15 +31,6 @@ class _DoNotUpdateType:
 
 #: Pass this as a default argument value to mean "leave the existing setting unchanged".
 DoNotUpdate = _DoNotUpdateType()
-
-import numpy as np
-import pandas as pd
-import plotnine as p9
-from natsort import natsorted
-
-from .data import EmbeddingData, _LETTERS
-from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_theme
-from .colorbar import sc_guide_colorbar
 
 
 # ── Custom matplotlib colorbar legend ────────────────────────────────────────
@@ -417,9 +417,6 @@ def _draw_numerical_legend(
     grid_x1 = max(ax.get_position().x1 for ax in all_axes)
     grid_y0 = min(ax.get_position().y0 for ax in all_axes)
     grid_height = max(ax.get_position().y1 for ax in all_axes) - grid_y0
-
-    # For single-panel figures keep a reference to the one axes for shrinking.
-    main_ax = all_axes[0]
 
     # ── Layout: title | gap | bar (tick labels auto to the right) ────────────
     gap = 0.008
@@ -2999,7 +2996,6 @@ class ScatterPlotter:
         return p
 
     def _add_grid_axis_ticks(self, p: p9.ggplot) -> p9.ggplot:
-        gc = self._grid_config
         x_positions, y_positions, x_labels, y_labels = self._data.grid_labels()
         p = (
             p

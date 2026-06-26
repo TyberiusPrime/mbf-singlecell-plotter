@@ -20,7 +20,6 @@ def prepare_scatter_df(
 
     Returns df with columns: x, y, expression, is_zero (and is_clipped for numerical).
     """
-    from natsort import natsorted
 
     coords = data.coordinates()
     expr, expr_name = data.get_column(gene)
@@ -89,7 +88,6 @@ def prepare_density_df(
 
     # ── 1-D faceting ──────────────────────────────────────────────────────────
     if facet is not None:
-        from natsort import natsorted
 
         facet = facet.reindex(coords.index)
         cat_order = _facet_categories(facet)
@@ -118,7 +116,6 @@ def prepare_density_df(
         return df
 
     # ── 2-D faceting (facet_grid) ─────────────────────────────────────────────
-    from natsort import natsorted
 
     facet_row = facet_row.reindex(coords.index) if facet_row is not None else None
     facet_col = facet_col.reindex(coords.index) if facet_col is not None else None

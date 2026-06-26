@@ -1,16 +1,13 @@
 """Layer 1: data access (AnnData → DataFrames). No plotting."""
 
 import copy
-import collections
 from pathlib import Path
 from typing import Callable, Dict, NamedTuple, Optional, Union
 
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
-from natsort import natsorted
 
-from .util import map_to_integers, unmap
 
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -948,11 +945,11 @@ class EmbeddingData:
             letters_rev = list(reversed(letters))
             letter_col = [letters_rev[i] for i in y_idx]
             number_col = [i + 1 for i in x_idx]
-            labels = [f"{l}{n}" for l, n in zip(letter_col, number_col)]
+            labels = [f"{ltr}{n}" for ltr, n in zip(letter_col, number_col)]
         else:
             letter_col = [letters[i] for i in x_idx]
             number_col = [self._grid_size - i for i in y_idx]
-            labels = [f"{l}{n}" for l, n in zip(letter_col, number_col)]
+            labels = [f"{ltr}{n}" for ltr, n in zip(letter_col, number_col)]
         return pd.Series(labels, index=coords.index)
 
     def full_bounds(self) -> tuple:
