@@ -1474,12 +1474,7 @@ class ScatterPlotter:
         p = p + p9.labs(title=title)
 
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
-        p = p + embedding_theme(
-            base_size=self.base_size,
-            show_spines=self._panel_border,
-            bg_color=self._bg_color,
-            spine_color=self._spine_color,
-        )
+        p = self._apply_embedding_theme(p)
         p = p + p9.theme(
             figure_size=fig_size,
             legend_box="horizontal",
@@ -1487,22 +1482,13 @@ class ScatterPlotter:
         )
 
         # Grid axis tick labels (applied after theme so they survive theme_void)
-        if self._grid_config is not None and self._grid_config.coords:
-            p = self._add_grid_axis_ticks(p)
-        elif self._grid_config is None:
-            p = self._add_plain_axis_ticks(p)
+        p = self._apply_axis_ticks(p, grid_layers=False)
 
         # Fixed panel size
-        if self._fixed_panel_size is not None:
-            w, h = self._fixed_panel_size
-            p = _ensure_post_draw(p)
-            p._post_draw_fns.append(
-                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
-            )
+        p = self._register_fixed_panel(p)
 
         # Embedding label (after fixed-panel so tight-bbox reflects final size)
-        if self._embedding_label:
-            p = self._add_embedding_label(p, data)
+        p = self._maybe_add_embedding_label(p, data)
 
         return p
 
@@ -1633,23 +1619,14 @@ class ScatterPlotter:
         else:
             fig_size = self.fig_size
 
-        p = p + embedding_theme(
-            base_size=self.base_size,
-            show_spines=self._panel_border,
-            bg_color=self._bg_color,
-            spine_color=self._spine_color,
-        )
+        p = self._apply_embedding_theme(p)
         p = p + p9.theme(
             figure_size=fig_size,
             **{**self._facet_theme_overwrites(), **self._theme_overwrites},
         )
 
         # Grid overlay + axis ticks — parity with .plot() / .plot_moran_markers()
-        if self._grid_config is not None:
-            p = self._add_grid_layers(p)
-            p = self._add_grid_axis_ticks(p)
-        else:
-            p = self._add_plain_axis_ticks(p)
+        p = self._apply_axis_ticks(p, grid_layers=True)
 
         if has_clips:
             legend_config = dict(
@@ -1672,15 +1649,9 @@ class ScatterPlotter:
 
         # Fixed panel size — registered after the colorbar so the resize wins
         # (the custom legend scales the panel horizontally; must run first).
-        if self._fixed_panel_size is not None:
-            w, h = self._fixed_panel_size
-            p = _ensure_post_draw(p)
-            p._post_draw_fns.append(
-                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
-            )
+        p = self._register_fixed_panel(p)
 
-        if self._embedding_label:
-            p = self._add_embedding_label(p, data)
+        p = self._maybe_add_embedding_label(p, data)
 
         return p
 
@@ -1768,22 +1739,12 @@ class ScatterPlotter:
                 inherit_aes=False,
             )
 
-        p = p + embedding_theme(
-            base_size=self.base_size,
-            show_spines=self._panel_border,
-            bg_color=self._bg_color,
-            spine_color=self._spine_color,
-        )
+        p = self._apply_embedding_theme(p)
         p = p + p9.theme(figure_size=(7, 6))
 
-        if self._grid_config is not None:
-            p = self._add_grid_layers(p)
-            p = self._add_grid_axis_ticks(p)
-        else:
-            p = self._add_plain_axis_ticks(p)
+        p = self._apply_axis_ticks(p, grid_layers=True)
 
-        if self._embedding_label:
-            p = self._add_embedding_label(p, data)
+        p = self._maybe_add_embedding_label(p, data)
 
         return p
 
@@ -2062,12 +2023,7 @@ class ScatterPlotter:
             )
         )
 
-        if self._fixed_panel_size is not None:
-            w, h = self._fixed_panel_size
-            p = _ensure_post_draw(p)
-            p._post_draw_fns.append(
-                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
-            )
+        p = self._register_fixed_panel(p)
 
         return p
 
@@ -2228,12 +2184,7 @@ class ScatterPlotter:
             **{**self._facet_theme_overwrites(), **self._theme_overwrites},
         )
 
-        if self._fixed_panel_size is not None:
-            w, h = self._fixed_panel_size
-            p = _ensure_post_draw(p)
-            p._post_draw_fns.append(
-                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
-            )
+        p = self._register_fixed_panel(p)
 
         return p
 
@@ -2362,12 +2313,7 @@ class ScatterPlotter:
             **{**self._facet_theme_overwrites(), **self._theme_overwrites},
         )
 
-        if self._fixed_panel_size is not None:
-            w, h = self._fixed_panel_size
-            p = _ensure_post_draw(p)
-            p._post_draw_fns.append(
-                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
-            )
+        p = self._register_fixed_panel(p)
 
         return p
 
@@ -2511,27 +2457,14 @@ class ScatterPlotter:
             p = p + p9.labs(title=ref_name)
 
         # Theme
-        p = p + embedding_theme(
-            base_size=self.base_size,
-            show_spines=self._panel_border,
-            bg_color=self._bg_color,
-            spine_color=self._spine_color,
-        )
+        p = self._apply_embedding_theme(p)
         p = p + p9.theme(figure_size=(6, 5))
 
         # Grid axis ticks
-        if self._grid_config is not None and self._grid_config.coords:
-            p = self._add_grid_axis_ticks(p)
-        elif self._grid_config is None:
-            p = self._add_plain_axis_ticks(p)
+        p = self._apply_axis_ticks(p, grid_layers=False)
 
         # Fixed panel size
-        if self._fixed_panel_size is not None:
-            w, h = self._fixed_panel_size
-            p = _ensure_post_draw(p)
-            p._post_draw_fns.append(
-                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
-            )
+        p = self._register_fixed_panel(p)
 
         # 2D colour legend (to the right of the figure)
         if show_legend:
@@ -2546,12 +2479,69 @@ class ScatterPlotter:
             )
 
         # Embedding label — runs after legend so tight-bbox is stable
-        if self._embedding_label:
-            p = self._add_embedding_label(p, data)
+        p = self._maybe_add_embedding_label(p, data)
 
         return p
 
     # ── internals ────────────────────────────────────────────────────────────
+
+    def _register_fixed_panel(self, p: p9.ggplot) -> p9.ggplot:
+        """Register a post-draw hook pinning the panel to ``_fixed_panel_size``.
+
+        No-op when no fixed size is configured.
+        """
+        if self._fixed_panel_size is not None:
+            w, h = self._fixed_panel_size
+            p = _ensure_post_draw(p)
+            p._post_draw_fns.append(
+                lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
+            )
+        return p
+
+    def _apply_embedding_theme(self, p: p9.ggplot) -> p9.ggplot:
+        """Apply the shared embedding ``embedding_theme`` (spines / bg / colours).
+
+        The per-plot ``p9.theme(figure_size=...)`` overrides stay at the call
+        site since they differ across plot types.
+        """
+        return p + embedding_theme(
+            base_size=self.base_size,
+            show_spines=self._panel_border,
+            bg_color=self._bg_color,
+            spine_color=self._spine_color,
+        )
+
+    def _apply_axis_ticks(self, p: p9.ggplot, *, grid_layers: bool) -> p9.ggplot:
+        """Apply grid / plain axis-tick labels after the theme.
+
+        Two faithful variants:
+
+        * ``grid_layers=False`` (scatter / embedding-colour): the grid layers are
+          already added inside the builders, so only the tick labels are applied,
+          gated on ``GridConfig.coords``.
+        * ``grid_layers=True`` (density / moran): the grid overlay layers are
+          added here as well, and tick labels follow unconditionally.
+        """
+        if grid_layers:
+            if self._grid_config is not None:
+                p = self._add_grid_layers(p)
+                p = self._add_grid_axis_ticks(p)
+            else:
+                p = self._add_plain_axis_ticks(p)
+        else:
+            if self._grid_config is not None and self._grid_config.coords:
+                p = self._add_grid_axis_ticks(p)
+            elif self._grid_config is None:
+                p = self._add_plain_axis_ticks(p)
+        return p
+
+    def _maybe_add_embedding_label(
+        self, p: p9.ggplot, data: "EmbeddingData"
+    ) -> p9.ggplot:
+        """Add the embedding-name label when enabled. Always the final hook."""
+        if self._embedding_label:
+            p = self._add_embedding_label(p, data)
+        return p
 
     def _add_embedding_label(self, p: p9.ggplot, data: "EmbeddingData") -> p9.ggplot:
         label = data.embedding

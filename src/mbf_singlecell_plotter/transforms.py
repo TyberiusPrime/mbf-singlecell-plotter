@@ -10,41 +10,6 @@ from .util import map_to_integers, unmap
 _EMBEDDING_COLOR_DEFAULTS = ("#FF4444", "#4444FF", "#FFCC00", "#44BB44")
 
 
-def prepare_scatter_df(
-    data,
-    gene: str,
-    clip_quantile: float = 0.95,
-    zero_value: float = 0.0,
-) -> pd.DataFrame:
-    """Prepare a DataFrame for scatter plot visualization.
-
-    Returns df with columns: x, y, expression, is_zero (and is_clipped for numerical).
-    """
-
-    coords = data.coordinates()
-    expr, expr_name = data.get_column(gene)
-    is_numerical = (
-        (expr.dtype != "object")
-        and (expr.dtype != "category")
-        and (expr.dtype != "bool")
-    )
-    if not is_numerical and expr.dtype != "category":
-        expr = expr.astype("category")
-
-    df = coords.copy()
-    df["expression"] = expr
-
-    if is_numerical:
-        df["is_zero"] = df["expression"] == zero_value
-        clip_val = df.loc[~df["is_zero"], "expression"].quantile(clip_quantile)
-        df["is_clipped"] = df["expression"] > clip_val
-    else:
-        df["is_zero"] = False
-        df["is_clipped"] = False
-
-    return df
-
-
 def prepare_density_df(
     data, bins: int = 200, facet=None, facet_row=None, facet_col=None
 ) -> pd.DataFrame:

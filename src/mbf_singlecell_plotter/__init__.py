@@ -5,7 +5,6 @@ from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_
 from .data import EmbeddingData, ColumnData, AlternativeSource, DerivedSource
 from .transforms import (
     prepare_density_df,
-    prepare_scatter_df,
     compute_boundaries,
     prepare_embedding_color_df,
     compute_grid_moran,
@@ -30,7 +29,6 @@ __all__ = [
     "DoNotUpdate",
     # transforms
     "prepare_density_df",
-    "prepare_scatter_df",
     "compute_boundaries",
     "prepare_embedding_color_df",
     "compute_grid_moran",
