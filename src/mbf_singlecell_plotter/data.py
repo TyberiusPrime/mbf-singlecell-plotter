@@ -15,6 +15,23 @@ from .util import map_to_integers, unmap
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
+def _source_matrix(ad, layer: str):
+    """Return the expression matrix of *ad* for *layer*.
+
+    ``layer='X'`` (or ``None``) yields ``ad.X``.  For any other key, an
+    :class:`~mbf_singlecell_plotter.h5ad_source.H5adFacade` (which exposes a
+    ``matrix(layer)`` method) is asked for its layer-bound accessor, while a
+    real ``AnnData`` is indexed as ``ad.layers[layer]``.  The result supports
+    ``matrix[:, idx]`` single-column indexing.
+    """
+    if layer in (None, "X"):
+        return ad.X
+    getter = getattr(ad, "matrix", None)
+    if getter is not None:
+        return getter(layer)
+    return ad.layers[layer]
+
+
 def _parse_grid_label(label: str, gs: int, letters_on_vertical: bool) -> tuple:
     """Parse a grid label string → (col_idx, row_from_top), both 0-indexed.
 
@@ -78,10 +95,19 @@ class AlternativeSource(NamedTuple):
     ``name`` is ``None`` for sources that only participate in the automatic
     fallback search; a non-None name additionally enables explicit tuple
     routing via ``get_column((name, column))``.
+
+    ``layer`` selects which expression matrix feature columns are read from:
+    the sentinel ``'X'`` (default) reads ``.X``; any other key reads
+    ``.layers[layer]`` (for :class:`H5adFacade` sources, via the
+    ``h5ad-inspect --layer`` flag).  ``transform``, when given, is a callable
+    applied to each feature column read from this source's matrix (e.g. to
+    convert natural-log values to log2) — it does **not** touch ``obs`` columns.
     """
 
     name: Optional[str]
     ad: object
+    layer: str = "X"
+    transform: Optional[Callable[["np.ndarray"], "np.ndarray"]] = None
 
 
 class DerivedSource(NamedTuple):
@@ -112,10 +138,24 @@ class EmbeddingData:
         grid_size: int = 12,
         grid_letters_on_vertical: bool = False,
         filter_fn: Optional[Callable[["EmbeddingData"], "pd.Series | np.ndarray"]] = None,
+        layer: str = "X",
+        transform: Optional[Callable[["np.ndarray"], "np.ndarray"]] = None,
     ):
         self.ad = ad
         if grid_size > 26:
             raise ValueError("grid_size max is 26")
+        if not isinstance(layer, str):
+            raise TypeError(
+                f"layer must be a string ('X' for .X, else a layer key), "
+                f"got {type(layer).__name__}"
+            )
+        if transform is not None and not callable(transform):
+            raise TypeError(
+                f"transform must be a callable or None, got "
+                f"{type(transform).__name__}"
+            )
+        self._layer = layer
+        self._transform = transform
         self._grid_size = grid_size
         self._grid_letters_on_vertical = grid_letters_on_vertical
         self._alternative_id_column = alternative_id_column
@@ -171,6 +211,16 @@ class EmbeddingData:
     @property
     def embedding(self) -> str:
         return self._embedding
+
+    @property
+    def layer(self) -> str:
+        """Matrix layer read from the primary source (``'X'`` → ``.X``)."""
+        return self._layer
+
+    @property
+    def transform(self) -> Optional[Callable]:
+        """Callable applied to primary-source feature columns, or ``None``."""
+        return self._transform
 
     @property
     def grid_size(self) -> int:
@@ -231,8 +281,10 @@ class EmbeddingData:
         seen = set(existing_names or [])
         result = []
         for item in items:
+            layer, transform = "X", None
             if isinstance(item, AlternativeSource):
                 name, src = item.name, item.ad
+                layer, transform = item.layer, item.transform
             elif (
                 isinstance(item, tuple)
                 and len(item) == 2
@@ -247,10 +299,14 @@ class EmbeddingData:
                         f"Duplicate alternative source name {name!r}"
                     )
                 seen.add(name)
-            result.append(AlternativeSource(name, self._coerce_ad(src)))
+            result.append(
+                AlternativeSource(name, self._coerce_ad(src), layer, transform)
+            )
         return result
 
-    def add_alternative_source(self, source, name=None) -> "EmbeddingData":
+    def add_alternative_source(
+        self, source, name=None, layer="X", transform=None
+    ) -> "EmbeddingData":
         """Return a copy with an additional fallback source appended.
 
         ``source`` may be an ``AnnData``, an :class:`H5adFacade`, an ``.h5ad``
@@ -263,12 +319,20 @@ class EmbeddingData:
         explicitly via ``get_column((name, column))`` — which resolves
         *column* from that specific source only.  Names must be unique among
         registered alternatives.
+
+        *layer* selects which expression matrix feature columns are read from
+        (``'X'`` → ``.X``, else ``.layers[layer]``).  *transform*, when given,
+        is a callable applied to each feature column read from this source (not
+        to ``obs`` columns) — e.g. ``lambda x: x / np.log(2)`` to convert
+        natural-log values to log2.
         """
         existing = {a.name for a in self._alternative_sources if a.name is not None}
-        item = (name, source) if name is not None else source
         new = copy.copy(self)
         new._alternative_sources = self._alternative_sources + (
-            self._normalize_alternative_items([item], existing_names=existing)
+            self._normalize_alternative_items(
+                [AlternativeSource(name, source, layer, transform)],
+                existing_names=existing,
+            )
         )
         return new
 
@@ -555,7 +619,9 @@ class EmbeddingData:
                     )
             for alt in self._alternative_sources:
                 if alt.name == src_name:
-                    resolved = self._resolve_column_from(alt.ad, col)
+                    resolved = self._resolve_column_from(
+                        alt.ad, col, alt.layer, alt.transform
+                    )
                     return ColumnData(
                         resolved.series.reindex(self.ad.obs_names), resolved.name
                     )
@@ -571,7 +637,9 @@ class EmbeddingData:
 
         # Plain string: primary first, then derived, then alternative fallback.
         try:
-            return self._resolve_column_from(self.ad, name)
+            return self._resolve_column_from(
+                self.ad, name, self._layer, self._transform
+            )
         except KeyError:
             pass
 
@@ -584,7 +652,9 @@ class EmbeddingData:
         primary_index = self.ad.obs_names
         for alt in self._alternative_sources:
             try:
-                resolved = self._resolve_column_from(alt.ad, name)
+                resolved = self._resolve_column_from(
+                    alt.ad, name, alt.layer, alt.transform
+                )
             except KeyError:
                 continue
             return ColumnData(resolved.series.reindex(primary_index), resolved.name)
@@ -633,13 +703,17 @@ class EmbeddingData:
             )
         return series
 
-    def _resolve_column_from(self, ad, name: str) -> ColumnData:
+    def _resolve_column_from(
+        self, ad, name: str, layer: str = "X", transform=None
+    ) -> ColumnData:
         """Resolve *name* against a single AnnData-like source.
 
         Same resolution order as documented for :meth:`get_column`, applied to
         the given ``ad`` (primary or alternative).  Works for ``AnnData`` and
         :class:`H5adFacade` alike since only the shared interface is used.
-        Raises ``KeyError`` if *name* is not found in this source.
+        Feature (gene) columns are read from *layer* (``'X'`` → ``.X``) and, if
+        *transform* is given, passed through it; ``obs`` columns are returned
+        untouched.  Raises ``KeyError`` if *name* is not found in this source.
         """
         if name in ad.obs:
             return ColumnData(ad.obs[name], name)
@@ -648,11 +722,13 @@ class EmbeddingData:
             idx = np.nonzero(mask)[0][0]
             if col_name is None:
                 col_name = ad.var.index[idx]
-            col = ad.X[:, idx]
+            col = _source_matrix(ad, layer)[:, idx]
             if sp.issparse(col):
                 col = col.toarray().ravel()
             else:
                 col = np.asarray(col).ravel()
+            if transform is not None:
+                col = np.asarray(transform(col)).ravel()
             return ColumnData(pd.Series(col, index=ad.obs_names), col_name)
 
         if name in ad.var.index:
@@ -792,17 +868,21 @@ class EmbeddingData:
         ``X[row_array]`` slicing is cheap.
 
         For :class:`H5adFacade` sources the whole matrix is loaded in one
-        ``h5ad-inspect`` call (``export matrix_csr``) and cached.  For real
-        ``AnnData`` (or anything exposing a ``get_X_csr`` method) it forwards
-        directly, converting dense/sparse matrices to CSR as needed.
+        ``h5ad-inspect`` call (``export [--layer <key>] matrix_csr``) and
+        cached.  For real ``AnnData`` (or anything exposing a ``get_X_csr``
+        method) it forwards directly, converting dense/sparse matrices to CSR
+        as needed.  Reads the primary source's configured :attr:`layer`; the
+        primary :attr:`transform` is **not** applied here (bulk analyses such
+        as Moran's I operate on the raw matrix).
         """
         ad = self.ad
+        layer = self._layer
         getter = getattr(ad, "get_X_csr", None)
         if getter is not None:
-            return getter()
+            return getter() if layer == "X" else getter(layer)
         from scipy import sparse as sp
 
-        X = ad.X
+        X = _source_matrix(ad, layer)
         if sp.issparse(X):
             return X.tocsr()
         return sp.csr_matrix(np.asarray(X))

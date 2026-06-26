@@ -1179,6 +1179,158 @@ class TestAlternativeSourceH5adFacade:
 
 
 # ---------------------------------------------------------------------------
+# Source layer selection + per-source transforms
+# ---------------------------------------------------------------------------
+
+
+def _ad_with_layer(ad, layer="scaled", factor=10.0):
+    """Copy *ad* and add a layer that is ``factor`` × its ``.X`` matrix."""
+    import scipy.sparse as sp
+
+    ad2 = ad.copy()
+    X = ad2.X
+    ad2.layers[layer] = X.multiply(factor) if sp.issparse(X) else X * factor
+    return ad2
+
+
+GENE = "S100A8"
+
+
+class TestLayerAndTransform:
+    # ── primary source ────────────────────────────────────────────────────
+    def test_primary_layer_reads_named_layer(self, ad):
+        base, _ = EmbeddingData(ad, "umap").get_column(GENE)
+        lad = _ad_with_layer(ad, factor=10.0)
+        scaled, name = EmbeddingData(ad=lad, embedding="umap", layer="scaled").get_column(GENE)
+        assert name == GENE
+        np.testing.assert_allclose(scaled.values, base.values * 10.0)
+
+    def test_primary_layer_default_is_X(self, ad):
+        assert EmbeddingData(ad, "umap").layer == "X"
+        base, _ = EmbeddingData(ad, "umap").get_column(GENE)
+        same, _ = EmbeddingData(ad, "umap", layer="X").get_column(GENE)
+        np.testing.assert_allclose(base.values, same.values)
+
+    def test_primary_transform_applied_to_gene(self, ad):
+        base, _ = EmbeddingData(ad, "umap").get_column(GENE)
+        data = EmbeddingData(ad, "umap", transform=lambda x: x / np.log(2))
+        out, _ = data.get_column(GENE)
+        np.testing.assert_allclose(out.values, base.values / np.log(2))
+
+    def test_primary_transform_not_applied_to_obs(self, ad):
+        base, _ = EmbeddingData(ad, "umap").get_column(NUMERIC_COL)
+        data = EmbeddingData(ad, "umap", transform=lambda x: x * -999.0)
+        out, _ = data.get_column(NUMERIC_COL)
+        np.testing.assert_allclose(out.values, base.values)
+
+    def test_layer_and_transform_compose(self, ad):
+        base, _ = EmbeddingData(ad, "umap").get_column(GENE)
+        lad = _ad_with_layer(ad, factor=10.0)
+        data = EmbeddingData(lad, "umap", layer="scaled", transform=lambda x: x + 1.0)
+        out, _ = data.get_column(GENE)
+        np.testing.assert_allclose(out.values, base.values * 10.0 + 1.0)
+
+    def test_get_X_csr_respects_layer(self, ad):
+        import scipy.sparse as sp
+
+        base = EmbeddingData(ad, "umap").get_X_csr().toarray()
+        lad = _ad_with_layer(ad, factor=10.0)
+        scaled = EmbeddingData(lad, "umap", layer="scaled").get_X_csr().toarray()
+        np.testing.assert_allclose(scaled, base * 10.0)
+
+    def test_invalid_layer_type_raises(self, ad):
+        with pytest.raises(TypeError):
+            EmbeddingData(ad, "umap", layer=123)
+
+    def test_invalid_transform_raises(self, ad):
+        with pytest.raises(TypeError):
+            EmbeddingData(ad, "umap", transform="not callable")
+
+    # ── alternative sources ───────────────────────────────────────────────
+    def test_alternative_source_layer(self, ad):
+        lad = _ad_with_layer(_make_alt_ad(ad, extra_gene="EXTRA_GENE"), factor=5.0)
+        data = EmbeddingData(ad, "umap").add_alternative_source(lad, layer="scaled")
+        series, name = data.get_column("EXTRA_GENE")
+        assert name == "EXTRA_GENE"
+        np.testing.assert_allclose(series.values, np.arange(ad.n_obs) * 5.0)
+
+    def test_alternative_source_transform(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(
+            alt, transform=lambda x: x + 1000.0
+        )
+        series, _ = data.get_column("EXTRA_GENE")
+        np.testing.assert_allclose(series.values, np.arange(ad.n_obs) + 1000.0)
+
+    def test_alternative_source_transform_skips_obs(self, ad):
+        alt = _make_alt_ad(ad, extra_obs="extra_annot")
+        data = EmbeddingData(ad, "umap").add_alternative_source(
+            alt, transform=lambda x: x * 0.0
+        )
+        # obs column resolves untouched (categorical, not numeric)
+        series, name = data.get_column("extra_annot")
+        assert name == "extra_annot"
+        assert isinstance(series.dtype, pd.CategoricalDtype)
+
+    def test_alternative_layer_transform_via_named_tuple_routing(self, ad):
+        lad = _ad_with_layer(_make_alt_ad(ad, extra_gene="EXTRA_GENE"), factor=2.0)
+        data = EmbeddingData(ad, "umap").add_alternative_source(
+            lad, name="ln", layer="scaled", transform=lambda x: x + 7.0
+        )
+        series, _ = data.get_column(("ln", "EXTRA_GENE"))
+        np.testing.assert_allclose(series.values, np.arange(ad.n_obs) * 2.0 + 7.0)
+
+    def test_alternative_source_records_layer_and_transform(self, ad):
+        fn = lambda x: x
+        data = EmbeddingData(ad, "umap").add_alternative_source(
+            _make_alt_ad(ad), name="a", layer="scaled", transform=fn
+        )
+        src = data.alternative_sources[0]
+        assert src.layer == "scaled"
+        assert src.transform is fn
+
+    def test_add_alternative_source_is_immutable(self, ad):
+        data = EmbeddingData(ad, "umap")
+        data.add_alternative_source(_make_alt_ad(ad), layer="scaled")
+        assert data.alternative_sources == []
+
+
+class TestLayerAndTransformH5adFacade:
+    """Layer selection + transform against the h5ad-inspect facade."""
+
+    def test_h5ad_facade_layer_read(self, ad, tmp_path):
+        if not shutil.which("h5ad-inspect"):
+            pytest.skip("h5ad-inspect not on PATH")
+        pytest.importorskip("h5py")
+        from mbf_singlecell_plotter import H5adFacade
+
+        alt = _ad_with_layer(_make_alt_ad(ad, extra_gene="EXTRA_GENE"), factor=3.0)
+        path = tmp_path / "layered.h5ad"
+        alt.write_h5ad(path)
+
+        data = EmbeddingData(ad, "umap").add_alternative_source(
+            H5adFacade(path), layer="scaled", transform=lambda x: x + 1.0
+        )
+        series, name = data.get_column("EXTRA_GENE")
+        assert name == "EXTRA_GENE"
+        np.testing.assert_allclose(series.values, np.arange(ad.n_obs) * 3.0 + 1.0)
+
+    def test_h5ad_facade_default_layer_unchanged(self, ad, tmp_path):
+        if not shutil.which("h5ad-inspect"):
+            pytest.skip("h5ad-inspect not on PATH")
+        pytest.importorskip("h5py")
+        from mbf_singlecell_plotter import H5adFacade
+
+        alt = _ad_with_layer(_make_alt_ad(ad, extra_gene="EXTRA_GENE"), factor=3.0)
+        path = tmp_path / "layered.h5ad"
+        alt.write_h5ad(path)
+
+        data = EmbeddingData(ad, "umap").add_alternative_source(H5adFacade(path))
+        series, _ = data.get_column("EXTRA_GENE")
+        np.testing.assert_allclose(series.values, np.arange(ad.n_obs))
+
+
+# ---------------------------------------------------------------------------
 # Alternative sources: naming + tuple routing
 # ---------------------------------------------------------------------------
 

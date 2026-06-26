@@ -47,18 +47,25 @@ so a base plotter can be safely reused and extended.
 
 ```python
 ScatterPlotter(base_size=12)
-plotter.set_source(ad_or_data, embedding="umap")
+plotter.set_source(ad_or_data, embedding="umap", layer='X', transform=lambda x: x / np.log(2))
 ```
 
 `ad_or_data` can be:
 - an `anndata.AnnData` object
 - a path (`str` or `pathlib.Path`) to an `.h5ad` file — requires [h5ad_inspect](https://github.com/tyberiusPrime/h5ad_inspect) on `PATH`
+  (and uses a fast binary to get individual rows. If this is slow, your anndata matrix is not in csc, but in csr format!)
 - an `EmbeddingData` instance (skips re-wrapping)
 
 `embedding` can be a key in `ad.obsm` (`"umap"` → `"X_umap"`) or a tuple for two PCA components:
 ```python
 plotter.set_source(ad, embedding=("pca", 0, 1))
 ```
+
+Layer within the data source (ad.layer['xyz']) can be chosen via `layer`, 'X' means the .X
+instead of ad.layer['X']!
+
+The transform is applied to X/layer derived columns only, not to .obs columns
+
 
 #### Alternative / fallback sources
 

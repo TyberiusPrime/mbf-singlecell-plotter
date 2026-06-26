@@ -107,18 +107,31 @@ def _read_obsm(path: Path, key: str, n_cells: int) -> np.ndarray:
     return arr.reshape(n_cells, -1)
 
 
-def _load_matrix_csr(path: Path):
-    """Load the full ``X`` matrix as a scipy CSR sparse matrix in one shot.
+def _layer_args(layer: str) -> tuple:
+    """Return the ``--layer`` CLI flag for *layer*, empty for the default ``'X'``.
 
-    Uses ``h5ad-inspect export matrix_csr``, which emits a zip archive of
-    numpy arrays (``csr_data`` / ``csr_indices`` / ``csr_indptr`` /
+    ``h5ad-inspect`` reads ``.X`` by default and any named layer via
+    ``--layer <key>`` (which resolves to ``layers/<key>`` in the file).  The
+    sentinel ``'X'`` therefore maps to *no* flag rather than ``--layer X`` —
+    matching how ``AnnData`` treats ``'X'`` as ``.X`` rather than
+    ``.layers['X']``.
+    """
+    return () if layer in (None, "X") else ("--layer", layer)
+
+
+def _load_matrix_csr(path: Path, layer: str = "X"):
+    """Load the full matrix for *layer* as a scipy CSR sparse matrix in one shot.
+
+    Uses ``h5ad-inspect export [--layer <key>] matrix_csr``, which emits a zip
+    archive of numpy arrays (``csr_data`` / ``csr_indices`` / ``csr_indptr`` /
     ``csr_shape``).  The resulting columns are in the file's native gene
     order, i.e. the same order as :meth:`H5adFacade.var_names`
-    (``export var _index``) — which mirrors real ``AnnData``.
+    (``export var _index``) — which mirrors real ``AnnData``.  *layer* defaults
+    to ``'X'`` (the ``.X`` matrix); any other key reads ``layers/<key>``.
     """
     from scipy import sparse as sp
 
-    raw = _run_inspect(path, "export", "matrix_csr")
+    raw = _run_inspect(path, "export", *_layer_args(layer), "matrix_csr")
     parts: dict = {}
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         for name in z.namelist():
@@ -216,27 +229,33 @@ class _ObsmProxy:
 
 
 class _XProxy:
-    """Mimics ``AnnData.X`` for single-gene column access.
+    """Mimics ``AnnData.X`` / ``AnnData.layers[key]`` for single-gene column access.
 
-    Only ``X[:, int]`` and ``X[:, str]`` are supported here — they fetch one
-    gene column lazily via ``export --binary column <gene>`` and cache it.
-    This keeps the common "colour by one gene" plotting path cheap (a single
-    small subprocess payload).
+    Bound to a single matrix *layer* (``'X'`` for ``.X``, any other key for a
+    named layer).  Only ``X[:, int]`` and ``X[:, str]`` are supported here —
+    they fetch one gene column lazily via
+    ``export --binary [--layer <key>] column <gene>`` and cache it.  This keeps
+    the common "colour by one gene" plotting path cheap (a single small
+    subprocess payload).
 
     For bulk access over many genes (e.g. Moran's I, which needs the whole
     matrix row-sliced per bin) use :meth:`H5adFacade.get_X_csr`, which loads
-    the full ``X`` in one shot via ``export matrix_csr``.
+    the full matrix in one shot via ``export matrix_csr``.
     """
 
-    def __init__(self, path: Path, var_names: pd.Index) -> None:
+    def __init__(self, path: Path, var_names: pd.Index, layer: str = "X") -> None:
         self._path = path
         self._var_names = var_names
+        self._layer = layer
         self._col_cache: dict = {}
 
     def _column(self, gene: str) -> np.ndarray:
         """Full ``(n_cells,)`` expression vector for one gene, cached by name."""
         if gene not in self._col_cache:
-            raw = _run_inspect(self._path, "export", "--binary", "column", gene)
+            raw = _run_inspect(
+                self._path, "export", "--binary", *_layer_args(self._layer),
+                "column", gene,
+            )
             self._col_cache[gene] = np.frombuffer(raw, dtype="<f8").copy()
         return self._col_cache[gene]
 
@@ -285,8 +304,8 @@ class H5adFacade:
         self._obs: Optional[_ObsProxy] = None
         self._var: Optional[_VarProxy] = None
         self._obsm_proxy: Optional[_ObsmProxy] = None
-        self._x_proxy: Optional[_XProxy] = None
-        self._x_csr = None
+        self._matrix_proxies: dict = {}  # layer key → _XProxy
+        self._x_csr_cache: dict = {}  # layer key → CSR matrix
 
     @property
     def obs_names(self) -> pd.Index:
@@ -325,19 +344,35 @@ class H5adFacade:
             self._obsm_proxy = _ObsmProxy(self._path, len(self.obs_names))
         return self._obsm_proxy
 
+    def matrix(self, layer: str = "X") -> _XProxy:
+        """Return a single-column accessor for *layer* (``'X'`` → ``.X``).
+
+        The proxy is cached per layer so repeated column reads from the same
+        layer share one cache.  ``layer='X'`` reads ``.X``; any other key reads
+        the named ``layers/<key>`` matrix.
+        """
+        if layer is None:
+            layer = "X"
+        proxy = self._matrix_proxies.get(layer)
+        if proxy is None:
+            proxy = _XProxy(self._path, self.var_names, layer)
+            self._matrix_proxies[layer] = proxy
+        return proxy
+
     @property
     def X(self) -> _XProxy:
-        if self._x_proxy is None:
-            self._x_proxy = _XProxy(self._path, self.var_names)
-        return self._x_proxy
+        return self.matrix("X")
 
-    def get_X_csr(self):
-        """Return the full ``X`` matrix as a scipy CSR sparse matrix.
+    def get_X_csr(self, layer: str = "X"):
+        """Return the full matrix for *layer* as a scipy CSR sparse matrix.
 
-        Loaded once via ``h5ad-inspect export matrix_csr`` and cached.  CSR is
-        row-major, so ``X[row_array]`` slicing (the access pattern used by
-        :func:`compute_grid_moran`) is cheap.  Columns follow :attr:`var_names`.
+        Loaded once per layer via ``h5ad-inspect export [--layer <key>]
+        matrix_csr`` and cached.  CSR is row-major, so ``X[row_array]`` slicing
+        (the access pattern used by :func:`compute_grid_moran`) is cheap.
+        Columns follow :attr:`var_names`.  *layer* defaults to ``'X'``.
         """
-        if self._x_csr is None:
-            self._x_csr = _load_matrix_csr(self._path)
-        return self._x_csr
+        if layer is None:
+            layer = "X"
+        if layer not in self._x_csr_cache:
+            self._x_csr_cache[layer] = _load_matrix_csr(self._path, layer)
+        return self._x_csr_cache[layer]
