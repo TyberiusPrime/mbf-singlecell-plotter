@@ -2349,6 +2349,7 @@ class ScatterPlotter:
         *,
         corner_colors=_EMBEDDING_COLOR_DEFAULTS,
         gradient_region=None,
+        cell_region=None,
         outside_color: str = "#C0C0C0",
         show_legend: bool = False,
         show_gradient_region: bool = False,
@@ -2365,13 +2366,15 @@ class ScatterPlotter:
             reference_embedding: Embedding name (str) or EmbeddingData for color assignment.
             corner_colors:        4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
                                   Default: red / blue / yellow / green.
-            gradient_region:               Optional ``(corner1, corner2)`` restricting which cells
-                                  receive the gradient.  Each corner is a grid label string
+            gradient_region:      Optional ``(corner1, corner2)`` restricting which grid cells
+                                  partake in the gradient.  Each corner is a grid label string
                                   (e.g. ``"A1"``) or an ``(x, y)`` float tuple in reference-
                                   embedding coordinates.  ``corner1`` is the top-left (>=)
                                   and ``corner2`` the bottom-right (<=), matching the
                                   ``focus_on_grid`` convention.  Cells outside the box get
                                   *outside_color*.
+            cell_region: Optional ``(corner1, corner2)``, restricting which cells get colored.
+                                  Cells outside get *outside_color*.
             outside_color:        Color for cells outside *gradient_region* (default ``"#C0C0C0"``).
             show_legend:          Add a small 2D color legend inset (default False).
             dot_size:             Point size; defaults to the plotter's dot_size.
@@ -2399,6 +2402,7 @@ class ScatterPlotter:
             corner_colors=corner_colors,
             gradient_region=gradient_region,
             outside_color=outside_color,
+            cell_region=cell_region
         )
         if random_seed is not None:
             df = df.sample(frac=1.0, random_state=random_seed)

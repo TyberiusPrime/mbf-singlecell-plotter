@@ -53,7 +53,6 @@ def prepare_density_df(
 
     # ── 1-D faceting ──────────────────────────────────────────────────────────
     if facet is not None:
-
         facet = facet.reindex(coords.index)
         cat_order = _facet_categories(facet)
         frames = []
@@ -507,7 +506,8 @@ def prepare_embedding_color_df(
     current_data,
     reference_data,
     corner_colors=_EMBEDDING_COLOR_DEFAULTS,
-    region=None,
+    gradient_region=None,
+    cell_region=None,
     outside_color: str = "#C0C0C0",
 ) -> pd.DataFrame:
     """Assign 2D gradient colors to cells based on their position in reference_data.
@@ -521,7 +521,7 @@ def prepare_embedding_color_df(
         current_data:   EmbeddingData supplying x, y plot coordinates.
         reference_data: EmbeddingData whose coordinates drive the color mapping.
         corner_colors:  4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
-        region:         Restricts which cells receive the gradient.  Two forms:
+        gradient_region: Restricts which grid cells ar part of the gradient.  Two forms:
 
                         * **2-tuple** ``(corner1, corner2)`` — axis-aligned bounding
                           box.  Each corner is either a grid-label string
@@ -530,9 +530,10 @@ def prepare_embedding_color_df(
                           bottom_right)`` — arbitrary (possibly non-rectangular)
                           quadrilateral; each element is an ``(x, y)`` float pair.
 
-                        The full colour spectrum maps to the region interior;
+                        The full colour spectrum maps to the gradient_region interior;
                         cells outside receive *outside_color*.
-        outside_color:  Hex color for cells outside *region* (default ``"#C0C0C0"``).
+        cell_region: Optional, restricts wich cells receive color. Others get *outside_color*
+        outside_color:  Hex color for cells outside *gradient_region* (default ``"#C0C0C0"``).
 
     Returns:
         DataFrame with columns: x, y, color (hex string).
@@ -544,45 +545,53 @@ def prepare_embedding_color_df(
 
     rx, ry = ref_coords["x"], ref_coords["y"]
 
-    if region is not None:
-        if len(region) == 2:
+    if gradient_region is not None:
+        if len(gradient_region) == 2:
             # 2-corner bounding box: grid strings or (x, y) float tuples
-            if isinstance(region[0], str) or isinstance(region[1], str):
-                c1 = _corner_to_bounds(region[0], reference_data)
-                c2 = _corner_to_bounds(region[1], reference_data)
+            if isinstance(gradient_region[0], str) or isinstance(
+                gradient_region[1], str
+            ):
+                c1 = _corner_to_bounds(gradient_region[0], reference_data)
+                c2 = _corner_to_bounds(gradient_region[1], reference_data)
                 xlo = min(c1[0], c1[1], c2[0], c2[1])
                 xhi = max(c1[0], c1[1], c2[0], c2[1])
                 ylo = min(c1[2], c1[3], c2[2], c2[3])
                 yhi = max(c1[2], c1[3], c2[2], c2[3])
             else:
-                (x0, y0), (x1, y1) = region
+                (x0, y0), (x1, y1) = gradient_region
                 xlo, xhi = min(x0, x1), max(x0, x1)
                 ylo, yhi = min(y0, y1), max(y0, y1)
-            region = (
+            gradient_region = (
                 (xlo, yhi),  # top_left
                 (xhi, yhi),  # top_right
                 (xlo, ylo),  # bottom_left
                 (xhi, ylo),  # bottom_right
             )
+        else:
+            raise ValueError("Invalid gradient_region")
         # 4-corner quad: (top_left, top_right, bottom_left, bottom_right)
         # Bilinear basis: p00=bottom_left(lr=0,bt=0), p10=bottom_right(lr=1,bt=0),
         #                 p01=top_left(lr=0,bt=1),     p11=top_right(lr=1,bt=1)
         # Accept any ordering: sort into tl/tr/bl/br automatically.
         # Top two = highest y; within each pair, left = lower x.
-        pts4 = sorted([np.array(c, dtype=float) for c in region], key=lambda p: -p[1])
+        pts4 = sorted(
+            [np.array(c, dtype=float) for c in gradient_region], key=lambda p: -p[1]
+        )
         top_two = sorted(pts4[:2], key=lambda p: p[0])
         bot_two = sorted(pts4[2:], key=lambda p: p[0])
         tl, tr = top_two[0], top_two[1]
         bl, br = bot_two[0], bot_two[1]
         pts = np.column_stack([rx.values, ry.values])
         lr_arr, bt_arr = _inverse_bilinear(pts, p00=bl, p10=br, p01=tl, p11=tr)
-        in_region = (lr_arr >= 0) & (lr_arr <= 1) & (bt_arr >= 0) & (bt_arr <= 1)
+        in_gradient_region = (
+            (lr_arr >= 0) & (lr_arr <= 1) & (bt_arr >= 0) & (bt_arr <= 1)
+        )
         t = pd.Series(lr_arr, index=rx.index)  # left → right
         s = pd.Series(bt_arr, index=rx.index)  # bottom → top
     else:
         x_min, x_max = rx.min(), rx.max()
         y_min, y_max = ry.min(), ry.max()
-        in_region = None
+        in_gradient_region = None
         t = (rx - x_min) / (x_max - x_min + 1e-12)  # [0,1] left → right
         s = (ry - y_min) / (y_max - y_min + 1e-12)  # [0,1] bottom → top
 
@@ -605,11 +614,46 @@ def prepare_embedding_color_df(
         f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}" for r, g, b in rgb
     ]
 
-    if in_region is not None:
+    if in_gradient_region is not None:
         hex_colors = [
-            hc if flag else outside_color for hc, flag in zip(hex_colors, in_region)
+            hc if flag else outside_color
+            for hc, flag in zip(hex_colors, in_gradient_region)
         ]
+
+    hex_colors = np.array(hex_colors)
+
+    if cell_region is not None:
+        if len(cell_region) == 2:
+            # 2-corner bounding box: grid strings or (x, y) float tuples
+            if isinstance(cell_region[0], str) or isinstance(cell_region[1], str):
+                c1 = _corner_to_bounds(cell_region[0], reference_data)
+                c2 = _corner_to_bounds(cell_region[1], reference_data)
+                xlo = min(c1[0], c1[1], c2[0], c2[1])
+                xhi = max(c1[0], c1[1], c2[0], c2[1])
+                ylo = min(c1[2], c1[3], c2[2], c2[3])
+                yhi = max(c1[2], c1[3], c2[2], c2[3])
+            else:
+                (x0, y0), (x1, y1) = cell_region
+                xlo, xhi = min(x0, x1), max(x0, x1)
+                ylo, yhi = min(y0, y1), max(y0, y1)
+            cell_region = (
+                (xlo, yhi),  # top_left
+                (xhi, yhi),  # top_right
+                (xlo, ylo),  # bottom_left
+                (xhi, ylo),  # bottom_right
+            )
+        else:
+            raise ValueError("Invalid cell_region")
+        # vectorise 2d range check
+        in_cell_region = (
+            (xlo <= rx.values)
+            & (rx.values <= xhi)
+            & (ylo <= ry.values)
+            & (ry.values <= yhi)
+        )
+        hex_colors[~in_cell_region] = outside_color
 
     df = current_coords.copy()
     df["color"] = hex_colors
+
     return df
