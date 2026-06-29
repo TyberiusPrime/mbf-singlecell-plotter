@@ -51,12 +51,13 @@ class _PlotWithPostDraw(p9.ggplot):
       :func:`_patch_composition_post_draw`, which makes ``Compose.draw`` run
       every member plot's hooks once the shared figure has been laid out.
     """
-    _post_draw_fns: list[Any] 
+
+    _post_draw_fns: list[Any]
 
     @override
     def save_helper(self, *args, **kwargs):
         sv = super().save_helper(*args, **kwargs)
-        for fn in self._post_draw_fns:  
+        for fn in self._post_draw_fns:
             fn(sv.figure)
         return sv
 
@@ -65,8 +66,8 @@ def _ensure_post_draw(p: p9.ggplot) -> "_PlotWithPostDraw":
     """Promote *p* to _PlotWithPostDraw (idempotent); initialise _post_draw_fns."""
     if not isinstance(p, _PlotWithPostDraw):
         p.__class__ = _PlotWithPostDraw
-        p._post_draw_fns = [] # ty: ignore
-    return p # ty: ignore
+        p._post_draw_fns = []  # ty: ignore
+    return p  # ty: ignore
 
 
 def _first_panel_axes(fig):
@@ -708,9 +709,20 @@ class ScatterPlotter:
     # ── source ──────────────────────────────────────────────────────────────
 
     def set_source(
-        self, ad_or_data, embedding: str = "umap", alternative_id_column=None
+        self,
+        ad_or_data,
+        embedding: str = "umap",
+        alternative_id_column=None,
+        layer: str = "X",
+        transform: Optional[Callable[["np.ndarray"], "np.ndarray"]] = None,
     ) -> "ScatterPlotter":
-        """Attach data source. Accepts AnnData, EmbeddingData, or a path to an .h5ad file."""
+        """Attach data source. Accepts AnnData, a path to an .h5ad file, or a full EmbeddingData.
+
+        Constructs an EmbeddingData from the anndata/h5ad file,
+        passing in alternative_id_column, layer, and transform if provided.
+
+
+        """
         new = copy.copy(self)
         if isinstance(ad_or_data, EmbeddingData):
             new._data = ad_or_data
@@ -733,6 +745,8 @@ class ScatterPlotter:
                 grid_size=grid_size,
                 grid_letters_on_vertical=glv,
                 alternative_id_column=alternative_id_column,
+                transform=transform,
+                layer=layer,
             )
         new._boundary_cache = {"df": None}
         return new
