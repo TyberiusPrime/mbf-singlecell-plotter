@@ -2348,11 +2348,12 @@ class ScatterPlotter:
         reference_embedding,
         *,
         corner_colors=_EMBEDDING_COLOR_DEFAULTS,
-        region=None,
+        gradient_region=None,
         outside_color: str = "#C0C0C0",
         show_legend: bool = False,
-        show_region: bool = False,
+        show_gradient_region: bool = False,
         dot_size: Optional[float] = None,
+        random_seed: Optional[int] = None,
     ) -> p9.ggplot:
         """Plot cells in the current embedding colored by 2D position in another embedding.
 
@@ -2364,14 +2365,14 @@ class ScatterPlotter:
             reference_embedding: Embedding name (str) or EmbeddingData for color assignment.
             corner_colors:        4-tuple ``(top_left, top_right, bottom_left, bottom_right)``.
                                   Default: red / blue / yellow / green.
-            region:               Optional ``(corner1, corner2)`` restricting which cells
+            gradient_region:               Optional ``(corner1, corner2)`` restricting which cells
                                   receive the gradient.  Each corner is a grid label string
                                   (e.g. ``"A1"``) or an ``(x, y)`` float tuple in reference-
                                   embedding coordinates.  ``corner1`` is the top-left (>=)
                                   and ``corner2`` the bottom-right (<=), matching the
                                   ``focus_on_grid`` convention.  Cells outside the box get
                                   *outside_color*.
-            outside_color:        Color for cells outside *region* (default ``"#C0C0C0"``).
+            outside_color:        Color for cells outside *gradient_region* (default ``"#C0C0C0"``).
             show_legend:          Add a small 2D color legend inset (default False).
             dot_size:             Point size; defaults to the plotter's dot_size.
         """
@@ -2396,9 +2397,11 @@ class ScatterPlotter:
             data,
             ref_data,
             corner_colors=corner_colors,
-            region=region,
+            gradient_region=gradient_region,
             outside_color=outside_color,
         )
+        if random_seed is not None:
+            df = df.sample(frac=1.0, random_state=random_seed)
 
         dot = dot_size if dot_size is not None else self._dot_size
 
@@ -2423,27 +2426,27 @@ class ScatterPlotter:
         p = p + p9.scale_color_identity(guide=None)
 
         # Region outline overlay (in reference-embedding coordinates)
-        if show_region and region is not None:
+        if show_gradient_region and gradient_region is not None:
             from .transforms import _corner_to_bounds
             import numpy as _np
 
-            if len(region) == 2:
-                if isinstance(region[0], str) or isinstance(region[1], str):
-                    c1 = _corner_to_bounds(region[0], ref_data)
-                    c2 = _corner_to_bounds(region[1], ref_data)
+            if len(gradient_region) == 2:
+                if isinstance(gradient_region[0], str) or isinstance(gradient_region[1], str):
+                    c1 = _corner_to_bounds(gradient_region[0], ref_data)
+                    c2 = _corner_to_bounds(gradient_region[1], ref_data)
                     xlo = min(c1[0], c1[1], c2[0], c2[1])
                     xhi = max(c1[0], c1[1], c2[0], c2[1])
                     ylo = min(c1[2], c1[3], c2[2], c2[3])
                     yhi = max(c1[2], c1[3], c2[2], c2[3])
                 else:
-                    (x0, y0), (x1, y1) = region
+                    (x0, y0), (x1, y1) = gradient_region
                     xlo, xhi = min(x0, x1), max(x0, x1)
                     ylo, yhi = min(y0, y1), max(y0, y1)
                 # polygon order: tl → tr → br → bl
                 corners = [(xlo, yhi), (xhi, yhi), (xhi, ylo), (xlo, ylo)]
             else:
                 pts4 = sorted(
-                    [_np.array(c, dtype=float) for c in region], key=lambda p: -p[1]
+                    [_np.array(c, dtype=float) for c in gradient_region], key=lambda p: -p[1]
                 )
                 top_two = sorted(pts4[:2], key=lambda pt: pt[0])
                 bot_two = sorted(pts4[2:], key=lambda pt: pt[0])
@@ -2453,19 +2456,19 @@ class ScatterPlotter:
             # closed polygon + corner markers
             cx = [c[0] for c in corners] + [corners[0][0]]
             cy = [c[1] for c in corners] + [corners[0][1]]
-            region_path_df = pd.DataFrame({"x": cx, "y": cy})
-            region_pts_df = pd.DataFrame(
+            gradient_region_path_df = pd.DataFrame({"x": cx, "y": cy})
+            gradient_region_pts_df = pd.DataFrame(
                 {"x": [c[0] for c in corners], "y": [c[1] for c in corners]}
             )
             p = p + p9.geom_path(
-                data=region_path_df,
+                data=gradient_region_path_df,
                 mapping=p9.aes(x="x", y="y"),
                 color="#000000",
                 size=0.6,
                 inherit_aes=False,
             )
             p = p + p9.geom_point(
-                data=region_pts_df,
+                data=gradient_region_pts_df,
                 mapping=p9.aes(x="x", y="y"),
                 color="#000000",
                 size=1.5,
