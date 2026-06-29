@@ -2213,6 +2213,7 @@ class ScatterPlotter:
         self,
         column: str,
         group_by: Optional[str] = None,
+        additional_columns: Optional[list[str]] = None,
     ) -> p9.ggplot:
         """Build violin plots for a numeric column, optionally grouped by a categorical.
 
@@ -2246,6 +2247,10 @@ class ScatterPlotter:
             )
 
         df = pd.DataFrame({"value": expr})
+        if additional_columns is not None:
+            for column in additional_columns:
+                col_data, _ = data.get_column(column)
+                df[column] = col_data
 
         if group_by is not None:
             grp, grp_name = data.get_column(group_by)
