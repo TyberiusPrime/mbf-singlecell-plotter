@@ -1512,6 +1512,7 @@ class ScatterPlotter:
         quantile: float = 0.99,
         cmap_colors=None,
         include_counts=False,
+        count_text_size=5,
     ) -> p9.ggplot:
         """Build a 2D cell-density heatmap.
 
@@ -1579,12 +1580,6 @@ class ScatterPlotter:
                 name="density",
             )
         )
-        if include_counts:
-            count_df = df[df["density"] > 0]
-            count_df = count_df.assign(
-                text=count_df["density"].round(0).astype(int).astype(str)
-            )
-            p = p + p9.geom_text(p9.aes("x", "y", label="text"), data=count_df)
 
         if has_clips:
             p = p + p9.guides(fill="none")
@@ -1606,6 +1601,15 @@ class ScatterPlotter:
                     size=border_pt,
                     inherit_aes=False,
                 )
+
+        if include_counts:
+            count_df = df[df["density"] > 0]
+            count_df = count_df.assign(
+                text=count_df["density"].round(0).astype(int).astype(str)
+            )
+            p = p + p9.geom_text(
+                p9.aes("x", "y", label="text"), size=count_text_size, data=count_df
+            )
 
         # Focus viewport (mirrors .plot())
         if data.has_focus:
@@ -1801,7 +1805,10 @@ class ScatterPlotter:
         from .transforms import compute_grid_moran, marker_genes_by_region
 
         gene_df = compute_grid_moran(
-            self._data, n_bins=self._data._grid_size, min_cells=min_cells
+            self._data,
+            n_bins=self._data._grid_size,
+            min_cells=min_cells,
+            var_score_column=var_score_column,
         )
         markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
 
