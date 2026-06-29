@@ -792,16 +792,17 @@ class EmbeddingData:
             return None
         col = self._alternative_id_column
         for ad in [self.ad, *(s.ad for s in self._alternative_sources)]:
-            if col in ad.var.columns and gene_name in ad.var.index:
-                series = ad.var[col]
-                if gene_name not in series.index:
-                    continue
-                val = series[gene_name]
-                if isinstance(val, pd.Series):  # duplicate gene symbols
-                    val = val.iloc[0]
-                if val is None or pd.isna(val):
-                    continue
-                return val
+            if col in ad.var.columns:
+                if gene_name in ad.var.index:
+                    series = ad.var[col]
+                    if gene_name not in series.index:
+                        continue
+                    val = series[gene_name]
+                    if isinstance(val, pd.Series):  # duplicate gene symbols
+                        val = val.iloc[0]
+                    if val is None or pd.isna(val):
+                        continue
+                    return val
         return None
 
     def _classify_in(self, ad, name: str) -> Optional[bool]:

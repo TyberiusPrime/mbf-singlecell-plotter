@@ -184,6 +184,11 @@ class _ColProxy:
             )
         return self._cache[key]
 
+    def to_df(self):
+        """Convert into a true pandas Dataframe
+        """
+        return pd.DataFrame({col: self[col] for col in self.columns})
+
 
 class _ObsProxy(_ColProxy):
     """Mimics ``AnnData.obs`` — lazily fetches obs columns via h5ad-inspect."""
@@ -331,10 +336,17 @@ class H5adFacade:
         # the order a real ``AnnData`` exposes as ``var.index``.  (``export
         # var_index`` instead returns the names *sorted*, which would misalign
         # ``X`` and ``var`` against the indices.)
-        if self._var_names is None:
-            self._var_names = pd.Index(
-                _run_lines(self._path, "export", "var", "_index")
-            )
+        try:
+            if self._var_names is None:
+                self._var_names = pd.Index(
+                    _run_lines(self._path, "export", "var_index")
+                )
+        except subprocess.CalledProcessError:
+            var_columns = _run_lines(self._path, "var")
+            if len(var_columns) == 0:
+                self._var_names = pd.Index([])
+            else:
+                raise
         return self._var_names
 
     @property
