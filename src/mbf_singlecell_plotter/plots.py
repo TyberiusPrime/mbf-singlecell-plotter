@@ -1874,7 +1874,7 @@ class ScatterPlotter:
                     out["alternative_id"].append(alternative_ids[gene])
         return pd.DataFrame(out)
 
-    def save_interactive_moran(
+    def save_interactive_moran_grid(
         self,
         column: str,
         output_path,
@@ -1887,12 +1887,16 @@ class ScatterPlotter:
         gene_url: str | Callable[[str, str | None], str] | None = None,
         gene_url_inline: bool = False,
     ) -> None:
-        """Save an interactive HTML scatter plot with marker gene tooltips.
+        """Save an interactive HTML scatter plot with per-bin marker gene tooltips.
 
         Renders the scatter for *column* as a PNG, then overlays an invisible
         grid.  Hovering over a cell highlights it (yellow tint) and shows its
-        top-k marker genes in a panel below.  Clicking locks the selection;
-        clicking the same cell deactivates it; clicking another cell switches.
+        top-k marker genes — ranked by Moran's I spatial autocorrelation — in a
+        panel below.  Clicking locks the selection; clicking the same cell
+        deactivates it; clicking another cell switches.
+
+        For per-*cluster* markers (differential expression against the rest of a
+        categorical column) use :meth:`save_interactive_cluster_markers` instead.
 
         The spatial binning resolution is taken from the plotter's grid size so
         that bins align exactly with the visible grid cells.
@@ -1928,8 +1932,10 @@ class ScatterPlotter:
                               new browser tab (default ``False``).
         """
         if self._data is None:
-            raise RuntimeError("call .set_source() before .save_interactive_moran()")
-        from .interactive import save_interactive_moran as _impl
+            raise RuntimeError(
+                "call .set_source() before .save_interactive_moran_grid()"
+            )
+        from .interactive import save_interactive_moran_grid as _impl
 
         _impl(
             self,
@@ -1939,6 +1945,72 @@ class ScatterPlotter:
             k=k,
             min_moran=min_moran,
             var_score_column=var_score_column,
+            dpi=dpi,
+            debug=debug,
+            gene_url=gene_url,
+            gene_url_inline=gene_url_inline,
+        )
+
+    def save_interactive_cluster_markers(
+        self,
+        column: str,
+        output_path,
+        k: int = 20,
+        min_score: float = 0.0,
+        min_cells_per_group: int = 10,
+        layer: str | None = None,
+        dpi: int = 150,
+        debug: bool = False,
+        gene_url: str | Callable[[str, str | None], str] | None = None,
+        gene_url_inline: bool = False,
+    ) -> None:
+        """Save an interactive HTML view of per-cluster pseudobulk marker genes.
+
+        The scatter is coloured by the categorical *column*.  Each gene is scored
+        per category with a pseudobulk one-vs-rest comparison (mean difference
+        gated by expression; see
+        :func:`~mbf_singlecell_plotter.transforms.compute_cluster_markers`).
+        Hovering a grid cell maps it to the **predominant** category among the
+        cells in that bin and shows that cluster's top-*k* markers with their
+        mean-difference Δ.  Clicking locks/switches the selection.
+
+        Unlike :meth:`save_interactive_moran_grid` (markers per spatial bin via
+        Moran's I), markers here are computed per category of *column*.
+
+        Args:
+            column:              Categorical obs column (cluster labels); also the
+                                 column the scatter is coloured by.
+            output_path:         Destination ``.html`` file path.
+            k:                   Marker genes shown per cluster (default 20).
+            min_score:           Minimum combined score to qualify (default 0.0 →
+                                 keep genes up-regulated versus the rest).
+            min_cells_per_group: Categories with fewer cells are skipped
+                                 (default 10).
+            layer:               Expression layer for marker computation (``None``
+                                 = the source's configured layer; pass a raw /
+                                 log-normalized layer key to score on that).
+            dpi:                 PNG resolution for the scatter image (default 150).
+            gene_url:            URL template with a ``{gene}`` placeholder, or a
+                                 callable ``gene_url(gene_id, alt_gene_id=None)``.
+                                 When ``None`` (default) genes are plain text.
+            gene_url_inline:     If ``True`` the linked resource is displayed
+                                 inline in an ``<img>`` panel rather than a new
+                                 browser tab (default ``False``).
+        """
+        if self._data is None:
+            raise RuntimeError(
+                "call .set_source() before .save_interactive_cluster_markers()"
+            )
+        from .interactive import save_interactive_cluster_markers as _impl
+
+        _impl(
+            self,
+            column,
+            output_path,
+            k=k,
+            min_score=min_score,
+            min_cells_per_group=min_cells_per_group,
+            layer=layer,
             dpi=dpi,
             debug=debug,
             gene_url=gene_url,

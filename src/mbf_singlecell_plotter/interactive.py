@@ -1,4 +1,13 @@
-"""Layer 4: interactive HTML export with Moran's I marker gene tooltips."""
+"""Layer 4: interactive HTML export with marker-gene tooltips.
+
+Two flavours share the same figure/overlay/panel machinery:
+
+* :func:`save_interactive_moran_grid` — marker genes per *spatial grid cell*,
+  ranked by Moran's I spatial autocorrelation (the original view).
+* :func:`save_interactive_cluster_markers` — marker genes per *category* of a
+  categorical column, ranked by a pseudobulk one-vs-rest score; a hovered grid
+  cell is mapped to its predominant category and shows that cluster's markers.
+"""
 
 import base64
 import io
@@ -10,70 +19,20 @@ from pathlib import Path
 import numpy as np
 
 
-def save_interactive_moran(
-    plotter,
-    column: str,
-    output_path,
-    *,
-    min_cells: int = 3,
-    k: int = 20,
-    min_moran: float = 0.2,
-    var_score_column: str | None = None,
-    dpi: int = 150,
-    debug: bool = False,
-    gene_url: str | Callable[[str, str | None], str] | None = None,
-    gene_url_inline: bool = False,
-) -> None:
-    """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
+# ── shared figure / geometry / binning helpers ───────────────────────────────
+def _prepare_figure(plotter, column, dpi):
+    """Render *column* to a base64 PNG and return CSS geometry + data→CSS mappers.
 
-    The HTML file embeds the scatter plot as a PNG and adds an invisible grid
-    overlay.  Hovering over a cell highlights it and shows marker genes in a
-    panel below.  Clicking locks the highlight; clicking the same cell again
-    returns to hover mode; clicking another cell switches the selection.
-
-    The data panel is made square by default (5 × 5 in) unless the plotter
-    already has a fixed panel size set via :meth:`~ScatterPlotter.panel_size`.
-
-    Args:
-        plotter:          Configured :class:`~mbf_singlecell_plotter.ScatterPlotter`.
-        column:           Gene or obs column passed to :meth:`~ScatterPlotter.plot`.
-        output_path:      Destination ``.html`` path (string or Path).
-        min_cells:        Minimum cells per bin (default 3).
-        k:                Marker genes stored per region (default 20).
-        min_moran:        Minimum score threshold to qualify as a marker (default 0.2).
-                          Applied to Moran's I or to *var_score_column* values.
-        var_score_column: Column in ``adata.var`` to use as the gene score instead
-                          of computing Moran's I on the fly.  Pass the column name
-                          (e.g. ``"moranI"`` or ``"highly_variable_rank"``).  The
-                          column must be numeric; higher values = more informative
-                          genes.  When ``None`` (default), Moran's I is computed
-                          from the embedding.
-        dpi:              PNG resolution (default 150).  Display size is always
-                          fixed at 96 dpi CSS pixels regardless of this value.
-        gene_url:         URL template (a ``str`` with a ``{gene}`` placeholder)
-                          **or** a callable ``gene_url(gene_id, alt_gene_id=None)``
-                          returning a URL ``str`` (or ``None`` to skip a gene).
-                          ``gene_id`` is the bare ``var_index`` symbol;
-                          ``alt_gene_id`` is the value from the alternative id
-                          column when one is configured, else ``None``.  The
-                          callable is resolved once per gene at export time, so
-                          it can choose which id to embed (or fall back to
-                          ``gene_id`` when ``alt_gene_id`` is ``None``).  When
-                          ``None`` (default) genes are plain text.
-        gene_url_inline:  If ``True`` the linked resource is displayed in an
-                          ``<img>`` panel below rather than opened in a new
-                          browser tab (default ``False``).
+    Returns ``(img_b64, css_w, css_h, dx, dy, geom)`` where ``dx``/``dy`` map
+    data coordinates to CSS pixels and ``geom`` carries the axes bounding box
+    (used by the debug overlay).  The panel defaults to 5×5in unless the plotter
+    already has a fixed panel size.
     """
-    from .transforms import compute_grid_moran, marker_genes_by_region
     from .plots import _PlotWithPostDraw
     import matplotlib.pyplot as plt
 
-    data = plotter._data
-
-    # ── Apply square panel by default ────────────────────────────────────────
     _pl = plotter if plotter._fixed_panel_size is not None else plotter.panel_size(5, 5)
 
-    # ── Draw ─────────────────────────────────────────────────────────────────
     p = _pl.plot(column)
     fig = p.draw()
 
@@ -114,14 +73,30 @@ def save_interactive_moran(
         frac = (y - ylim[0]) / (ylim[1] - ylim[0])
         return ax_bottom + frac * (ax_top - ax_bottom)
 
-    # ── Save as PNG (base64) ──────────────────────────────────────────────────
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi)
     plt.close(fig)
     img_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
-    # ── Set up grid (bins match EmbeddingData grid cells 1:1) ────────────────
-    from collections import defaultdict, Counter
+    geom = {
+        "ax_left": ax_left,
+        "ax_right": ax_right,
+        "ax_top": ax_top,
+        "ax_bottom": ax_bottom,
+        "xlim": xlim,
+        "ylim": ylim,
+    }
+    return img_b64, css_w, css_h, _dx, _dy, geom
+
+
+def _grid_binning(data):
+    """Bin every cell into the EmbeddingData grid (matching the visible cells).
+
+    Returns a dict of grid geometry plus per-cell ``xi_all``/``yi_all`` bin
+    indices (aligned with ``all_coords.index``) and a ``bin_to_label`` mapper.
+    Uses the same ``searchsorted`` binning as :func:`compute_grid_moran` so the
+    per-bin cell membership is consistent with the marker computation.
+    """
     from .data import _LETTERS
 
     data_full = data.unfocus()
@@ -131,14 +106,11 @@ def save_interactive_moran(
     cell_w = (x_max_d - x_min_d) / gs
     cell_h = (y_max_d - y_min_d) / gs
 
-    # Use the same searchsorted binning as compute_grid_moran so counts are
-    # consistent with which bin each cell actually falls into.
     all_coords = data_full.coordinates()
     x_edges = np.linspace(x_min_d, x_max_d, gs + 1)
     y_edges = np.linspace(y_min_d, y_max_d, gs + 1)
     xi_all = np.clip(np.searchsorted(x_edges[1:-1], all_coords["x"].values), 0, gs - 1)
     yi_all = np.clip(np.searchsorted(y_edges[1:-1], all_coords["y"].values), 0, gs - 1)
-    bin_cell_counts = Counter(zip(xi_all.tolist(), yi_all.tolist()))
 
     def _bin_to_label(xi: int, yi: int) -> str:
         """Convert (xi, yi) bin indices directly to a grid label."""
@@ -147,14 +119,182 @@ def save_interactive_moran(
             return f"{_LETTERS[row_from_top]}{xi + 1}"
         return f"{_LETTERS[xi]}{row_from_top + 1}"
 
-    # ── Compute marker genes ──────────────────────────────────────────────────
+    return {
+        "data_full": data_full,
+        "gs": gs,
+        "glv": glv,
+        "x_min_d": x_min_d,
+        "x_max_d": x_max_d,
+        "y_min_d": y_min_d,
+        "y_max_d": y_max_d,
+        "cell_w": cell_w,
+        "cell_h": cell_h,
+        "all_coords": all_coords,
+        "xi_all": xi_all,
+        "yi_all": yi_all,
+        "bin_to_label": _bin_to_label,
+    }
+
+
+def _cell_geometry(xi: int, yi: int, b: dict, _dx, _dy) -> dict:
+    """Return the CSS-pixel ``{x, y, w, h}`` rect for grid bin ``(xi, yi)``."""
+    gs = b["gs"]
+    row_from_top = gs - 1 - yi
+    x0_d = b["x_min_d"] + xi * b["cell_w"]
+    x1_d = x0_d + b["cell_w"]
+    y1_d = b["y_max_d"] - row_from_top * b["cell_h"]  # top edge in data coords
+    y0_d = y1_d - b["cell_h"]  # bottom edge
+    svg_x = _dx(x0_d)
+    svg_y = _dy(y1_d)
+    return {
+        "x": round(svg_x, 1),
+        "y": round(svg_y, 1),
+        "w": round(_dx(x1_d) - svg_x, 1),
+        "h": round(_dy(y0_d) - svg_y, 1),
+    }
+
+
+def _build_debug_svg(geom: dict, b: dict, _dx, _dy) -> str:
+    """Build the debug overlay: axes bbox + corner coords + all grid outlines."""
+    ax_left = geom["ax_left"]
+    ax_right = geom["ax_right"]
+    ax_top = geom["ax_top"]
+    ax_bottom = geom["ax_bottom"]
+    xlim = geom["xlim"]
+    ylim = geom["ylim"]
+    gs = b["gs"]
+    x_min_d = b["x_min_d"]
+    y_max_d = b["y_max_d"]
+    cell_w = b["cell_w"]
+    cell_h = b["cell_h"]
+
+    # 1. Red dashed rect: computed axes bounding box
+    debug_svg = (
+        f"<!-- axes bbox -->"
+        f'<rect x="{ax_left:.1f}" y="{ax_top:.1f}"'
+        f' width="{ax_right - ax_left:.1f}" height="{ax_bottom - ax_top:.1f}"'
+        f' fill="none" stroke="red" stroke-width="2"'
+        f' stroke-dasharray="6 3" pointer-events="none"/>'
+    )
+    # Corner labels: data coords at the four corners of the axes
+    corners = [
+        (ax_left, ax_top, f"{xlim[0]:.2f},{ylim[1]:.2f}", "start", "hanging"),
+        (ax_right, ax_top, f"{xlim[1]:.2f},{ylim[1]:.2f}", "end", "hanging"),
+        (ax_left, ax_bottom, f"{xlim[0]:.2f},{ylim[0]:.2f}", "start", "auto"),
+        (ax_right, ax_bottom, f"{xlim[1]:.2f},{ylim[0]:.2f}", "end", "auto"),
+    ]
+    for cx2, cy2, lbl, anchor, baseline in corners:
+        debug_svg += (
+            f'<text x="{cx2:.1f}" y="{cy2:.1f}" font-size="9"'
+            f' fill="red" text-anchor="{anchor}"'
+            f' dominant-baseline="{baseline}"'
+            f' pointer-events="none">{lbl}</text>'
+        )
+
+    # 2. Blue outlines for ALL EmbeddingData grid cells — these should align
+    #    exactly with the visible grid lines in the scatter plot.
+    for col_idx in range(gs):
+        for row_from_top in range(gs):
+            x0_d = x_min_d + col_idx * cell_w
+            x1_d = x0_d + cell_w
+            y1_d = y_max_d - row_from_top * cell_h
+            y0_d = y1_d - cell_h
+            rx = _dx(x0_d)
+            ry = _dy(y1_d)
+            rw = _dx(x1_d) - rx
+            rh = _dy(y0_d) - ry
+            debug_svg += (
+                f'<rect x="{rx:.1f}" y="{ry:.1f}"'
+                f' width="{rw:.1f}" height="{rh:.1f}"'
+                f' fill="none" stroke="rgba(0,80,220,.35)"'
+                f' stroke-width="0.6" pointer-events="none"/>'
+            )
+    return debug_svg
+
+
+def _resolve_gene_url(gene_url, data):
+    """Normalise the ``gene_url`` argument into a per-gene resolver.
+
+    Returns ``(gene_url_template, has_gene_urls, resolve)`` where ``resolve(g)``
+    yields a precomputed URL for callables (invoked once per gene with the bare
+    ``var_index`` and the alternative id) or ``None`` for string templates
+    (substituted client-side) / when no URL strategy was given.
+    """
+    _cb = gene_url if callable(gene_url) else None
+    gene_url_template = gene_url if isinstance(gene_url, str) else ""
+    has_gene_urls = gene_url is not None
+
+    def _resolve(g: str):
+        if _cb is not None:
+            return _cb(g, data.alternative_id_for(g))  # ty: ignore
+        return None
+
+    return gene_url_template, has_gene_urls, _resolve
+
+
+# ── grid view: markers per spatial bin (Moran's I) ───────────────────────────
+def save_interactive_moran_grid(
+    plotter,
+    column: str,
+    output_path,
+    *,
+    min_cells: int = 3,
+    k: int = 20,
+    min_moran: float = 0.2,
+    var_score_column: str | None = None,
+    dpi: int = 150,
+    debug: bool = False,
+    gene_url: str | Callable[[str, str | None], str] | None = None,
+    gene_url_inline: bool = False,
+) -> None:
+    """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
+
+    The HTML file embeds the scatter plot as a PNG and adds an invisible grid
+    overlay.  Hovering over a cell highlights it and shows the marker genes of
+    that spatial bin (ranked by Moran's I) in a panel below.  Clicking locks the
+    highlight; clicking the same cell again returns to hover mode; clicking
+    another cell switches the selection.
+
+    Args:
+        plotter:          Configured :class:`~mbf_singlecell_plotter.ScatterPlotter`.
+        column:           Gene or obs column passed to :meth:`~ScatterPlotter.plot`.
+        output_path:      Destination ``.html`` path (string or Path).
+        min_cells:        Minimum cells per bin (default 3).
+        k:                Marker genes stored per region (default 20).
+        min_moran:        Minimum score threshold to qualify as a marker (default 0.2).
+                          Applied to Moran's I or to *var_score_column* values.
+        var_score_column: Column in ``adata.var`` to use as the gene score instead
+                          of computing Moran's I on the fly.  Must be numeric;
+                          higher values = more informative genes.  When ``None``
+                          (default), Moran's I is computed from the embedding.
+        dpi:              PNG resolution (default 150).  Display size is always
+                          fixed at 96 dpi CSS pixels regardless of this value.
+        gene_url:         URL template (a ``str`` with a ``{gene}`` placeholder)
+                          **or** a callable ``gene_url(gene_id, alt_gene_id=None)``
+                          returning a URL ``str`` (or ``None`` to skip a gene).
+                          When ``None`` (default) genes are plain text.
+        gene_url_inline:  If ``True`` the linked resource is displayed in an
+                          ``<img>`` panel below rather than opened in a new
+                          browser tab (default ``False``).
+    """
+    from .transforms import compute_grid_moran, marker_genes_by_region
+    from collections import defaultdict, Counter
+
+    data = plotter._data
+
+    img_b64, css_w, css_h, _dx, _dy, geom = _prepare_figure(plotter, column, dpi)
+    b = _grid_binning(data)
+    gs = b["gs"]
+
+    bin_cell_counts = Counter(zip(b["xi_all"].tolist(), b["yi_all"].tolist()))
+
+    # ── Compute marker genes per bin ──────────────────────────────────────────
     gene_df = compute_grid_moran(
         data, n_bins=gs, min_cells=min_cells, var_score_column=var_score_column
     )
     markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
     gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
 
-    # ── Map bin (xi, yi) → gene list (index arithmetic, no coordinate lookup) ─
     grid_cell_genes = defaultdict(list)  # (xi,yi) → [(gene, score)]
     for (xi, yi), genes in markers.items():
         for g in genes:
@@ -162,45 +302,17 @@ def save_interactive_moran(
                 (g, float(gene_moran.get(g, 0.0)))
             )
 
-    # ── Resolve gene→URL strategy ─────────────────────────────────────────────
-    # `gene_url` may be a "{gene}" template (substituted client-side) or a
-    # callable `gene_url(gene_id, alt_gene_id=None)`.  The callable is invoked
-    # once per gene here, receiving the bare var_index and — when an
-    # alternative id column is configured — the alternative id, so callers can
-    # build database-specific URLs and pick which id to embed.
-    _cb = gene_url if callable(gene_url) else None
-    gene_url_template = gene_url if isinstance(gene_url, str) else ""
-    has_gene_urls = gene_url is not None
-
-    def _gene_url(g: str):
-        if _cb is not None:
-            return _cb(g, data.alternative_id_for(g)) # ty: ignore
-        return None
+    gene_url_template, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
 
     # ── Build overlay cells for ALL occupied bins ─────────────────────────────
     cells = []
     for (xi, yi), n_cells in sorted(bin_cell_counts.items()):
-        label = _bin_to_label(xi, yi)
-        row_from_top = gs - 1 - yi
-
-        # Data-space bounds of this grid cell
-        x0_d = x_min_d + xi * cell_w
-        x1_d = x0_d + cell_w
-        y1_d = y_max_d - row_from_top * cell_h  # top edge in data coords
-        y0_d = y1_d - cell_h  # bottom edge
-
-        # Genes (may be empty if none pass the threshold)
         gene_list = grid_cell_genes.get((xi, yi), [])
         seen = set()
         deduped = []
         for gene, mi in sorted(gene_list, key=lambda t: -t[1]):
             if gene not in seen:
                 seen.add(gene)
-                # `gene` is the bare var_index (symbol); `_display_name`
-                # expands it to "alt_id (symbol)" when an alternative id
-                # column is configured.  `url` is precomputed here when a
-                # callable gene_url was given (string templates are resolved
-                # client-side); the bare symbol drives external links.
                 deduped.append(
                     {
                         "name": plotter._display_name(data, gene),
@@ -211,67 +323,17 @@ def save_interactive_moran(
                 )
         deduped = deduped[:k]
 
-        svg_x = _dx(x0_d)
-        svg_y = _dy(y1_d)
-        svg_rect_w = _dx(x1_d) - svg_x
-        svg_rect_h = _dy(y0_d) - svg_y
-
-        cells.append(
+        cell = _cell_geometry(xi, yi, b, _dx, _dy)
+        cell.update(
             {
-                "label": label,
-                "x": round(svg_x, 1),
-                "y": round(svg_y, 1),
-                "w": round(svg_rect_w, 1),
-                "h": round(svg_rect_h, 1),
+                "label": b["bin_to_label"](xi, yi),
                 "genes": deduped,
                 "n_cells": n_cells,
             }
         )
+        cells.append(cell)
 
-    # ── Debug overlay elements ────────────────────────────────────────────────
-    debug_svg = ""
-    if debug:
-        # 1. Red dashed rect: computed axes bounding box
-        debug_svg += (
-            f"<!-- axes bbox -->"
-            f'<rect x="{ax_left:.1f}" y="{ax_top:.1f}"'
-            f' width="{ax_right - ax_left:.1f}" height="{ax_bottom - ax_top:.1f}"'
-            f' fill="none" stroke="red" stroke-width="2"'
-            f' stroke-dasharray="6 3" pointer-events="none"/>'
-        )
-        # Corner labels: data coords at the four corners of the axes
-        corners = [
-            (ax_left, ax_top, f"{xlim[0]:.2f},{ylim[1]:.2f}", "start", "hanging"),
-            (ax_right, ax_top, f"{xlim[1]:.2f},{ylim[1]:.2f}", "end", "hanging"),
-            (ax_left, ax_bottom, f"{xlim[0]:.2f},{ylim[0]:.2f}", "start", "auto"),
-            (ax_right, ax_bottom, f"{xlim[1]:.2f},{ylim[0]:.2f}", "end", "auto"),
-        ]
-        for cx2, cy2, lbl, anchor, baseline in corners:
-            debug_svg += (
-                f'<text x="{cx2:.1f}" y="{cy2:.1f}" font-size="9"'
-                f' fill="red" text-anchor="{anchor}"'
-                f' dominant-baseline="{baseline}"'
-                f' pointer-events="none">{lbl}</text>'
-            )
-
-        # 2. Blue outlines for ALL EmbeddingData grid cells — these should
-        #    align exactly with the visible grid lines in the scatter plot.
-        for col_idx in range(gs):
-            for row_from_top in range(gs):
-                x0_d = x_min_d + col_idx * cell_w
-                x1_d = x0_d + cell_w
-                y1_d = y_max_d - row_from_top * cell_h
-                y0_d = y1_d - cell_h
-                rx = _dx(x0_d)
-                ry = _dy(y1_d)
-                rw = _dx(x1_d) - rx
-                rh = _dy(y0_d) - ry
-                debug_svg += (
-                    f'<rect x="{rx:.1f}" y="{ry:.1f}"'
-                    f' width="{rw:.1f}" height="{rh:.1f}"'
-                    f' fill="none" stroke="rgba(0,80,220,.35)"'
-                    f' stroke-width="0.6" pointer-events="none"/>'
-                )
+    debug_svg = _build_debug_svg(geom, b, _dx, _dy) if debug else ""
 
     html = _build_html(
         img_b64,
@@ -283,6 +345,124 @@ def save_interactive_moran(
         gene_url_template=gene_url_template,
         has_gene_urls=has_gene_urls,
         gene_url_inline=gene_url_inline,
+        score_label="I",
+    )
+    Path(output_path).write_text(html, encoding="utf-8")
+
+
+# ── cluster view: markers per category (pseudobulk one-vs-rest) ───────────────
+def save_interactive_cluster_markers(
+    plotter,
+    column: str,
+    output_path,
+    *,
+    k: int = 20,
+    min_score: float = 0.0,
+    min_cells_per_group: int = 10,
+    layer: str | None = None,
+    dpi: int = 150,
+    debug: bool = False,
+    gene_url: str | Callable[[str, str | None], str] | None = None,
+    gene_url_inline: bool = False,
+) -> None:
+    """Save an interactive HTML view of per-cluster pseudobulk marker genes.
+
+    The scatter is coloured by the categorical ``column``.  Each gene is scored
+    per category via a pseudobulk one-vs-rest comparison (see
+    :func:`~mbf_singlecell_plotter.transforms.compute_cluster_markers`).  Hovering
+    a grid cell maps it to the *predominant* category among the cells in that bin
+    and shows that cluster's top-*k* markers (with their mean-difference Δ).
+    Clicking locks/switches the selection just like the grid view.
+
+    Args:
+        plotter:             Configured :class:`~mbf_singlecell_plotter.ScatterPlotter`.
+        column:              Categorical obs column (cluster labels) — also the
+                             column the scatter is coloured by.
+        output_path:         Destination ``.html`` path (string or Path).
+        k:                   Marker genes shown per cluster (default 20).
+        min_score:           Minimum combined score to qualify as a marker
+                             (default 0.0 → keep genes up-regulated vs the rest).
+        min_cells_per_group: Categories with fewer cells are skipped (default 10).
+        layer:               Expression layer for marker computation (``None`` =
+                             the source's configured layer; pass e.g. a raw /
+                             log-normalized layer key to score on that instead).
+        dpi:                 PNG resolution (default 150).
+        gene_url:            URL template with a ``{gene}`` placeholder, or a
+                             callable ``gene_url(gene_id, alt_gene_id=None)``.
+                             When ``None`` (default) genes are plain text.
+        gene_url_inline:     If ``True`` the linked resource is shown inline in an
+                             ``<img>`` panel rather than a new tab (default False).
+    """
+    from .transforms import compute_cluster_markers, marker_genes_by_category
+    from collections import Counter
+    import pandas as pd
+
+    data = plotter._data
+
+    img_b64, css_w, css_h, _dx, _dy, geom = _prepare_figure(plotter, column, dpi)
+    b = _grid_binning(data)
+
+    bin_cell_counts = Counter(zip(b["xi_all"].tolist(), b["yi_all"].tolist()))
+
+    # ── Predominant (majority) category per occupied bin ──────────────────────
+    cat_series = b["data_full"].get_column(column).series.reindex(b["all_coords"].index)
+    bin_df = pd.DataFrame(
+        {"xi": b["xi_all"], "yi": b["yi_all"], "cat": cat_series.values}
+    )
+    bin_df = bin_df[pd.notna(bin_df["cat"])]
+    predominant: dict[tuple[int, int], Any] = {}
+    for (xi, yi), grp in bin_df.groupby(["xi", "yi"], observed=True):
+        predominant[(int(xi), int(yi))] = grp["cat"].value_counts().idxmax()
+
+    # ── Marker genes per category ─────────────────────────────────────────────
+    marker_df = compute_cluster_markers(
+        data, column, layer=layer, min_cells_per_group=min_cells_per_group
+    )
+    markers = marker_genes_by_category(marker_df, k=k, min_score=min_score)
+
+    gene_url_template, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
+
+    # ── Build overlay cells for ALL occupied bins ─────────────────────────────
+    cells = []
+    for (xi, yi), n_cells in sorted(bin_cell_counts.items()):
+        cat = predominant.get((xi, yi))
+        recs = markers.get(cat, []) if cat is not None else []
+        genes = []
+        for r in recs[:k]:
+            g = r["gene"]
+            genes.append(
+                {
+                    "name": plotter._display_name(data, g),
+                    "gene": g,
+                    "url": _gene_url(g),
+                    "mi": round(float(r["delta"]), 3),
+                }
+            )
+
+        cell = _cell_geometry(xi, yi, b, _dx, _dy)
+        cell.update(
+            {
+                "label": b["bin_to_label"](xi, yi),
+                "genes": genes,
+                "n_cells": n_cells,
+                "sub": f"cluster {cat}" if cat is not None else "",
+            }
+        )
+        cells.append(cell)
+
+    debug_svg = _build_debug_svg(geom, b, _dx, _dy) if debug else ""
+
+    html = _build_html(
+        img_b64,
+        css_w,
+        css_h,
+        cells,
+        column,
+        debug_svg,
+        gene_url_template=gene_url_template,
+        has_gene_urls=has_gene_urls,
+        gene_url_inline=gene_url_inline,
+        score_label="Δ",
     )
     Path(output_path).write_text(html, encoding="utf-8")
 
@@ -298,10 +478,12 @@ def _build_html(
     gene_url_template: str = "",
     has_gene_urls: bool = False,
     gene_url_inline: bool = False,
+    score_label: str = "I",
 ) -> str:
     cells_json = json.dumps(cells, separators=(",", ":"))
     gene_url_js = json.dumps(gene_url_template)
     gene_url_inline_js = "true" if (has_gene_urls and gene_url_inline) else "false"
+    score_label_js = json.dumps(score_label)
 
     rect_tags = []
     for i, c in enumerate(cells):
@@ -322,7 +504,7 @@ def _build_html(
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Marker genes \u2014 {column}</title>
+<title>Marker genes — {column}</title>
 <style>
 *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{
@@ -478,6 +660,7 @@ h1 {{
   const CELLS = {cells_json};
   const GENE_URL = {gene_url_js};
   const GENE_URL_INLINE = {gene_url_inline_js};
+  const SCORE_LABEL = {score_label_js};
   const panel = document.getElementById('panel');
   const imgWrap = document.getElementById('img-wrap');
   const imgEl  = document.getElementById('img-el');
@@ -500,14 +683,15 @@ h1 {{
     const n = c.genes.length;
     const nc = c.n_cells || 0;
     const cellPart = nc > 0
-      ? `${{nc.toLocaleString()}}\u202fcell${{nc === 1 ? '' : 's'}}`
+      ? `${{nc.toLocaleString()}} cell${{nc === 1 ? '' : 's'}}`
       : '';
+    const subPart = c.sub ? ` · ${{c.sub}}` : '';
     const genePart = n > 0
-      ? `${{n}}\u202fmarker gene${{n === 1 ? '' : 's'}}`
+      ? `${{n}} marker gene${{n === 1 ? '' : 's'}}`
       : 'no marker genes above threshold';
-    const sep = cellPart && n > 0 ? ' \u00b7 ' : '';
+    const sep = cellPart && n > 0 ? ' · ' : '';
     const copyBtns = n > 0
-      ? `<button class="copy-btn" data-copy="newline">Copy \u21b5</button>` +
+      ? `<button class="copy-btn" data-copy="newline">Copy ↵</button>` +
         `<button class="copy-btn" data-copy="comma">Copy ,</button>`
       : '';
     const body = n > 0
@@ -516,12 +700,12 @@ h1 {{
           const cls = url ? 'chip link' : 'chip';
           const da = url ? ` data-gene="${{g.gene}}" data-url="${{url}}"` : '';
           return `<span class="${{cls}}"${{da}}><span>${{g.name}}</span>` +
-                 `<span class="mi">I\u202f=\u202f${{g.mi.toFixed(3)}}</span></span>`;
+                 `<span class="mi">${{SCORE_LABEL}} = ${{g.mi.toFixed(3)}}</span></span>`;
         }}).join('')}}</div>`
       : '';
     panel.innerHTML =
       `<div class="hdr-row">` +
-        `<span class="hdr">Region ${{c.label}} \u2014 ${{cellPart}}${{sep}}${{genePart}}</span>` +
+        `<span class="hdr">Region ${{c.label}} — ${{cellPart}}${{subPart}}${{sep}}${{genePart}}</span>` +
         copyBtns +
       `</div>${{body}}`;
     panel.querySelectorAll('.copy-btn').forEach(btn => {{

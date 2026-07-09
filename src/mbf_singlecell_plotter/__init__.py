@@ -9,6 +9,8 @@ from .transforms import (
     prepare_embedding_color_df,
     compute_grid_moran,
     marker_genes_by_region,
+    compute_cluster_markers,
+    marker_genes_by_category,
 )
 from .plots import ScatterPlotter, BorderConfig, GridConfig, DoNotUpdate
 from .colorbar import sc_guide_colorbar
@@ -33,6 +35,8 @@ __all__ = [
     "prepare_embedding_color_df",
     "compute_grid_moran",
     "marker_genes_by_region",
+    "compute_cluster_markers",
+    "marker_genes_by_category",
     # theme / colors
     "DEFAULT_COLORS_BORDERS",
     "DEFAULT_COLORS_CATEGORIES",

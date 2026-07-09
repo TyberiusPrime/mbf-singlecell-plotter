@@ -2000,3 +2000,124 @@ class TestThemeIndependence:
         sp2 = sp.theme(panel_border=p9.element_blank())
         assert sp is not sp2
         assert sp._theme_overwrites is not sp2._theme_overwrites
+
+
+# ---------------------------------------------------------------------------
+# compute_cluster_markers / marker_genes_by_category (pseudobulk markers)
+# ---------------------------------------------------------------------------
+
+
+class TestClusterMarkers:
+    def test_columns_and_shape(self, data, ad):
+        from mbf_singlecell_plotter import compute_cluster_markers
+
+        df = compute_cluster_markers(data, CAT_COL)
+        assert list(df.columns) == [
+            "category",
+            "gene",
+            "delta",
+            "mean_expr",
+            "score",
+        ]
+        # one row per (kept category × gene)
+        n_cats = df["category"].nunique()
+        assert len(df) == n_cats * ad.n_vars
+
+    def test_score_is_gated_and_finite(self, data):
+        from mbf_singlecell_plotter import compute_cluster_markers
+
+        # Example data is z-scored (negatives) — the score must stay finite and
+        # non-negative (no log of raw values).
+        df = compute_cluster_markers(data, CAT_COL)
+        assert np.isfinite(df["score"]).all()
+        assert (df["score"] >= 0).all()
+        # genes down-regulated vs the rest get a zero score
+        down = df[df["delta"] < 0]
+        assert (down["score"] == 0).all()
+
+    def test_numeric_column_raises(self, data):
+        from mbf_singlecell_plotter import compute_cluster_markers
+
+        with pytest.raises(ValueError, match="numeric"):
+            compute_cluster_markers(data, NUMERIC_COL)
+
+    def test_layer_option_routes_to_layer(self, data):
+        from mbf_singlecell_plotter import compute_cluster_markers
+
+        # layer="X" is the default matrix → identical result to layer=None
+        base = compute_cluster_markers(data, CAT_COL)
+        via_x = compute_cluster_markers(data, CAT_COL, layer="X")
+        pd.testing.assert_frame_equal(base, via_x)
+        # a non-existent layer surfaces an error rather than silently passing
+        with pytest.raises((KeyError, ValueError)):
+            compute_cluster_markers(data, CAT_COL, layer="does_not_exist")
+
+    def test_min_cells_per_group_drops_small_categories(self, data):
+        from mbf_singlecell_plotter import compute_cluster_markers
+
+        full = compute_cluster_markers(data, CAT_COL, min_cells_per_group=1)
+        # a very high threshold drops rare clusters
+        strict = compute_cluster_markers(data, CAT_COL, min_cells_per_group=200)
+        assert strict["category"].nunique() <= full["category"].nunique()
+
+    def test_too_few_categories_raises(self, data):
+        from mbf_singlecell_plotter import compute_cluster_markers
+
+        with pytest.raises(ValueError, match="at least 2 categories"):
+            compute_cluster_markers(data, CAT_COL, min_cells_per_group=10**9)
+
+    def test_markers_by_category_top_k_and_order(self, data):
+        from mbf_singlecell_plotter import (
+            compute_cluster_markers,
+            marker_genes_by_category,
+        )
+
+        df = compute_cluster_markers(data, CAT_COL)
+        markers = marker_genes_by_category(df, k=5)
+        assert markers  # at least one category has markers
+        for cat, recs in markers.items():
+            assert len(recs) <= 5
+            scores = [r["score"] for r in recs]
+            assert scores == sorted(scores, reverse=True)
+            assert all(r["score"] > 0 for r in recs)
+            assert set(recs[0]) == {"gene", "delta", "score"}
+
+
+# ---------------------------------------------------------------------------
+# Interactive HTML exports
+# ---------------------------------------------------------------------------
+
+
+class TestInteractiveMarkers:
+    def _cells(self, html):
+        import re
+        import json
+
+        m = re.search(r"const CELLS = (\[.*?\]);", html)
+        return json.loads(m.group(1))
+
+    def test_writes_html_with_cluster_markers(self, plotter_no_boundary, tmp_path):
+        out = tmp_path / "markers.html"
+        plotter_no_boundary.save_interactive_cluster_markers(CAT_COL, out)
+        html = out.read_text()
+        assert "\\u0394" in html  # marker score label Δ (json-escaped)
+        cells = self._cells(html)
+        assert cells
+        # every occupied bin carries an n_cells count; predominant bins name a cluster
+        assert all("n_cells" in c for c in cells)
+        assert any(c.get("sub", "").startswith("cluster ") for c in cells)
+        assert any(c["genes"] for c in cells)
+
+    def test_grid_view_still_works(self, plotter_no_boundary, tmp_path):
+        out = tmp_path / "grid.html"
+        plotter_no_boundary.save_interactive_moran_grid(
+            CAT_COL, out, min_cells=3, min_moran=0.05
+        )
+        html = out.read_text()
+        # grid view keeps the Moran's I score label
+        assert "SCORE_LABEL = \"I\"" in html
+        assert self._cells(html)
+
+    def test_requires_source(self):
+        with pytest.raises(RuntimeError, match="set_source"):
+            ScatterPlotter().save_interactive_cluster_markers("leiden", "x.html")

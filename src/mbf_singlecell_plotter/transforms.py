@@ -413,6 +413,147 @@ def marker_genes_by_region(
     return result
 
 
+def compute_cluster_markers(
+    data,
+    column: str,
+    *,
+    layer: str | None = None,
+    min_cells_per_group: int = 10,
+) -> pd.DataFrame:
+    """Rank marker genes per category of a categorical column via pseudobulk.
+
+    Each category (cluster) of *column* is aggregated into a **pseudobulk mean**
+    expression vector over its cells (the same ``X[rows].mean(axis=0)`` primitive
+    used by :func:`compute_grid_moran`).  Every gene then gets, per category:
+
+    * ``delta``     — ``mean_in_cluster - mean_in_rest``, where the baseline is
+                      the **category-weighted** mean of the *other* categories'
+                      pseudobulk means (so a few large clusters cannot dominate
+                      the baseline).  On log-normalized expression this is a log
+                      fold-change; on scaled/z-scored data it is a z-score
+                      difference (effect size).  Robust to negative values.
+    * ``mean_expr`` — the category's pseudobulk mean expression.
+    * ``score``     — ``max(delta, 0) * log1p(max(mean_expr, 0))``: the effect
+                      gated by expression level so lowly-expressed (or, on scaled
+                      data, sub-average) genes cannot top the ranking.
+
+    Args:
+        data:                :class:`~mbf_singlecell_plotter.data.EmbeddingData`.
+        column:              Categorical (or bool) obs column with cluster labels.
+        layer:               Expression layer to aggregate.  ``None`` (default)
+                             uses the source's configured layer; pass a layer key
+                             (or ``"X"``) to compute markers on raw / log-normalized
+                             counts instead of, e.g., a scaled matrix.
+        min_cells_per_group: Categories with fewer cells are skipped (default 10).
+
+    Returns:
+        Long-form DataFrame with columns
+        ``category, gene, delta, mean_expr, score`` (one row per category × gene).
+
+    Raises:
+        ValueError: if *column* is numeric (not categorical), or fewer than two
+            categories clear *min_cells_per_group*.
+    """
+    col_data, _col_name = data.get_column(column)
+
+    is_cat = isinstance(col_data.dtype, pd.CategoricalDtype)
+    is_bool = pd.api.types.is_bool_dtype(col_data)
+    if not (is_cat or is_bool) and pd.api.types.is_numeric_dtype(col_data):
+        raise ValueError(
+            f"Column '{column}' contains numeric data. "
+            "Cluster markers require a categorical column."
+        )
+    if is_bool:
+        # Coerce bool → str so True/False become plain category labels
+        # (mirrors ScatterPlotter.plot / grid_local_histogram).
+        col_data = col_data.astype(str)
+
+    ad = data.ad
+    # Bulk-load X once as CSR (row-major) so per-category row slicing is cheap.
+    # A layer override reads that layer instead of the configured one.
+    expr_data = data if layer is None else data._replace(layer=layer)
+    X = expr_data.get_X_csr()  # (n_cells, n_genes) sparse CSR
+
+    # col_data may be a filtered subset; map its obs_names back to positional
+    # rows in the full X matrix so means are taken over the right cells.
+    cats = col_data.dropna()
+    ci = ad.obs_names.get_indexer(cats.index)
+    valid = ci >= 0
+    cell_df = pd.DataFrame({"cat": np.asarray(cats.values)[valid], "ci": ci[valid]})
+
+    means, labels, counts = [], [], []
+    for cat, grp in cell_df.groupby("cat", observed=True):
+        if len(grp) < min_cells_per_group:
+            continue
+        block = X[grp["ci"].values]
+        means.append(np.asarray(block.mean(axis=0)).ravel())
+        labels.append(cat)
+        counts.append(len(grp))
+
+    if len(labels) < 2:
+        raise ValueError(
+            f"Need at least 2 categories with >= {min_cells_per_group} cells "
+            f"in '{column}', found {len(labels)}. Reduce min_cells_per_group."
+        )
+
+    mean_by_cat = np.vstack(means)  # (C, G)
+    n_cats, n_genes = mean_by_cat.shape
+
+    # Category-weighted "rest": mean of the *other* categories' pseudobulk means.
+    total = mean_by_cat.sum(axis=0)  # (G,)
+    mean_rest = (total[None, :] - mean_by_cat) / (n_cats - 1)  # (C, G)
+
+    # Difference of means — a log fold-change on log-normalized data, a z-score
+    # delta on scaled data.  Robust to negatives (no log of the raw values).
+    delta = mean_by_cat - mean_rest
+    # Gate by (non-negative) expression so lowly-expressed noise can't top the list.
+    score = np.maximum(delta, 0.0) * np.log1p(np.clip(mean_by_cat, 0.0, None))
+
+    gene_names = np.asarray(ad.var_names)
+    return pd.DataFrame(
+        {
+            "category": np.repeat(np.asarray(labels, dtype=object), n_genes),
+            "gene": np.tile(gene_names, n_cats),
+            "delta": delta.ravel(),
+            "mean_expr": mean_by_cat.ravel(),
+            "score": score.ravel(),
+        }
+    )
+
+
+def marker_genes_by_category(
+    marker_df: pd.DataFrame,
+    k: int = 20,
+    min_score: float = 0.0,
+) -> dict:
+    """Group genes by category and return the top-*k* markers per category.
+
+    Args:
+        marker_df: Output of :func:`compute_cluster_markers`.
+        k:         Maximum number of marker genes per category.
+        min_score: Minimum combined score threshold (genes with ``score`` at or
+                   below this are excluded; default 0.0 keeps genes up-regulated
+                   versus the rest).
+
+    Returns:
+        Dict mapping category label → list of ``{"gene", "delta", "score"}``
+        dicts, in descending ``score`` order (up to *k* entries).
+    """
+    filtered = marker_df[marker_df["score"] > min_score]
+    result = {}
+    for cat, grp in filtered.groupby("category", observed=True):
+        top = grp.nlargest(k, "score")
+        result[cat] = [
+            {
+                "gene": row.gene,
+                "delta": float(row.delta),
+                "score": float(row.score),
+            }
+            for row in top.itertuples(index=False)
+        ]
+    return result
+
+
 def _corner_to_bounds(corner, ref_data):
     """Return ``(xl, xr, yb, yt)`` for a region corner in reference embedding space.
 
