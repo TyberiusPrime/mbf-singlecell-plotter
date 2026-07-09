@@ -151,6 +151,25 @@ Lookup order:
 are reindexed onto the primary `obs_names`. The plotter is immutable —
 `add_derived_source` returns a new copy.
 
+-
+
+### Filters
+
+You can pass in a function taking the data layer, returning a boolean `pandas.Series`
+to filter the data being shown. 
+
+```python
+
+plotter = plotter.set_filter(lambda data: data.get_column('mouse')[0] == 'ID123')
+```
+
+This by default does not apply to the border layer, which uses the full 
+dataset nevertheless. Enable border filtering with 
+
+``` python
+plotter = plotter.with_borders(respect_filter=True)
+```
+
 ---
 
 ### Visual style
@@ -650,6 +669,9 @@ from mbf_singlecell_plotter import ColumnData  # NamedTuple
 col.series   # pd.Series — values indexed by obs_names
 col.name     # str — the resolved display name
 ```
+
+
+--
 
 ---
 

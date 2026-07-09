@@ -1927,6 +1927,24 @@ class TestFilterPlotter:
         p = plotter_no_boundary.plot("leiden")
         assert len(p.data) == ad.n_obs
 
+    def test_border_ignores_filter_by_default(self, plotter, ad):
+        keep = ad.obs["leiden"] == "0"
+        full_bdf = plotter._get_boundary_df()
+        filtered_pt = plotter.set_filter(lambda d, m=keep.values: m)
+        filtered_bdf = filtered_pt._get_boundary_df()
+        pd.testing.assert_frame_equal(
+            full_bdf.reset_index(drop=True), filtered_bdf.reset_index(drop=True)
+        )
+
+    def test_border_respects_filter_when_enabled(self, plotter, ad):
+        keep = ad.obs["leiden"] == "0"
+        full_bdf = plotter._get_boundary_df()
+        filtered_pt = plotter.set_filter(
+            lambda d, m=keep.values: m
+        ).with_borders(cell_type_column="leiden", respect_filter=True)
+        filtered_bdf = filtered_pt._get_boundary_df()
+        assert len(filtered_bdf) != len(full_bdf)
+
 
 # ---------------------------------------------------------------------------
 # alternative_id_column: duplicate resolution

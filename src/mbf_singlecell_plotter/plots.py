@@ -591,6 +591,7 @@ class BorderConfig:
     legend_dot_size: float = 4
     legend_dot_alpha: float = 1
     legend_title: Optional[str] = None  # None → use the cell_type column name
+    respect_filter: bool = False  # False → borders computed from unfiltered cells
 
 
 @dataclass(frozen=True)
@@ -1017,6 +1018,7 @@ class ScatterPlotter:
         legend_dot_size: float = 4,
         legend_dot_alpha: float = 1,
         legend_title: Optional[str] = None,
+        respect_filter: bool = False,
     ) -> "ScatterPlotter":
         new = copy.copy(self)
         resolved_colors = (
@@ -1032,6 +1034,7 @@ class ScatterPlotter:
             legend_dot_size=legend_dot_size,
             legend_dot_alpha=legend_dot_alpha,
             legend_title=legend_title,
+            respect_filter=respect_filter,
         )
         if cell_type_column is not None:
             new._cell_type_column = cell_type_column
@@ -1043,6 +1046,7 @@ class ScatterPlotter:
             or old.blur != blur
             or old.threshold != threshold
             or old.colors != resolved_colors
+            or old.respect_filter != respect_filter
             or cell_type_column != self._cell_type_column
         ):
             new._boundary_cache = {"df": None}
@@ -2640,8 +2644,9 @@ class ScatterPlotter:
             from .transforms import compute_boundaries
 
             bc = self._border_config
+            boundary_data = self._data if bc.respect_filter else self._data.unfilter()
             self._boundary_cache["df"] = compute_boundaries(
-                data=self._data,
+                data=boundary_data,
                 cell_type_column=self._cell_type_column,
                 colors=list(bc.colors),
                 resolution=bc.resolution,
@@ -2660,7 +2665,9 @@ class ScatterPlotter:
 
     def _border_cat_to_color(self) -> dict:
         """Return ordered {category: hex_color} mapping for the border palette."""
-        cell_types, _ = self._data.get_column(self._cell_type_column)
+        bc = self._border_config
+        data = self._data if bc.respect_filter else self._data.unfilter()
+        cell_types, _ = data.get_column(self._cell_type_column)
         cats = (
             list(cell_types.cat.categories)
             if hasattr(cell_types, "cat")
