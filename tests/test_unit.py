@@ -2103,10 +2103,30 @@ class TestInteractiveMarkers:
         assert "\\u0394" in html  # marker score label Δ (json-escaped)
         cells = self._cells(html)
         assert cells
-        # every occupied bin carries an n_cells count; predominant bins name a cluster
-        assert all("n_cells" in c for c in cells)
-        assert any(c.get("sub", "").startswith("cluster ") for c in cells)
-        assert any(c["genes"] for c in cells)
+        # every occupied bin lists the categories it contains, largest first
+        assert all("n_cells" in c and "clusters" in c for c in cells)
+        for c in cells:
+            counts = [cl["n"] for cl in c["clusters"]]
+            assert counts == sorted(counts, reverse=True)
+            assert all(cl["name"].startswith("cluster ") for cl in c["clusters"])
+        # at least one bin is shared by >1 cluster, and markers are attached
+        assert any(len(c["clusters"]) > 1 for c in cells)
+        assert any(cl["genes"] for c in cells for cl in c["clusters"])
+
+    def test_min_cluster_cells_filters_small_clusters(
+        self, plotter_no_boundary, tmp_path
+    ):
+        out_lax = tmp_path / "lax.html"
+        out_strict = tmp_path / "strict.html"
+        plotter_no_boundary.save_interactive_cluster_markers(
+            CAT_COL, out_lax, min_cluster_cells=1
+        )
+        plotter_no_boundary.save_interactive_cluster_markers(
+            CAT_COL, out_strict, min_cluster_cells=10
+        )
+        lax = sum(len(c["clusters"]) for c in self._cells(out_lax.read_text()))
+        strict = sum(len(c["clusters"]) for c in self._cells(out_strict.read_text()))
+        assert strict < lax
 
     def test_grid_view_still_works(self, plotter_no_boundary, tmp_path):
         out = tmp_path / "grid.html"

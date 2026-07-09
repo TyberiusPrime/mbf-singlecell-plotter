@@ -359,6 +359,7 @@ def save_interactive_cluster_markers(
     k: int = 20,
     min_score: float = 0.0,
     min_cells_per_group: int = 10,
+    min_cluster_cells: int = 1,
     layer: str | None = None,
     dpi: int = 150,
     debug: bool = False,
@@ -370,9 +371,10 @@ def save_interactive_cluster_markers(
     The scatter is coloured by the categorical ``column``.  Each gene is scored
     per category via a pseudobulk one-vs-rest comparison (see
     :func:`~mbf_singlecell_plotter.transforms.compute_cluster_markers`).  Hovering
-    a grid cell maps it to the *predominant* category among the cells in that bin
-    and shows that cluster's top-*k* markers (with their mean-difference Δ).
-    Clicking locks/switches the selection just like the grid view.
+    a grid cell lists **every** category present in that bin as its own section
+    (largest first), each with that cluster's top-*k* markers and their
+    mean-difference Δ — so a small cluster sharing a bin with a large one stays
+    reachable.  Clicking locks/switches the selection just like the grid view.
 
     Args:
         plotter:             Configured :class:`~mbf_singlecell_plotter.ScatterPlotter`.
@@ -383,6 +385,10 @@ def save_interactive_cluster_markers(
         min_score:           Minimum combined score to qualify as a marker
                              (default 0.0 → keep genes up-regulated vs the rest).
         min_cells_per_group: Categories with fewer cells are skipped (default 10).
+        min_cluster_cells:   A category must have at least this many cells *within
+                             a bin* to be listed for that bin (default 1 → list
+                             every category present; raise to hide stray cells
+                             that bleed across bin borders).
         layer:               Expression layer for marker computation (``None`` =
                              the source's configured layer; pass e.g. a raw /
                              log-normalized layer key to score on that instead).
@@ -404,15 +410,18 @@ def save_interactive_cluster_markers(
 
     bin_cell_counts = Counter(zip(b["xi_all"].tolist(), b["yi_all"].tolist()))
 
-    # ── Predominant (majority) category per occupied bin ──────────────────────
+    # ── Categories present per occupied bin (largest first) ───────────────────
     cat_series = b["data_full"].get_column(column).series.reindex(b["all_coords"].index)
     bin_df = pd.DataFrame(
         {"xi": b["xi_all"], "yi": b["yi_all"], "cat": cat_series.values}
     )
     bin_df = bin_df[pd.notna(bin_df["cat"])]
-    predominant: dict[tuple[int, int], Any] = {}
+    bin_categories: dict[tuple[int, int], list[tuple[Any, int]]] = {}
     for (xi, yi), grp in bin_df.groupby(["xi", "yi"], observed=True):
-        predominant[(int(xi), int(yi))] = grp["cat"].value_counts().idxmax()
+        vc = grp["cat"].value_counts()  # descending by count
+        bin_categories[(int(xi), int(yi))] = [
+            (cat, int(n)) for cat, n in vc.items() if n >= min_cluster_cells
+        ]
 
     # ── Marker genes per category ─────────────────────────────────────────────
     marker_df = compute_cluster_markers(
@@ -422,30 +431,37 @@ def save_interactive_cluster_markers(
 
     gene_url_template, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
 
+    # Build each category's gene chips once (identical across every bin it hits).
+    cat_genes: dict[Any, list[dict]] = {}
+    for cat, recs in markers.items():
+        cat_genes[cat] = [
+            {
+                "name": plotter._display_name(data, r["gene"]),
+                "gene": r["gene"],
+                "url": _gene_url(r["gene"]),
+                "mi": round(float(r["delta"]), 3),
+            }
+            for r in recs[:k]
+        ]
+
     # ── Build overlay cells for ALL occupied bins ─────────────────────────────
     cells = []
     for (xi, yi), n_cells in sorted(bin_cell_counts.items()):
-        cat = predominant.get((xi, yi))
-        recs = markers.get(cat, []) if cat is not None else []
-        genes = []
-        for r in recs[:k]:
-            g = r["gene"]
-            genes.append(
-                {
-                    "name": plotter._display_name(data, g),
-                    "gene": g,
-                    "url": _gene_url(g),
-                    "mi": round(float(r["delta"]), 3),
-                }
-            )
+        clusters = [
+            {
+                "name": f"cluster {cat}",
+                "n": n,
+                "genes": cat_genes.get(cat, []),
+            }
+            for cat, n in bin_categories.get((xi, yi), [])
+        ]
 
         cell = _cell_geometry(xi, yi, b, _dx, _dy)
         cell.update(
             {
                 "label": b["bin_to_label"](xi, yi),
-                "genes": genes,
+                "clusters": clusters,
                 "n_cells": n_cells,
-                "sub": f"cluster {cat}" if cat is not None else "",
             }
         )
         cells.append(cell)
@@ -601,6 +617,17 @@ h1 {{
 }}
 .copy-btn:hover {{ background: #dde6ff; }}
 .copy-btn.ok {{ background: #d4f0d4; border-color: #7bc47b; color: #1a6e1a; }}
+#panel .cluster {{
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #eee;
+}}
+#panel .cluster:first-of-type {{ margin-top: 6px; }}
+#panel .chdr {{
+  font-weight: 600;
+  color: #444;
+  font-size: 12px;
+}}
 #panel .chips {{
   display: flex;
   flex-wrap: wrap;
@@ -678,39 +705,78 @@ h1 {{
     setTimeout(() => {{ btn.textContent = orig; btn.classList.remove('ok'); }}, 1200);
   }}
 
+  function chipsHtml(genes) {{
+    return `<div class="chips">${{genes.map(g => {{
+        const url = geneUrl(g.gene, g.url);
+        const cls = url ? 'chip link' : 'chip';
+        const da = url ? ` data-gene="${{g.gene}}" data-url="${{url}}"` : '';
+        return `<span class="${{cls}}"${{da}}><span>${{g.name}}</span>` +
+               `<span class="mi">${{SCORE_LABEL}} = ${{g.mi.toFixed(3)}}</span></span>`;
+      }}).join('')}}</div>`;
+  }}
+
+  function copyBtnsHtml(scope) {{
+    return `<button class="copy-btn" data-scope="${{scope}}" data-copy="newline">Copy ↵</button>` +
+           `<button class="copy-btn" data-scope="${{scope}}" data-copy="comma">Copy ,</button>`;
+  }}
+
+  function genesLabel(n) {{
+    return n > 0
+      ? `${{n}} marker gene${{n === 1 ? '' : 's'}}`
+      : 'no marker genes above threshold';
+  }}
+
   function renderGenes(idx) {{
     const c = CELLS[idx];
-    const n = c.genes.length;
     const nc = c.n_cells || 0;
     const cellPart = nc > 0
-      ? `${{nc.toLocaleString()}} cell${{nc === 1 ? '' : 's'}}`
+      ? `${{nc.toLocaleString()}} cell${{nc === 1 ? '' : 's'}}`
       : '';
-    const subPart = c.sub ? ` · ${{c.sub}}` : '';
-    const genePart = n > 0
-      ? `${{n}} marker gene${{n === 1 ? '' : 's'}}`
-      : 'no marker genes above threshold';
-    const sep = cellPart && n > 0 ? ' · ' : '';
-    const copyBtns = n > 0
-      ? `<button class="copy-btn" data-copy="newline">Copy ↵</button>` +
-        `<button class="copy-btn" data-copy="comma">Copy ,</button>`
-      : '';
-    const body = n > 0
-      ? `<div class="chips">${{c.genes.map(g => {{
-          const url = geneUrl(g.gene, g.url);
-          const cls = url ? 'chip link' : 'chip';
-          const da = url ? ` data-gene="${{g.gene}}" data-url="${{url}}"` : '';
-          return `<span class="${{cls}}"${{da}}><span>${{g.name}}</span>` +
-                 `<span class="mi">${{SCORE_LABEL}} = ${{g.mi.toFixed(3)}}</span></span>`;
-        }}).join('')}}</div>`
-      : '';
-    panel.innerHTML =
-      `<div class="hdr-row">` +
-        `<span class="hdr">Region ${{c.label}} — ${{cellPart}}${{subPart}}${{sep}}${{genePart}}</span>` +
-        copyBtns +
-      `</div>${{body}}`;
+
+    // Resolve the gene list a copy button refers to (whole cell, or one cluster).
+    const genesForScope = (scope) =>
+      scope === 'all' ? c.genes : c.clusters[+scope].genes;
+
+    if (c.clusters) {{
+      // multi-cluster view: one section per category present in the bin
+      const cl = c.clusters;
+      const clPart = `${{cl.length}} cluster${{cl.length === 1 ? '' : 's'}}`;
+      const sep = cellPart ? ' · ' : '';
+      let html =
+        `<div class="hdr-row">` +
+          `<span class="hdr">Region ${{c.label}} — ${{cellPart}}${{sep}}${{clPart}}</span>` +
+        `</div>`;
+      if (cl.length === 0) {{
+        html += `<span class="ph">no clusters in this region</span>`;
+      }}
+      cl.forEach((g, ci) => {{
+        const n = g.genes.length;
+        html +=
+          `<div class="cluster">` +
+            `<div class="hdr-row">` +
+              `<span class="chdr">${{g.name}} — ` +
+                `${{g.n.toLocaleString()}} cell${{g.n === 1 ? '' : 's'}} · ${{genesLabel(n)}}</span>` +
+              (n > 0 ? copyBtnsHtml(ci) : '') +
+            `</div>` +
+            (n > 0 ? chipsHtml(g.genes) : '') +
+          `</div>`;
+      }});
+      panel.innerHTML = html;
+    }} else {{
+      // flat view (grid / Moran): a single gene list for the whole cell
+      const n = c.genes.length;
+      const sep = cellPart && n > 0 ? ' · ' : '';
+      panel.innerHTML =
+        `<div class="hdr-row">` +
+          `<span class="hdr">Region ${{c.label}} — ${{cellPart}}${{sep}}${{genesLabel(n)}}</span>` +
+          (n > 0 ? copyBtnsHtml('all') : '') +
+        `</div>` +
+        (n > 0 ? chipsHtml(c.genes) : '');
+    }}
+
     panel.querySelectorAll('.copy-btn').forEach(btn => {{
       btn.addEventListener('click', () => {{
-        const names = c.genes.map(g => g.name);
+        const names = genesForScope(btn.dataset.scope).map(g => g.name);
         const text = btn.dataset.copy === 'newline' ? names.join('\\n') : names.join(', ');
         navigator.clipboard.writeText(text).then(() => flashBtn(btn));
       }});

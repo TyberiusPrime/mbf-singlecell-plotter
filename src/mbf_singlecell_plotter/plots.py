@@ -1958,6 +1958,7 @@ class ScatterPlotter:
         k: int = 20,
         min_score: float = 0.0,
         min_cells_per_group: int = 10,
+        min_cluster_cells: int = 1,
         layer: str | None = None,
         dpi: int = 150,
         debug: bool = False,
@@ -1970,9 +1971,10 @@ class ScatterPlotter:
         per category with a pseudobulk one-vs-rest comparison (mean difference
         gated by expression; see
         :func:`~mbf_singlecell_plotter.transforms.compute_cluster_markers`).
-        Hovering a grid cell maps it to the **predominant** category among the
-        cells in that bin and shows that cluster's top-*k* markers with their
-        mean-difference Δ.  Clicking locks/switches the selection.
+        Hovering a grid cell lists **every** category present in that bin as its
+        own section (largest first), each with that cluster's top-*k* markers and
+        their mean-difference Δ — so a small cluster sharing a bin with a large
+        one stays reachable.  Clicking locks/switches the selection.
 
         Unlike :meth:`save_interactive_moran_grid` (markers per spatial bin via
         Moran's I), markers here are computed per category of *column*.
@@ -1986,6 +1988,10 @@ class ScatterPlotter:
                                  keep genes up-regulated versus the rest).
             min_cells_per_group: Categories with fewer cells are skipped
                                  (default 10).
+            min_cluster_cells:   A category must have at least this many cells
+                                 *within a bin* to be listed for it (default 1 →
+                                 list every category present; raise to hide stray
+                                 cells that bleed across bin borders).
             layer:               Expression layer for marker computation (``None``
                                  = the source's configured layer; pass a raw /
                                  log-normalized layer key to score on that).
@@ -2010,6 +2016,7 @@ class ScatterPlotter:
             k=k,
             min_score=min_score,
             min_cells_per_group=min_cells_per_group,
+            min_cluster_cells=min_cluster_cells,
             layer=layer,
             dpi=dpi,
             debug=debug,
