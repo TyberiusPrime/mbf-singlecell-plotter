@@ -1970,6 +1970,7 @@ class ScatterPlotter:
         debug: bool = False,
         gene_url: str | Callable[[str, str | None], str] | None = None,
         gene_url_inline: bool = False,
+        save_tsv: bool = False,
     ) -> None:
         """Save an interactive HTML scatter plot with per-bin marker gene tooltips.
 
@@ -2014,6 +2015,11 @@ class ScatterPlotter:
             gene_url_inline:  If ``True`` the linked resource is displayed in
                               an ``<img>`` panel below rather than opened in a
                               new browser tab (default ``False``).
+            save_tsv:         If ``True`` also write a tidy ``.tsv`` of the marker
+                              genes next to the HTML (same path with a ``.tsv``
+                              suffix), one row per (grid cell, gene) with columns
+                              ``grid_cell, gene, name, moran_i, rank`` (default
+                              ``False``).
         """
         if self._data is None:
             raise RuntimeError(
@@ -2033,6 +2039,7 @@ class ScatterPlotter:
             debug=debug,
             gene_url=gene_url,
             gene_url_inline=gene_url_inline,
+            save_tsv=save_tsv,
         )
 
     def save_interactive_cluster_markers(
@@ -2048,6 +2055,7 @@ class ScatterPlotter:
         debug: bool = False,
         gene_url: str | Callable[[str, str | None], str] | None = None,
         gene_url_inline: bool = False,
+        save_tsv: bool = False,
     ) -> None:
         """Save an interactive HTML view of per-cluster pseudobulk marker genes.
 
@@ -2086,6 +2094,11 @@ class ScatterPlotter:
             gene_url_inline:     If ``True`` the linked resource is displayed
                                  inline in an ``<img>`` panel rather than a new
                                  browser tab (default ``False``).
+            save_tsv:            If ``True`` also write a tidy ``.tsv`` of the
+                                 marker genes next to the HTML (same path with a
+                                 ``.tsv`` suffix), one row per (cluster, gene)
+                                 with columns ``cluster, gene, name, delta, rank``
+                                 (default ``False``).
         """
         if self._data is None:
             raise RuntimeError(
@@ -2106,6 +2119,7 @@ class ScatterPlotter:
             debug=debug,
             gene_url=gene_url,
             gene_url_inline=gene_url_inline,
+            save_tsv=save_tsv,
         )
 
     def plot_grid_histogram(

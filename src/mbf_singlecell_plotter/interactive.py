@@ -246,6 +246,7 @@ def save_interactive_moran_grid(
     debug: bool = False,
     gene_url: str | Callable[[str, str | None], str] | None = None,
     gene_url_inline: bool = False,
+    save_tsv: bool = False,
 ) -> None:
     """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
 
@@ -276,6 +277,11 @@ def save_interactive_moran_grid(
         gene_url_inline:  If ``True`` the linked resource is displayed in an
                           ``<img>`` panel below rather than opened in a new
                           browser tab (default ``False``).
+        save_tsv:         If ``True`` also write a tidy ``.tsv`` of the marker
+                          genes next to the HTML (same path with a ``.tsv``
+                          suffix), one row per (grid cell, gene) with columns
+                          ``grid_cell, gene, name, moran_i, rank`` (default
+                          ``False``).
     """
     from .transforms import compute_grid_moran, marker_genes_by_region
     from collections import defaultdict, Counter
@@ -349,6 +355,33 @@ def save_interactive_moran_grid(
     )
     Path(output_path).write_text(html, encoding="utf-8")
 
+    if save_tsv:
+        rows = [
+            {
+                "grid_cell": cell["label"],
+                "gene": g["gene"],
+                "name": g["name"],
+                "moran_i": g["mi"],
+                "rank": rank,
+            }
+            for cell in cells
+            for rank, g in enumerate(cell["genes"], start=1)
+        ]
+        _write_marker_tsv(
+            rows, output_path, ["grid_cell", "gene", "name", "moran_i", "rank"]
+        )
+
+
+def _write_marker_tsv(rows: list[dict], output_path, columns: list[str]) -> None:
+    """Write marker *rows* as a tab-separated file next to *output_path*.
+
+    The destination is *output_path* with its suffix replaced by ``.tsv``.
+    """
+    import pandas as pd
+
+    tsv_path = Path(output_path).with_suffix(".tsv")
+    pd.DataFrame(rows, columns=columns).to_csv(tsv_path, sep="\t", index=False)
+
 
 # ── cluster view: markers per category (pseudobulk one-vs-rest) ───────────────
 def save_interactive_cluster_markers(
@@ -365,6 +398,7 @@ def save_interactive_cluster_markers(
     debug: bool = False,
     gene_url: str | Callable[[str, str | None], str] | None = None,
     gene_url_inline: bool = False,
+    save_tsv: bool = False,
 ) -> None:
     """Save an interactive HTML view of per-cluster pseudobulk marker genes.
 
@@ -398,6 +432,11 @@ def save_interactive_cluster_markers(
                              When ``None`` (default) genes are plain text.
         gene_url_inline:     If ``True`` the linked resource is shown inline in an
                              ``<img>`` panel rather than a new tab (default False).
+        save_tsv:            If ``True`` also write a tidy ``.tsv`` of the marker
+                             genes next to the HTML (same path with a ``.tsv``
+                             suffix), one row per (cluster, gene) with columns
+                             ``cluster, gene, name, delta, rank`` (default
+                             ``False``).
     """
     from .transforms import compute_cluster_markers, marker_genes_by_category
     from collections import Counter
@@ -481,6 +520,22 @@ def save_interactive_cluster_markers(
         score_label="Δ",
     )
     Path(output_path).write_text(html, encoding="utf-8")
+
+    if save_tsv:
+        rows = [
+            {
+                "cluster": cat,
+                "gene": g["gene"],
+                "name": g["name"],
+                "delta": g["mi"],
+                "rank": rank,
+            }
+            for cat, genes in cat_genes.items()
+            for rank, g in enumerate(genes, start=1)
+        ]
+        _write_marker_tsv(
+            rows, output_path, ["cluster", "gene", "name", "delta", "rank"]
+        )
 
 
 def _build_html(

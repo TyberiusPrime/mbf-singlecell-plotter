@@ -2164,6 +2164,36 @@ class TestInteractiveMarkers:
         strict = sum(len(c["clusters"]) for c in self._cells(out_strict.read_text()))
         assert strict < lax
 
+    def test_save_tsv_cluster_markers(self, plotter_no_boundary, tmp_path):
+        out = tmp_path / "markers.html"
+        plotter_no_boundary.save_interactive_cluster_markers(
+            CAT_COL, out, k=5, save_tsv=True
+        )
+        tsv = out.with_suffix(".tsv")
+        assert tsv.exists()
+        df = pd.read_csv(tsv, sep="\t")
+        assert list(df.columns) == ["cluster", "gene", "name", "delta", "rank"]
+        assert len(df)
+        for _cat, grp in df.groupby("cluster"):
+            assert len(grp) <= 5
+            assert list(grp["rank"]) == list(range(1, len(grp) + 1))
+
+    def test_save_tsv_defaults_off(self, plotter_no_boundary, tmp_path):
+        out = tmp_path / "markers.html"
+        plotter_no_boundary.save_interactive_cluster_markers(CAT_COL, out)
+        assert not out.with_suffix(".tsv").exists()
+
+    def test_save_tsv_moran_grid(self, plotter_no_boundary, tmp_path):
+        out = tmp_path / "grid.html"
+        plotter_no_boundary.save_interactive_moran_grid(
+            CAT_COL, out, min_cells=3, min_moran=0.05, save_tsv=True
+        )
+        tsv = out.with_suffix(".tsv")
+        assert tsv.exists()
+        df = pd.read_csv(tsv, sep="\t")
+        assert list(df.columns) == ["grid_cell", "gene", "name", "moran_i", "rank"]
+        assert len(df)
+
     def test_grid_view_still_works(self, plotter_no_boundary, tmp_path):
         out = tmp_path / "grid.html"
         plotter_no_boundary.save_interactive_moran_grid(
