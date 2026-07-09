@@ -2374,7 +2374,10 @@ class ScatterPlotter:
                                   ``focus_on_grid`` convention.  Cells outside the box get
                                   *outside_color*.
             cell_region: Optional ``(corner1, corner2)``, restricting which cells get colored.
-                                  Cells outside get *outside_color*.
+                                  Cells outside get *outside_color*. Also accepts a list of such
+                                  regions (``[(corner1, corner2), ...]``) to highlight several
+                                  disjoint regions at once — a cell is colored if it falls inside
+                                  *any* of them.
             outside_color:        Color for cells outside *gradient_region* (default ``"#C0C0C0"``).
             show_legend:          Add a small 2D color legend inset (default False).
             dot_size:             Point size; defaults to the plotter's dot_size.
@@ -2406,6 +2409,13 @@ class ScatterPlotter:
         )
         if random_seed is not None:
             df = df.sample(frac=1.0, random_state=random_seed)
+
+        # Draw highlighted cells above the gray outside_color background,
+        # regardless of row/shuffle order (stable sort preserves relative
+        # order within each group).
+        if (df["color"] == outside_color).any():
+            order = np.argsort(df["color"].values == outside_color, kind="stable")
+            df = df.iloc[order]
 
         dot = dot_size if dot_size is not None else self._dot_size
 

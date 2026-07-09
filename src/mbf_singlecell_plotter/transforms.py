@@ -438,6 +438,59 @@ def _corner_to_bounds(corner, ref_data):
         return (x, x, y, y)
 
 
+def _region_to_bbox(region, reference_data):
+    """Resolve a 2-corner region ``(corner1, corner2)`` into ``(xlo, xhi, ylo, yhi)``.
+
+    Each corner is either a grid-label string (e.g. ``"A1"``) or an ``(x, y)``
+    float pair. Shared by ``gradient_region`` and ``cell_region`` handling.
+    """
+    corner1, corner2 = region
+    if isinstance(corner1, str) or isinstance(corner2, str):
+        b1 = _corner_to_bounds(corner1, reference_data)
+        b2 = _corner_to_bounds(corner2, reference_data)
+        xlo = min(b1[0], b1[1], b2[0], b2[1])
+        xhi = max(b1[0], b1[1], b2[0], b2[1])
+        ylo = min(b1[2], b1[3], b2[2], b2[3])
+        yhi = max(b1[2], b1[3], b2[2], b2[3])
+    else:
+        (x0, y0), (x1, y1) = corner1, corner2
+        xlo, xhi = min(x0, x1), max(x0, x1)
+        ylo, yhi = min(y0, y1), max(y0, y1)
+    return xlo, xhi, ylo, yhi
+
+
+def _bbox_membership(rx, ry, bbox):
+    """Boolean membership mask for points ``(rx, ry)`` in axis-aligned ``bbox``."""
+    xlo, xhi, ylo, yhi = bbox
+    return (xlo <= rx.values) & (rx.values <= xhi) & (ylo <= ry.values) & (ry.values <= yhi)
+
+
+def _is_region_corner(c):
+    """True if *c* is a single region corner (grid label or (x, y) pair), not a region itself."""
+    if isinstance(c, str):
+        return True
+    return (
+        isinstance(c, (tuple, list))
+        and len(c) == 2
+        and all(isinstance(v, (int, float, np.integer, np.floating)) for v in c)
+    )
+
+
+def _normalize_regions(region_or_regions):
+    """Normalize a single ``(corner1, corner2)`` region or a list of such regions.
+
+    Returns a list of 2-corner regions, so callers can always iterate and OR
+    together the resulting membership masks.
+    """
+    if (
+        len(region_or_regions) == 2
+        and _is_region_corner(region_or_regions[0])
+        and _is_region_corner(region_or_regions[1])
+    ):
+        return [region_or_regions]
+    return list(region_or_regions)
+
+
 def _cross2d(a, b):
     """2D cross product ax*by - ay*bx. Broadcasts over leading batch dims."""
     return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
@@ -532,8 +585,15 @@ def prepare_embedding_color_df(
 
                         The full colour spectrum maps to the gradient_region interior;
                         cells outside receive *outside_color*.
-        cell_region: Optional, restricts wich cells receive color. Others get *outside_color*
-        outside_color:  Hex color for cells outside *gradient_region* (default ``"#C0C0C0"``).
+        cell_region: Optional, restricts which cells receive color. Others get
+                        *outside_color*. A single region is a 2-tuple
+                        ``(corner1, corner2)`` (grid-label strings or ``(x, y)``
+                        float pairs), same as the 2-corner form of
+                        *gradient_region*. Also accepts a list of such regions
+                        (``[(corner1, corner2), ...]``) to highlight several
+                        disjoint regions at once — a cell is colored if it falls
+                        inside *any* of them.
+        outside_color:  Hex color for cells outside *gradient_region*/*cell_region* (default ``"#C0C0C0"``).
 
     Returns:
         DataFrame with columns: x, y, color (hex string).
@@ -548,26 +608,14 @@ def prepare_embedding_color_df(
     if gradient_region is not None:
         if len(gradient_region) == 2:
             # 2-corner bounding box: grid strings or (x, y) float tuples
-            if isinstance(gradient_region[0], str) or isinstance(
-                gradient_region[1], str
-            ):
-                c1 = _corner_to_bounds(gradient_region[0], reference_data)
-                c2 = _corner_to_bounds(gradient_region[1], reference_data)
-                xlo = min(c1[0], c1[1], c2[0], c2[1])
-                xhi = max(c1[0], c1[1], c2[0], c2[1])
-                ylo = min(c1[2], c1[3], c2[2], c2[3])
-                yhi = max(c1[2], c1[3], c2[2], c2[3])
-            else:
-                (x0, y0), (x1, y1) = gradient_region
-                xlo, xhi = min(x0, x1), max(x0, x1)
-                ylo, yhi = min(y0, y1), max(y0, y1)
+            xlo, xhi, ylo, yhi = _region_to_bbox(gradient_region, reference_data)
             gradient_region = (
                 (xlo, yhi),  # top_left
                 (xhi, yhi),  # top_right
                 (xlo, ylo),  # bottom_left
                 (xhi, ylo),  # bottom_right
             )
-        else:
+        elif len(gradient_region) != 4:
             raise ValueError("Invalid gradient_region")
         # 4-corner quad: (top_left, top_right, bottom_left, bottom_right)
         # Bilinear basis: p00=bottom_left(lr=0,bt=0), p10=bottom_right(lr=1,bt=0),
@@ -623,34 +671,12 @@ def prepare_embedding_color_df(
     hex_colors = np.array(hex_colors)
 
     if cell_region is not None:
-        if len(cell_region) == 2:
-            # 2-corner bounding box: grid strings or (x, y) float tuples
-            if isinstance(cell_region[0], str) or isinstance(cell_region[1], str):
-                c1 = _corner_to_bounds(cell_region[0], reference_data)
-                c2 = _corner_to_bounds(cell_region[1], reference_data)
-                xlo = min(c1[0], c1[1], c2[0], c2[1])
-                xhi = max(c1[0], c1[1], c2[0], c2[1])
-                ylo = min(c1[2], c1[3], c2[2], c2[3])
-                yhi = max(c1[2], c1[3], c2[2], c2[3])
-            else:
-                (x0, y0), (x1, y1) = cell_region
-                xlo, xhi = min(x0, x1), max(x0, x1)
-                ylo, yhi = min(y0, y1), max(y0, y1)
-            cell_region = (
-                (xlo, yhi),  # top_left
-                (xhi, yhi),  # top_right
-                (xlo, ylo),  # bottom_left
-                (xhi, ylo),  # bottom_right
-            )
-        else:
-            raise ValueError("Invalid cell_region")
-        # vectorise 2d range check
-        in_cell_region = (
-            (xlo <= rx.values)
-            & (rx.values <= xhi)
-            & (ylo <= ry.values)
-            & (ry.values <= yhi)
-        )
+        regions = _normalize_regions(cell_region)
+        in_cell_region = np.zeros(len(rx), dtype=bool)
+        for region in regions:
+            if len(region) != 2:
+                raise ValueError("Invalid cell_region")
+            in_cell_region |= _bbox_membership(rx, ry, _region_to_bbox(region, reference_data))
         hex_colors[~in_cell_region] = outside_color
 
     df = current_coords.copy()

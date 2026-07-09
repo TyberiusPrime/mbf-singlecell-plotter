@@ -811,7 +811,7 @@ class TestPlotEmbeddingColor:
     def test_region_grid(self, plotter_no_boundary, assert_image):
         """Grid-label region: only cells in A1–I12 of PCA space get the gradient."""
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
-            "pca", region=("A1", "I12")
+            "pca", gradient_region=("A1", "I12")
         )
         assert_image(p)
 
@@ -825,7 +825,7 @@ class TestPlotEmbeddingColor:
         hw_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.25)
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
-            region=((cx - hw_x, cy + hw_y), (cx + hw_x, cy - hw_y)),
+            gradient_region=((cx - hw_x, cy + hw_y), (cx + hw_x, cy - hw_y)),
         )
         assert_image(p)
 
@@ -839,7 +839,7 @@ class TestPlotEmbeddingColor:
         hw_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.25)
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
-            region=(
+            gradient_region=(
                 (cx - hw_x, cy + hw_y),  # top_left
                 (cx + hw_x, cy + hw_y),  # top_right
                 (cx - hw_x, cy - hw_y),  # bottom_left
@@ -858,7 +858,7 @@ class TestPlotEmbeddingColor:
         rng_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.3)
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
-            region=(
+            gradient_region=(
                 (cx - rng_x * 0.3, cy + rng_y),  # top_left
                 (cx + rng_x, cy + rng_y * 0.4),  # top_right
                 (cx - rng_x, cy - rng_y * 0.4),  # bottom_left
@@ -868,7 +868,7 @@ class TestPlotEmbeddingColor:
         assert_image(p)
 
     def test_region_quad_show_region(self, plotter_no_boundary, assert_image):
-        """show_region=True draws the region corners and connecting lines."""
+        """show_gradient_region=True draws the region corners and connecting lines."""
         ad = plotter_no_boundary._data.ad
         pca = ad.obsm["X_pca"][:, :2]
         cx = float(pca[:, 0].mean())
@@ -877,13 +877,13 @@ class TestPlotEmbeddingColor:
         rng_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.3)
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
-            region=(
+            gradient_region=(
                 (cx - rng_x * 0.3, cy + rng_y),
                 (cx + rng_x, cy + rng_y * 0.4),
                 (cx - rng_x, cy - rng_y * 0.4),
                 (cx + rng_x * 0.3, cy - rng_y),
             ),
-            show_region=True,
+            show_gradient_region=True,
         )
         assert_image(p)
 
@@ -900,13 +900,53 @@ class TestPlotEmbeddingColor:
             .with_embedding_label("umap")
             .plot_embedding_color(
                 "umap",
-                region=(
+                gradient_region=(
                     (cx - hw_x, cy + hw_y),
                     (cx + hw_x, cy + hw_y),
                     (cx - hw_x, cy - hw_y),
                     (cx + hw_x, cy - hw_y),
                 ),
             )
+        )
+        assert_image(p)
+
+    def test_cell_region_rect(self, plotter_no_boundary, assert_image):
+        """cell_region restricts which cells are colored (others get outside_color),
+        while the gradient itself still spans the full PCA space."""
+        ad = plotter_no_boundary._data.ad
+        pca = ad.obsm["X_pca"][:, :2]
+        cx = float(pca[:, 0].mean())
+        cy = float(pca[:, 1].mean())
+        hw_x = float((pca[:, 0].max() - pca[:, 0].min()) * 0.25)
+        hw_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.25)
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca",
+            cell_region=((cx - hw_x, cy + hw_y), (cx + hw_x, cy - hw_y)),
+        )
+        assert_image(p)
+
+    def test_cell_region_list(self, plotter_no_boundary, assert_image):
+        """cell_region as a list of disjoint boxes highlights the union of all of them."""
+        ad = plotter_no_boundary._data.ad
+        pca = ad.obsm["X_pca"][:, :2]
+        x_min, x_max = float(pca[:, 0].min()), float(pca[:, 0].max())
+        y_min, y_max = float(pca[:, 1].min()), float(pca[:, 1].max())
+        x_span = x_max - x_min
+        y_span = y_max - y_min
+        # Two well-populated, disjoint boxes on opposite sides of PCA space.
+        ylo, yhi = y_min + y_span * 0.33, y_min + y_span * 0.42
+        p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
+            "pca",
+            cell_region=[
+                (
+                    (x_min + x_span * 0.25, yhi),
+                    (x_min + x_span * 0.33, ylo),
+                ),
+                (
+                    (x_min + x_span * 0.75, yhi),
+                    (x_min + x_span * 0.83, ylo),
+                ),
+            ],
         )
         assert_image(p)
 
