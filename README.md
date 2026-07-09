@@ -238,18 +238,30 @@ plotter.outliers(
 ```
 
 ---
-### Overplotting/anti_overplot (numerical) 
+### Overplotting / anti_overplot
 
-By default, we plot points in order of value, so high values end up on top.
-This allows you to disable the sorting, or reverse it's order.
+Controls the order points are drawn in — not jitter, just draw order,
+since later-drawn points cover earlier ones.
+
+For numerical data, points are by default drawn in order of value, so high
+values end up on top. For categorical data, points are by default drawn
+grouped by category, so the last category ends up on top.
 
 ```python
 plotter.anti_overplot(
-    enabled = True, # True == default
-    ascending = True, # True == default
+    enabled = True, # True == default; False = original (dataset) row order
+    ascending = True, # True == default; False = reverse (lowest value / first category on top)
 )
 ```
 
+For categorical data, category-grouped draw order always biases which
+category visually dominates in overlapping regions. Pass a `seed` to
+instead draw all points in a fully randomized, reproducible order (this
+overrides `enabled`/`ascending`):
+
+```python
+plotter.anti_overplot(seed = 0)
+```
 
 ---
 

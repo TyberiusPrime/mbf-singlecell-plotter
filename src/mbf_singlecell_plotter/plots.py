@@ -645,7 +645,7 @@ class ScatterPlotter:
         self._bg_color: str = "#FFFFFF"
         self._anti_overplot: bool = True
         self._anti_overplot_ascending = True
-        self._flip_order: bool = False
+        self._anti_overplot_seed: Optional[int] = None
         self._outlier_quantile: float = 0.95
         self._outlier_shape: Optional[str] = None  # None → same shape as main dots
 
@@ -860,12 +860,6 @@ class ScatterPlotter:
             new._bg_color = bg_color
         return new
 
-    def flip_draw_order(self, value: bool = True) -> "ScatterPlotter":
-        """Reverse categorical draw order (last category drawn on top when False)."""
-        new = copy.copy(self)
-        new._flip_order = value
-        return new
-
     def outlier(
         self,
         *,
@@ -991,16 +985,46 @@ class ScatterPlotter:
     # overplotting
 
     def anti_overplot(
-        self, enabled: bool = True, ascending: bool = True
+        self,
+        enabled: bool = True,
+        ascending: bool = True,
+        *,
+        seed: Optional[int] = None,
     ) -> "ScatterPlotter":
-        """Toggle anti-overplotting (random jitter + draw order).
+        """Control point draw order to mitigate overplotting bias.
 
-        When enabled (default), the values are plotted in order.
-        By default, highest on top, change with ascending=False.
+        This does not jitter point positions — it only changes the order in
+        which (already-fixed) point positions are painted, since later-drawn
+        points cover earlier ones.
+
+        For numerical data (default ``enabled=True``): points are sorted by
+        expression value before drawing, so the highest values end up on top.
+        Set ``ascending=False`` to put the lowest values on top instead.
+
+        For categorical data (default ``enabled=True``): points are grouped
+        and drawn by category, so the last category (in its natural /
+        categorical order) ends up on top. Set ``ascending=False`` to reverse
+        which category ends up on top.
+
+        In both cases, ``enabled=False`` draws points in their original
+        (dataset) row order instead of sorting/grouping them.
+
+        Passing ``seed`` overrides ``enabled``/``ascending`` and instead
+        draws all points in a fully randomized, reproducible order. This is
+        especially useful for categorical data, where grouping by category
+        always biases which category visually dominates in overlapping
+        regions — a random seed gives an unbiased, still-reproducible draw
+        order.
+
+
+        Contrast to plotting the outlier layer (outlier()), which enabled 
+        by default for categorical data, draws outliers on top *after*
+        this anti overplotting measure.
         """
         new = copy.copy(self)
         new._anti_overplot = enabled
         new._anti_overplot_ascending = ascending
+        new._anti_overplot_seed = seed
         return new
 
     # ── borders ──────────────────────────────────────────────────────────────
@@ -2755,7 +2779,11 @@ class ScatterPlotter:
         df_normal = df_nonzero[df_nonzero["expression"] <= clip_val].copy()
         df_above = df_nonzero[df_nonzero["expression"] > clip_val].copy()
 
-        if self._anti_overplot is not None:
+        if self._anti_overplot_seed is not None:
+            df_normal = df_normal.sample(
+                frac=1.0, random_state=self._anti_overplot_seed
+            )
+        elif self._anti_overplot:
             df_normal = df_normal.sort_values(
                 "expression", ascending=self._anti_overplot_ascending
             )
@@ -2869,13 +2897,18 @@ class ScatterPlotter:
         colors = self._colors_as_list(cats)
         color_values = {str(c): colors[i % len(colors)] for i, c in enumerate(cats)}
 
-        # Sort for draw order (flip_order controls which appears on top)
-        cat_order = {c: i for i, c in enumerate(cats)}
+        # Draw order: grouped by category (last category on top by default),
+        # fully randomized with a seed, or left as original row order — see
+        # anti_overplot().
         df = df.copy()
-        df["_sort_key"] = df["expression"].map(cat_order)
-        df = df.sort_values("_sort_key", ascending=not self._flip_order).drop(
-            columns=["_sort_key"]
-        )
+        if self._anti_overplot_seed is not None:
+            df = df.sample(frac=1.0, random_state=self._anti_overplot_seed)
+        elif self._anti_overplot:
+            cat_order = {c: i for i, c in enumerate(cats)}
+            df["_sort_key"] = df["expression"].map(cat_order)
+            df = df.sort_values(
+                "_sort_key", ascending=self._anti_overplot_ascending
+            ).drop(columns=["_sort_key"])
 
         # Convert to str-Categorical so plotnine matches the string-keyed color_values
         # dict (needed for non-string dtypes such as bool).  Categorical avoids

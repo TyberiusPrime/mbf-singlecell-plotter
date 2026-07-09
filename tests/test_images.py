@@ -165,7 +165,15 @@ class TestPlotScatterCategorical:
     def test_leiden_flip_order(self, plotter_no_boundary, assert_image):
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
-            .flip_draw_order(True)
+            .anti_overplot(ascending=False)
+            .plot(CAT_COL)
+        )
+        assert_image(p)
+
+    def test_leiden_random_order_seed(self, plotter_no_boundary, assert_image):
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .anti_overplot(seed=0)
             .plot(CAT_COL)
         )
         assert_image(p)
