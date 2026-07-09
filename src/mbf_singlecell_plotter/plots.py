@@ -1874,6 +1874,90 @@ class ScatterPlotter:
                     out["alternative_id"].append(alternative_ids[gene])
         return pd.DataFrame(out)
 
+    def get_cluster_markers(
+        self,
+        column: str,
+        k: int = 20,
+        min_score: float = 0.0,
+        min_cells_per_group: int = 10,
+        layer: str | None = None,
+    ) -> pd.DataFrame:
+        """Return marker genes per category of *column* as a tidy DataFrame.
+
+        Scores every gene per category with a pseudobulk one-vs-rest comparison
+        (mean difference gated by expression; see
+        :func:`~mbf_singlecell_plotter.transforms.compute_cluster_markers`) and
+        returns the top-*k* markers (with ``score`` above *min_score*) for each
+        category — one row per (category, gene) pair, ready to plot individually.
+
+        This is the per-*cluster* analogue of :meth:`get_morans_i_markers`
+        (which scores per *spatial grid cell* via Moran's I).
+
+        Args:
+            column:              Categorical (or bool) obs column with cluster
+                                 labels.
+            k:                   Maximum marker genes kept per category
+                                 (default 20).
+            min_score:           Minimum combined score for a gene to qualify
+                                 (default 0.0 → keep genes up-regulated versus
+                                 the rest).
+            min_cells_per_group: Categories with fewer cells are skipped
+                                 (default 10).
+            layer:               Expression layer for marker computation
+                                 (``None`` = the source's configured layer; pass
+                                 a raw / log-normalized layer key to score on
+                                 that).
+
+        Returns:
+            DataFrame with columns:
+
+            * ``category``         — category (cluster) label
+            * ``gene``             — gene name
+            * ``delta``            — ``mean_in_cluster - mean_in_rest``
+                                     (log fold-change on log-normalized data;
+                                     z-score difference on scaled data)
+            * ``mean_expr``        — the category's pseudobulk mean expression
+            * ``score``            — combined score used for ranking
+            * ``rank_in_category`` — 1-based rank within the category
+                                     (1 = highest score)
+
+            When an alternative id column is configured, an ``alternative_id``
+            column is added.  Rows are sorted by ``category`` then
+            ``rank_in_category``. Categories with no qualifying genes are omitted.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .get_cluster_markers()")
+
+        from .transforms import compute_cluster_markers
+
+        marker_df = compute_cluster_markers(
+            self._data,
+            column,
+            layer=layer,
+            min_cells_per_group=min_cells_per_group,
+        )
+
+        filtered = marker_df[marker_df["score"] > min_score]
+        parts = []
+        for _cat, grp in filtered.groupby("category", observed=True, sort=True):
+            top = grp.nlargest(k, "score").reset_index(drop=True)
+            top = top.assign(rank_in_category=range(1, len(top) + 1))
+            parts.append(top)
+
+        cols = ["category", "gene", "delta", "mean_expr", "score", "rank_in_category"]
+        if not parts:
+            out = pd.DataFrame({c: [] for c in cols})
+        else:
+            out = pd.concat(parts, ignore_index=True)[cols]
+
+        if self._data._alternative_id_column is not None:
+            alternative_ids = self._data.ad.var[
+                self._data._alternative_id_column
+            ].to_dict()
+            out["alternative_id"] = out["gene"].map(alternative_ids)
+
+        return out
+
     def save_interactive_moran_grid(
         self,
         column: str,

@@ -2083,6 +2083,42 @@ class TestClusterMarkers:
             assert set(recs[0]) == {"gene", "delta", "score"}
 
 
+class TestGetClusterMarkers:
+    def test_columns_and_ranking(self, plotter_no_boundary):
+        df = plotter_no_boundary.get_cluster_markers(CAT_COL, k=5)
+        assert list(df.columns) == [
+            "category",
+            "gene",
+            "delta",
+            "mean_expr",
+            "score",
+            "rank_in_category",
+        ]
+        assert len(df)  # at least one category has markers
+        # score is gated: only up-regulated genes survive the default min_score
+        assert (df["score"] > 0).all()
+        for _cat, grp in df.groupby("category", observed=True):
+            assert len(grp) <= 5
+            # rank is a contiguous 1..n in descending-score order
+            assert list(grp["rank_in_category"]) == list(range(1, len(grp) + 1))
+            assert list(grp["score"]) == sorted(grp["score"], reverse=True)
+
+    def test_k_limits_rows_per_category(self, plotter_no_boundary):
+        few = plotter_no_boundary.get_cluster_markers(CAT_COL, k=3)
+        assert (few.groupby("category", observed=True).size() <= 3).all()
+
+    def test_min_score_filters(self, plotter_no_boundary):
+        lax = plotter_no_boundary.get_cluster_markers(CAT_COL, k=50, min_score=0.0)
+        strict = plotter_no_boundary.get_cluster_markers(
+            CAT_COL, k=50, min_score=lax["score"].median()
+        )
+        assert len(strict) < len(lax)
+
+    def test_requires_source(self):
+        with pytest.raises(RuntimeError, match="set_source"):
+            ScatterPlotter().get_cluster_markers(CAT_COL)
+
+
 # ---------------------------------------------------------------------------
 # Interactive HTML exports
 # ---------------------------------------------------------------------------
