@@ -185,8 +185,7 @@ class _ColProxy:
         return self._cache[key]
 
     def to_df(self):
-        """Convert into a true pandas Dataframe
-        """
+        """Convert into a true pandas Dataframe"""
         return pd.DataFrame({col: self[col] for col in self.columns})
 
 
@@ -317,11 +316,12 @@ class H5adFacade:
         self._path = Path(path).resolve()
         self._obs_names: Optional[pd.Index] = None
         self._var_names: Optional[pd.Index] = None
+        self._shape: Optional[tuple[int, int]] = None
         self._obs: Optional[_ObsProxy] = None
         self._var: Optional[_VarProxy] = None
         self._obsm_proxy: Optional[_ObsmProxy] = None
         self._matrix_proxies: dict[str, _XProxy] = {}  # layer key → _XProxy
-        self._x_csr_cache: dict[str,Any]  = {}  # layer key → CSR matrix
+        self._x_csr_cache: dict[str, Any] = {}  # layer key → CSR matrix
 
     @property
     def obs_names(self) -> pd.Index:
@@ -366,6 +366,36 @@ class H5adFacade:
         if self._obsm_proxy is None:
             self._obsm_proxy = _ObsmProxy(self._path, len(self.obs_names))
         return self._obsm_proxy
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        if self._shape is None:
+            s = _run_lines(self._path, "shape")
+            n_obs = None
+            n_var = None
+            for line in s:
+                line = line.strip()
+                if line:
+                    parts = line.split("\t")
+                    if parts[0] == "n_obs":
+                        n_obs = int(parts[1])
+                    elif parts[0] == "n_var":
+                        n_var = int(parts[1])
+                    else:
+                        raise ValueError(f"Unexpected result in shapes call: {s}")
+            if n_obs is not None and n_var is not None:
+                self._shape = (n_obs, n_var)
+            else:
+                raise ValueError(f"Shapes call did not contain n_obs or n_var: {s}")
+
+        return self._shape
+
+    @property
+    def n_obs(self) -> int:
+        return self.shape[0]
+
+    def n_var(self) -> int:
+        return self.shape[1]
 
     def matrix(self, layer: str = "X") -> _XProxy:
         """Return a single-column accessor for *layer* (``'X'`` → ``.X``).
