@@ -2172,7 +2172,13 @@ class TestInteractiveMarkers:
         tsv = out.with_suffix(".tsv")
         assert tsv.exists()
         df = pd.read_csv(tsv, sep="\t")
-        assert list(df.columns) == ["cluster", "gene", "name", "delta", "rank"]
+        assert list(df.columns) == [
+            "cluster",
+            "gene",
+            "_display_name",
+            "delta",
+            "rank",
+        ]
         assert len(df)
         for _cat, grp in df.groupby("cluster"):
             assert len(grp) <= 5
@@ -2191,8 +2197,35 @@ class TestInteractiveMarkers:
         tsv = out.with_suffix(".tsv")
         assert tsv.exists()
         df = pd.read_csv(tsv, sep="\t")
-        assert list(df.columns) == ["grid_cell", "gene", "name", "moran_i", "rank"]
+        assert list(df.columns) == [
+            "grid_cell",
+            "gene",
+            "_display_name",
+            "moran_i",
+            "rank",
+        ]
         assert len(df)
+
+    def test_save_tsv_includes_alternative_id(self, ad, tmp_path):
+        from mbf_singlecell_plotter import EmbeddingData, ScatterPlotter
+
+        ad_alt = ad.copy()
+        ad_alt.var["alt_id"] = ["ALT_" + str(v) for v in ad_alt.var_names]
+        data = EmbeddingData(ad_alt, "umap", alternative_id_column="alt_id")
+        plotter = ScatterPlotter().set_source(data)
+
+        out = tmp_path / "markers.html"
+        plotter.save_interactive_cluster_markers(CAT_COL, out, k=5, save_tsv=True)
+        df = pd.read_csv(out.with_suffix(".tsv"), sep="\t")
+        assert list(df.columns) == [
+            "cluster",
+            "gene",
+            "_display_name",
+            "alternative_id",
+            "delta",
+            "rank",
+        ]
+        assert (df["alternative_id"] == "ALT_" + df["gene"].astype(str)).all()
 
     def test_grid_view_still_works(self, plotter_no_boundary, tmp_path):
         out = tmp_path / "grid.html"

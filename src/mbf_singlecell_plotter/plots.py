@@ -2018,7 +2018,9 @@ class ScatterPlotter:
             save_tsv:         If ``True`` also write a tidy ``.tsv`` of the marker
                               genes next to the HTML (same path with a ``.tsv``
                               suffix), one row per (grid cell, gene) with columns
-                              ``grid_cell, gene, name, moran_i, rank`` (default
+                              ``grid_cell, gene, _display_name, moran_i, rank``
+                              (plus an ``alternative_id`` column when an
+                              alternative id column is configured; default
                               ``False``).
         """
         if self._data is None:
@@ -2097,8 +2099,11 @@ class ScatterPlotter:
             save_tsv:            If ``True`` also write a tidy ``.tsv`` of the
                                  marker genes next to the HTML (same path with a
                                  ``.tsv`` suffix), one row per (cluster, gene)
-                                 with columns ``cluster, gene, name, delta, rank``
-                                 (default ``False``).
+                                 with columns
+                                 ``cluster, gene, _display_name, delta, rank``
+                                 (plus an ``alternative_id`` column when an
+                                 alternative id column is configured; default
+                                 ``False``).
         """
         if self._data is None:
             raise RuntimeError(

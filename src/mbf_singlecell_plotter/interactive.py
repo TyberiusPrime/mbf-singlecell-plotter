@@ -280,8 +280,9 @@ def save_interactive_moran_grid(
         save_tsv:         If ``True`` also write a tidy ``.tsv`` of the marker
                           genes next to the HTML (same path with a ``.tsv``
                           suffix), one row per (grid cell, gene) with columns
-                          ``grid_cell, gene, name, moran_i, rank`` (default
-                          ``False``).
+                          ``grid_cell, gene, _display_name, moran_i, rank`` (plus
+                          an ``alternative_id`` column when an alternative id
+                          column is configured; default ``False``).
     """
     from .transforms import compute_grid_moran, marker_genes_by_region
     from collections import defaultdict, Counter
@@ -356,20 +357,36 @@ def save_interactive_moran_grid(
     Path(output_path).write_text(html, encoding="utf-8")
 
     if save_tsv:
-        rows = [
-            {
-                "grid_cell": cell["label"],
-                "gene": g["gene"],
-                "name": g["name"],
-                "moran_i": g["mi"],
-                "rank": rank,
-            }
-            for cell in cells
-            for rank, g in enumerate(cell["genes"], start=1)
-        ]
-        _write_marker_tsv(
-            rows, output_path, ["grid_cell", "gene", "name", "moran_i", "rank"]
-        )
+        alt_ids, has_alt = _alt_id_lookup(data)
+        columns = ["grid_cell", "gene", "_display_name"]
+        if has_alt:
+            columns.append("alternative_id")
+        columns += ["moran_i", "rank"]
+        rows = []
+        for cell in cells:
+            for rank, g in enumerate(cell["genes"], start=1):
+                row = {
+                    "grid_cell": cell["label"],
+                    "gene": g["gene"],
+                    "_display_name": g["name"],
+                    "moran_i": g["mi"],
+                    "rank": rank,
+                }
+                if has_alt:
+                    row["alternative_id"] = alt_ids.get(g["gene"])
+                rows.append(row)
+        _write_marker_tsv(rows, output_path, columns)
+
+
+def _alt_id_lookup(data) -> tuple[dict, bool]:
+    """Return ``(gene → alternative_id map, present)`` for the source's alt-id column.
+
+    When no alternative id column is configured the map is empty and *present* is
+    ``False`` so callers can omit the ``alternative_id`` column entirely.
+    """
+    if data._alternative_id_column is not None:
+        return data.ad.var[data._alternative_id_column].to_dict(), True
+    return {}, False
 
 
 def _write_marker_tsv(rows: list[dict], output_path, columns: list[str]) -> None:
@@ -435,8 +452,9 @@ def save_interactive_cluster_markers(
         save_tsv:            If ``True`` also write a tidy ``.tsv`` of the marker
                              genes next to the HTML (same path with a ``.tsv``
                              suffix), one row per (cluster, gene) with columns
-                             ``cluster, gene, name, delta, rank`` (default
-                             ``False``).
+                             ``cluster, gene, _display_name, delta, rank`` (plus
+                             an ``alternative_id`` column when an alternative id
+                             column is configured; default ``False``).
     """
     from .transforms import compute_cluster_markers, marker_genes_by_category
     from collections import Counter
@@ -522,20 +540,25 @@ def save_interactive_cluster_markers(
     Path(output_path).write_text(html, encoding="utf-8")
 
     if save_tsv:
-        rows = [
-            {
-                "cluster": cat,
-                "gene": g["gene"],
-                "name": g["name"],
-                "delta": g["mi"],
-                "rank": rank,
-            }
-            for cat, genes in cat_genes.items()
-            for rank, g in enumerate(genes, start=1)
-        ]
-        _write_marker_tsv(
-            rows, output_path, ["cluster", "gene", "name", "delta", "rank"]
-        )
+        alt_ids, has_alt = _alt_id_lookup(data)
+        columns = ["cluster", "gene", "_display_name"]
+        if has_alt:
+            columns.append("alternative_id")
+        columns += ["delta", "rank"]
+        rows = []
+        for cat, genes in cat_genes.items():
+            for rank, g in enumerate(genes, start=1):
+                row = {
+                    "cluster": cat,
+                    "gene": g["gene"],
+                    "_display_name": g["name"],
+                    "delta": g["mi"],
+                    "rank": rank,
+                }
+                if has_alt:
+                    row["alternative_id"] = alt_ids.get(g["gene"])
+                rows.append(row)
+        _write_marker_tsv(rows, output_path, columns)
 
 
 def _build_html(
