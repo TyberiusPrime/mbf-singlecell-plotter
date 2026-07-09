@@ -2414,7 +2414,7 @@ class ScatterPlotter:
         # regardless of row/shuffle order (stable sort preserves relative
         # order within each group).
         if (df["color"] == outside_color).any():
-            order = np.argsort(df["color"].values == outside_color, kind="stable")
+            order = np.argsort(df["color"].values != outside_color, kind="stable")
             df = df.iloc[order]
 
         dot = dot_size if dot_size is not None else self._dot_size
