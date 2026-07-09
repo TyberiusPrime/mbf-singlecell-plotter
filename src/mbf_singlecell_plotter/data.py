@@ -212,6 +212,11 @@ class EmbeddingData:
             Callable[["EmbeddingData"], "pd.Series | np.ndarray"]
         ] = filter_fn
         self._filter_cache: Optional[np.ndarray] = None
+        # When True, the active filter is a *hard* restrict: bounds() and
+        # full_bounds() follow the masked subset (a fresh grid is spanned over
+        # just the kept cells).  When False the filter is soft — it subsets the
+        # cells shown but leaves the embedding frame at the full-data extent.
+        self._filter_hard: bool = False
 
     def _replace(self, **changes) -> "EmbeddingData":
         """Return a shallow copy with the specified private attributes replaced.
@@ -435,67 +440,27 @@ class EmbeddingData:
 
     # ── viewport ────────────────────────────────────────────────────────────
 
-    def focus_on(
-        self,
-        *args: list[str],
-        x: Optional[tuple[float, float]] = None,
-        y: Optional[tuple[float, float]] = None,
-    ) -> "EmbeddingData":
-        """Return a new EmbeddingData restricted to the given coordinate window.
+    def focus_on(self, region) -> "EmbeddingData":
+        """Return a new EmbeddingData whose viewport is restricted to *region*.
 
-        Accepts either two grid label strings::
+        *region* is a 2-corner ``(corner1, corner2)`` box.  Each corner is either
+        a grid-label string (e.g. ``"A1"`` for the default orientation, ``"1A"``
+        for vertical-letters) or an ``(x, y)`` coordinate pair::
 
-            data.focus_on("A1", "C5")
+            data.focus_on(("A1", "C5"))                 # grid labels
+            data.focus_on(((x_min, y_min), (x_max, y_max)))  # raw coordinates
 
-        or explicit coordinate ranges (keyword-only)::
-
-            data.focus_on(x=(x_min, x_max), y=(y_min, y_max))
-
-        Grid labels use the same format as :meth:`grid_coordinate` (e.g. ``"G3"``
-        for the default orientation, ``"3G"`` for vertical-letters).  Swapped
-        corners are silently corrected.
+        Grid labels are resolved in the original (unfocused) coordinate space and
+        span the full extent of the named cells; swapped corners are silently
+        corrected.  This is a *soft* viewport (the grid is re-spanned over the
+        window but every cell is still returned) — use :meth:`hard_filter` to
+        actually restrict the data and re-span the grid over just the subset.
         """
-        if args:
-            if len(args) == 2 and isinstance(args[0], str) and isinstance(args[1], str):
-                return self._focus_on_grid(args[0], args[1])
-            raise TypeError(
-                f"positional arguments must be two grid label strings "
-                f"(e.g. focus_on('A1', 'C5')), got {args!r}"
-            )
-        else:
-            if (x is None) or (y is None):
-                raise TypeError("Either use positional arguments, or set both x and y")
+        from .transforms import _region_to_bbox
+
         new = copy.copy(self)
-        new._focus = (x[0], x[1], y[0], y[1])
+        new._focus = _region_to_bbox(region, self)
         return new
-
-    def _focus_on_grid(self, cell_min: str, cell_max: str) -> "EmbeddingData":
-        """Restrict viewport to the rectangle from cell_min (top-left) to cell_max (bottom-right).
-
-        Internal implementation called by :meth:`focus_on` when given string arguments.
-        Uses the same label format as grid_coordinate(): e.g. 'G3' for default
-        orientation, '3G' for vertical-letters orientation.  The focus spans
-        from the left/top edge of cell_min to the right/bottom edge of cell_max,
-        resolved in the original (unfocused) coordinate space.
-        """
-        gs = self._grid_size
-        glv = self._grid_letters_on_vertical
-        col_min, row_min = _parse_grid_label(cell_min, gs, glv)
-        col_max, row_max = _parse_grid_label(cell_max, gs, glv)
-
-        if col_min > col_max:
-            col_min, col_max = col_max, col_min
-        if row_min > row_max:
-            row_min, row_max = row_max, row_min
-
-        x_min_d, x_max_d, y_min_d, y_max_d = self.full_bounds()
-        cell_w = (x_max_d - x_min_d) / gs
-        cell_h = (y_max_d - y_min_d) / gs
-
-        return self.focus_on(
-            x=(x_min_d + col_min * cell_w, x_min_d + (col_max + 1) * cell_w),
-            y=(y_max_d - (row_max + 1) * cell_h, y_max_d - row_min * cell_h),
-        )
 
     def unfocus(self) -> "EmbeddingData":
         """Return a new EmbeddingData with no focus restriction."""
@@ -509,33 +474,67 @@ class EmbeddingData:
     def has_filter(self) -> bool:
         return self._filter is not None
 
-    def set_filter(
-        self,
-        filter_fn: Optional[Callable[["EmbeddingData"], "pd.Series | np.ndarray"]],
-    ) -> "EmbeddingData":
-        """Return a copy that keeps only the cells selected by *filter_fn*.
+    @property
+    def has_hard_filter(self) -> bool:
+        """True when a *hard* filter (bounds-following restrict) is active."""
+        return self._filter is not None and self._filter_hard
 
-        *filter_fn* is a callable that receives this :class:`EmbeddingData`
-        (with the filter *disabled*, so it sees the full dataset — avoiding
-        recursion) and returns a boolean vector (array or ``Series``) of length
-        ``n_obs`` marking the cells to keep.
+    def _apply_filter(self, spec, *, hard: bool) -> "EmbeddingData":
+        """Shared implementation of :meth:`set_filter` / :meth:`hard_filter`.
 
-        The filter is evaluated lazily, every time :meth:`coordinates` or
-        :meth:`get_column` is called — there is no caching.  It restricts the
-        cells returned by those two accessors, but **not** the coordinate
-        bounds: :meth:`bounds` / :meth:`full_bounds` always reflect the full
-        dataset so the embedding frame stays stable.
+        *spec* is either ``None`` (clear), a callable ``fn(EmbeddingData) -> bool
+        mask``, or a region / list of regions (see the class-level region grammar
+        used by :meth:`focus_on`).  Regions are converted to a membership filter
+        via :func:`~mbf_singlecell_plotter.transforms._regions_to_mask_fn`.
 
-        Pass ``None`` (or call :meth:`unfilter`) to remove an existing filter.
+        There is a single filter slot: setting either kind replaces the other.
         """
+        from .transforms import _regions_to_mask_fn
+
         new = copy.copy(self)
-        new._filter = filter_fn
+        new._filter = None if spec is None else _regions_to_mask_fn(spec)
+        new._filter_hard = hard and spec is not None
         new._filter_cache = None
         return new
 
+    def set_filter(self, spec) -> "EmbeddingData":
+        """Return a copy that keeps only the cells selected by *spec* (soft filter).
+
+        *spec* is either a callable that receives this :class:`EmbeddingData`
+        (with the filter *disabled*, so it sees the full dataset — avoiding
+        recursion) and returns a boolean vector (array or ``Series``) of length
+        ``n_obs`` marking the cells to keep, or a region / list of regions in the
+        same grammar as :meth:`focus_on` (each region a ``(corner1, corner2)`` box
+        of grid labels or ``(x, y)`` pairs), which is converted to a membership
+        filter.
+
+        The filter is evaluated lazily and cached until the next filter call.  It
+        restricts the cells returned by :meth:`coordinates` / :meth:`get_column`,
+        but **not** the coordinate bounds: :meth:`bounds` / :meth:`full_bounds`
+        keep reflecting the full dataset so the embedding frame stays stable.  Use
+        :meth:`hard_filter` if you want the bounds (and grid) to follow the subset.
+
+        Pass ``None`` (or call :meth:`unfilter`) to remove an existing filter.
+        """
+        return self._apply_filter(spec, hard=False)
+
+    def hard_filter(self, spec) -> "EmbeddingData":
+        """Return a copy restricted to *spec*, with the bounds following the subset.
+
+        Accepts the same *spec* grammar as :meth:`set_filter` (a callable, or a
+        region / list of regions).  Unlike the soft :meth:`set_filter`, a hard
+        filter makes :meth:`bounds` and :meth:`full_bounds` reflect only the kept
+        cells, so a fresh grid is spanned over the subset and downstream analyses
+        (grid Moran's I, interactive per-cell views) recompute over the smaller
+        cells — the "hard focus" behaviour.
+
+        Pass ``None`` (or call :meth:`unfilter`) to remove an existing filter.
+        """
+        return self._apply_filter(spec, hard=True)
+
     def unfilter(self) -> "EmbeddingData":
         """Return a new EmbeddingData with any cell filter removed."""
-        return self.set_filter(None)
+        return self._apply_filter(None, hard=False)
 
     def _filter_mask(self) -> "Optional[np.ndarray]":
         """Evaluate the active filter against the full data, caching the result.
@@ -558,6 +557,10 @@ class EmbeddingData:
         if self._filter_cache is None:
             unfiltered = copy.copy(self)
             unfiltered._filter = None
+            # Disable the hard flag too, so region grid-labels and any bounds()
+            # the filter callable consults resolve against the true full extent
+            # (and never recurse back into this half-computed mask).
+            unfiltered._filter_hard = False
             mask = self._filter(unfiltered)
             if isinstance(mask, pd.Series):
                 mask = mask.reindex(self.ad.obs_names).fillna(False).values
@@ -574,14 +577,15 @@ class EmbeddingData:
         return self._filter_cache
 
     def bounds(self) -> tuple[float, float, float, float]:
-        """Return (x_min, x_max, y_min, y_max) — from focus if set, else full data range.
+        """Return (x_min, x_max, y_min, y_max) — from focus if set, else data range.
 
-        Always reflects the *full* dataset: an active cell filter
-        (:meth:`set_filter`) is ignored so the embedding frame stays stable.
+        A *soft* cell filter (:meth:`set_filter`) is ignored so the embedding
+        frame stays stable.  A *hard* filter (:meth:`hard_filter`) is honoured:
+        the bounds shrink to the kept subset so a fresh grid is spanned over it.
         """
         if self._focus is not None:
             return self._focus
-        coords = self._full_coordinates()
+        coords = self.coordinates() if self._filter_hard else self._full_coordinates()
         return (
             float(coords["x"].min()),
             float(coords["x"].max()),
@@ -719,6 +723,7 @@ class EmbeddingData:
             )
         unfiltered = copy.copy(self)
         unfiltered._filter = None
+        unfiltered._filter_hard = False
         unfiltered._filter_cache = None
         series = fn(unfiltered)
         if not isinstance(series, pd.Series):
@@ -990,12 +995,13 @@ class EmbeddingData:
         return pd.Series(labels, index=coords.index)
 
     def full_bounds(self) -> tuple[float, float, float, float]:
-        """Return (x_min, x_max, y_min, y_max) from the full data range.
+        """Return (x_min, x_max, y_min, y_max) from the data range, ignoring focus.
 
-        Ignores both the focus window and any active cell filter, so the bounds
-        always reflect the complete dataset.
+        The focus window and any *soft* cell filter are ignored.  A *hard* filter
+        (:meth:`hard_filter`) is honoured, so the bounds reflect the kept subset
+        (the grid is spanned over just the restricted cells).
         """
-        coords = self._full_coordinates()
+        coords = self.coordinates() if self._filter_hard else self._full_coordinates()
         return (
             float(coords["x"].min()),
             float(coords["x"].max()),

@@ -49,7 +49,7 @@ def _build_plotter(data, borders, grid_mode, focus):
         coords = data.coordinates()
         x_mid = coords["x"].median()
         y_mid = coords["y"].median()
-        sp = sp.focus_on(x=(coords["x"].min(), x_mid), y=(coords["y"].min(), y_mid))
+        sp = sp.focus_on(((coords["x"].min(), coords["y"].min()), (x_mid, y_mid)))
 
     return sp
 

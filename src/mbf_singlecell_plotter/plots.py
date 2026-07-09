@@ -1176,41 +1176,31 @@ class ScatterPlotter:
 
     # ── viewport ─────────────────────────────────────────────────────────────
 
-    def focus_on(self, *args, x: tuple = None, y: tuple = None) -> "ScatterPlotter":
-        """Restrict viewport to a coordinate window.
+    def focus_on(self, region) -> "ScatterPlotter":
+        """Restrict viewport to *region* (a soft zoom; every cell is still drawn).
 
-        Accepts either two grid label strings::
+        *region* is a 2-corner ``(corner1, corner2)`` box; each corner is either a
+        grid-label string or an ``(x, y)`` coordinate pair::
 
-            plotter.focus_on("A1", "C5")
+            plotter.focus_on(("A1", "C5"))                     # grid labels
+            plotter.focus_on(((x_min, y_min), (x_max, y_max)))  # raw coordinates
 
-        or explicit coordinate ranges (keyword-only)::
-
-            plotter.focus_on(x=(x_min, x_max), y=(y_min, y_max))
+        Grid-label corners require a grid; raises ValueError if the grid was
+        disabled with ``without_grid()``.  Use :meth:`hard_filter` to instead
+        restrict the data and re-span the grid over just the region.
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .focus_on()")
-        new = copy.copy(self)
-        if args:
-            new._data = self._data.focus_on(*args)
-        else:
-            new._data = self._data.focus_on(x=x, y=y)
-        return new
-
-    def focus_on_grid(self, cell_min: str, cell_max: str) -> "ScatterPlotter":
-        """Restrict viewport to the rectangle from cell_min (top-left) to cell_max (bottom-right).
-
-        Raises RuntimeError if no source has been set.
-        Raises ValueError if the grid has been disabled with without_grid().
-        """
-        if self._data is None:
-            raise RuntimeError("call .set_source() before .focus_on_grid()")
-        if self._grid_config is None:
+        uses_grid_labels = isinstance(region, (tuple, list)) and any(
+            isinstance(c, str) for c in region
+        )
+        if uses_grid_labels and self._grid_config is None:
             raise ValueError(
-                "focus_on_grid() requires a grid; call .with_grid() to re-enable "
-                "or remove .without_grid()"
+                "focus_on() with grid labels requires a grid; call .with_grid() "
+                "to re-enable or remove .without_grid() (or pass (x, y) corners)"
             )
         new = copy.copy(self)
-        new._data = self._data._focus_on_grid(cell_min, cell_max)
+        new._data = self._data.focus_on(region)
         return new
 
     def unfocus(self) -> "ScatterPlotter":
@@ -1246,8 +1236,24 @@ class ScatterPlotter:
         new._boundary_cache = {"df": None}
         return new
 
+    def hard_filter(self, spec) -> "ScatterPlotter":
+        """Restrict to *spec* with the bounds/grid following the kept subset.
+
+        Accepts the same *spec* grammar as :meth:`set_filter` (a callable, or a
+        region / list of regions).  Unlike the soft :meth:`set_filter`, this
+        re-spans the grid and coordinate frame over just the restricted cells, so
+        downstream grid analyses (Moran's I, interactive per-cell views) recompute
+        over the smaller cells.  Pass ``None`` to remove the filter.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .hard_filter()")
+        new = copy.copy(self)
+        new._data = self._data.hard_filter(spec)
+        new._boundary_cache = {"df": None}
+        return new
+
     def unfilter(self) -> "ScatterPlotter":
-        """Remove any cell filter set via :meth:`set_filter`."""
+        """Remove any cell filter set via :meth:`set_filter` / :meth:`hard_filter`."""
         if self._data is None:
             raise RuntimeError("call .set_source() before .unfilter()")
         new = copy.copy(self)
@@ -1552,7 +1558,7 @@ class ScatterPlotter:
                       custom matplotlib colourbar as numerical scatter plots.
 
         Honours the plotter's grid overlay (``with_grid``), faceting
-        (``facet``), viewport (``focus_on`` / ``focus_on_grid``) and title
+        (``facet``), viewport (``focus_on``) and title
         (``title``) configuration, mirroring :meth:`plot`.
         """
         if self._data is None:
@@ -2559,7 +2565,7 @@ class ScatterPlotter:
         *,
         corner_colors=_EMBEDDING_COLOR_DEFAULTS,
         gradient_region=None,
-        cell_region=None,
+        cell_filter=None,
         outside_color: str = "#C0C0C0",
         show_legend: bool = False,
         show_gradient_region: bool = False,
@@ -2581,13 +2587,14 @@ class ScatterPlotter:
                                   (e.g. ``"A1"``) or an ``(x, y)`` float tuple in reference-
                                   embedding coordinates.  ``corner1`` is the top-left (>=)
                                   and ``corner2`` the bottom-right (<=), matching the
-                                  ``focus_on_grid`` convention.  Cells outside the box get
+                                  ``focus_on`` region convention.  Cells outside the box get
                                   *outside_color*.
-            cell_region: Optional ``(corner1, corner2)``, restricting which cells get colored.
-                                  Cells outside get *outside_color*. Also accepts a list of such
-                                  regions (``[(corner1, corner2), ...]``) to highlight several
-                                  disjoint regions at once — a cell is colored if it falls inside
-                                  *any* of them.
+            cell_filter: Optional, restricting which cells get colored (others get
+                                  *outside_color*).  Accepts the same spec grammar as
+                                  ``set_filter``: a region ``(corner1, corner2)``, a list of
+                                  such regions (a cell is colored if it falls inside *any* of
+                                  them), or a callable ``fn(reference_data) -> bool mask``.
+                                  Resolved in the reference embedding.
             outside_color:        Color for cells outside *gradient_region* (default ``"#C0C0C0"``).
             show_legend:          Add a small 2D color legend inset (default False).
             dot_size:             Point size; defaults to the plotter's dot_size.
@@ -2615,7 +2622,7 @@ class ScatterPlotter:
             corner_colors=corner_colors,
             gradient_region=gradient_region,
             outside_color=outside_color,
-            cell_region=cell_region
+            cell_filter=cell_filter,
         )
         if random_seed is not None:
             df = df.sample(frac=1.0, random_state=random_seed)

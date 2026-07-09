@@ -365,7 +365,7 @@ class TestPrepareDensityDf2D:
 
 
 class TestPlotDensityParity:
-    """plot_density honours focus_on / focus_on_grid and title like plot()."""
+    """plot_density honours focus_on and title like plot()."""
 
     def test_default_title_is_embedding_name(self, plotter_no_boundary):
 
@@ -381,10 +381,10 @@ class TestPlotDensityParity:
     def test_focus_on_grid_applies_coord_cartesian(self, plotter_no_boundary, data):
         import plotnine as p9
 
-        x_min, x_max, y_min, y_max = plotter_no_boundary.focus_on_grid(
-            "K12", "G9"
+        x_min, x_max, y_min, y_max = plotter_no_boundary.focus_on(
+            ("K12", "G9")
         )._data.bounds()
-        p = plotter_no_boundary.focus_on_grid("K12", "G9").plot_density()
+        p = plotter_no_boundary.focus_on(("K12", "G9")).plot_density()
         assert isinstance(p.coordinates, p9.coords.coord_cartesian)
         assert p.coordinates.limits.x == (x_min, x_max)
         assert p.coordinates.limits.y == (y_min, y_max)
@@ -402,7 +402,7 @@ class TestPlotDensityParity:
         coords = data.coordinates()
         xlo, xhi = float(coords["x"].min()), float(coords["x"].median())
         ylo, yhi = float(coords["y"].min()), float(coords["y"].median())
-        p = plotter_no_boundary.focus_on(x=(xlo, xhi), y=(ylo, yhi)).plot_density()
+        p = plotter_no_boundary.focus_on(((xlo, ylo), (xhi, yhi))).plot_density()
         assert isinstance(p.coordinates, p9.coords.coord_cartesian)
         assert p.coordinates.limits.x == (xlo, xhi)
         assert p.coordinates.limits.y == (ylo, yhi)
@@ -858,101 +858,122 @@ class TestFocusOn:
     # ── happy-path: default orientation (grid-label form) ────────────────────
 
     def test_top_left_cell(self, grid2_data):
-        b = grid2_data.focus_on("A1", "A1").bounds()
+        b = grid2_data.focus_on(("A1", "A1")).bounds()
         assert b == pytest.approx((0.0, 5.0, 5.0, 10.0))
 
     def test_bottom_right_cell(self, grid2_data):
-        b = grid2_data.focus_on("B2", "B2").bounds()
+        b = grid2_data.focus_on(("B2", "B2")).bounds()
         assert b == pytest.approx((5.0, 10.0, 0.0, 5.0))
 
     def test_full_grid_matches_full_bounds(self, grid2_data):
-        b = grid2_data.focus_on("A1", "B2").bounds()
+        b = grid2_data.focus_on(("A1", "B2")).bounds()
         assert b == pytest.approx(grid2_data.full_bounds())
 
     def test_top_row_both_columns(self, grid2_data):
-        b = grid2_data.focus_on("A1", "B1").bounds()
+        b = grid2_data.focus_on(("A1", "B1")).bounds()
         assert b == pytest.approx((0.0, 10.0, 5.0, 10.0))
 
     def test_left_column_both_rows(self, grid2_data):
-        b = grid2_data.focus_on("A1", "A2").bounds()
+        b = grid2_data.focus_on(("A1", "A2")).bounds()
         assert b == pytest.approx((0.0, 5.0, 0.0, 10.0))
 
     def test_lowercase_accepted(self, grid2_data):
-        b = grid2_data.focus_on("a1", "b2").bounds()
+        b = grid2_data.focus_on(("a1", "b2")).bounds()
         assert b == pytest.approx(grid2_data.full_bounds())
+
+    # ── happy-path: coordinate-corner form ────────────────────────────────────
+
+    def test_coord_corners(self, grid2_data):
+        b = grid2_data.focus_on(((1.0, 2.0), (7.0, 8.0))).bounds()
+        assert b == pytest.approx((1.0, 7.0, 2.0, 8.0))
+
+    def test_coord_corners_swapped(self, grid2_data):
+        b = grid2_data.focus_on(((7.0, 8.0), (1.0, 2.0))).bounds()
+        assert b == pytest.approx((1.0, 7.0, 2.0, 8.0))
 
     # ── happy-path: vertical-letters orientation ─────────────────────────────
 
     def test_vl_top_left_cell(self, grid2_data_vl):
-        b = grid2_data_vl.focus_on("1A", "1A").bounds()
+        b = grid2_data_vl.focus_on(("1A", "1A")).bounds()
         assert b == pytest.approx((0.0, 5.0, 5.0, 10.0))
 
     def test_vl_bottom_right_cell(self, grid2_data_vl):
-        b = grid2_data_vl.focus_on("2B", "2B").bounds()
+        b = grid2_data_vl.focus_on(("2B", "2B")).bounds()
         assert b == pytest.approx((5.0, 10.0, 0.0, 5.0))
 
     def test_vl_full_grid(self, grid2_data_vl):
-        b = grid2_data_vl.focus_on("1A", "2B").bounds()
+        b = grid2_data_vl.focus_on(("1A", "2B")).bounds()
         assert b == pytest.approx(grid2_data_vl.full_bounds())
 
-    # ── ScatterPlotter: focus_on_grid() without_grid() raises ────────────────
+    # ── ScatterPlotter: focus_on() with grid labels + without_grid() raises ───
 
     def test_without_grid_raises(self, grid2_plotter):
         with pytest.raises(ValueError, match="without_grid"):
-            grid2_plotter.without_grid().focus_on_grid("A1", "B2")
+            grid2_plotter.without_grid().focus_on(("A1", "B2"))
 
-    def test_without_grid_error_mentions_focus_on_grid(self, grid2_plotter):
-        with pytest.raises(ValueError, match="focus_on_grid"):
-            grid2_plotter.without_grid().focus_on_grid("A1", "B2")
+    def test_without_grid_error_mentions_focus_on(self, grid2_plotter):
+        with pytest.raises(ValueError, match="focus_on"):
+            grid2_plotter.without_grid().focus_on(("A1", "B2"))
+
+    def test_without_grid_allows_coord_corners(self, grid2_plotter):
+        # (x, y) corners need no grid, so this must not raise.
+        p = grid2_plotter.without_grid().focus_on(((1.0, 2.0), (7.0, 8.0)))
+        assert p._data.bounds() == pytest.approx((1.0, 7.0, 2.0, 8.0))
 
     # ── error: bad label format ───────────────────────────────────────────────
 
     def test_missing_number(self, grid2_data):
         with pytest.raises(ValueError, match="letter\\+number"):
-            grid2_data.focus_on("A", "B2")
+            grid2_data.focus_on(("A", "B2"))
 
     def test_missing_letter(self, grid2_data):
         with pytest.raises(ValueError, match="letter\\+number"):
-            grid2_data.focus_on("1", "B2")
+            grid2_data.focus_on(("1", "B2"))
 
     def test_vl_wrong_format(self, grid2_data_vl):
         with pytest.raises(ValueError, match="number\\+letter"):
-            grid2_data_vl.focus_on("A1", "2B")
+            grid2_data_vl.focus_on(("A1", "2B"))
 
     # ── error: out-of-range column/row ───────────────────────────────────────
 
     def test_column_letter_out_of_range(self, grid2_data):
         with pytest.raises(ValueError, match="A..B"):
-            grid2_data.focus_on("C1", "C1")
+            grid2_data.focus_on(("C1", "C1"))
 
     def test_column_letter_mentions_grid_size(self, grid2_data):
         with pytest.raises(ValueError, match="grid_size=2"):
-            grid2_data.focus_on("Z1", "Z1")
+            grid2_data.focus_on(("Z1", "Z1"))
 
     def test_row_zero_invalid(self, grid2_data):
         with pytest.raises(ValueError, match="1..2"):
-            grid2_data.focus_on("A0", "A1")
+            grid2_data.focus_on(("A0", "A1"))
 
     def test_row_too_large(self, grid2_data):
         with pytest.raises(ValueError, match="1..2"):
-            grid2_data.focus_on("A1", "A3")
+            grid2_data.focus_on(("A1", "A3"))
 
     # ── swapped args are silently corrected ──────────────────────────────────
 
     def test_column_swapped(self, grid2_data):
-        assert grid2_data.focus_on("B1", "A2").bounds() == pytest.approx(
-            grid2_data.focus_on("A1", "B2").bounds()
+        assert grid2_data.focus_on(("B1", "A2")).bounds() == pytest.approx(
+            grid2_data.focus_on(("A1", "B2")).bounds()
         )
 
     def test_row_swapped(self, grid2_data):
-        assert grid2_data.focus_on("A2", "B1").bounds() == pytest.approx(
-            grid2_data.focus_on("A1", "B2").bounds()
+        assert grid2_data.focus_on(("A2", "B1")).bounds() == pytest.approx(
+            grid2_data.focus_on(("A1", "B2")).bounds()
         )
 
     def test_both_swapped(self, grid2_data):
-        assert grid2_data.focus_on("B2", "A1").bounds() == pytest.approx(
-            grid2_data.focus_on("A1", "B2").bounds()
+        assert grid2_data.focus_on(("B2", "A1")).bounds() == pytest.approx(
+            grid2_data.focus_on(("A1", "B2")).bounds()
         )
+
+    # ── soft focus keeps every cell (only the frame changes) ─────────────────
+
+    def test_soft_focus_keeps_all_cells(self, grid2_data):
+        focused = grid2_data.focus_on(("A1", "A1"))
+        assert len(focused.coordinates()) == len(grid2_data.coordinates())
 
 
 # ---------------------------------------------------------------------------
@@ -1877,6 +1898,126 @@ class TestFilterEmbeddingData:
         # the derived callable is invoked once for the filter mask and once for
         # the public get_column — both times it sees the full dataset
         assert calls == [ad.n_obs, ad.n_obs]
+
+
+class TestRegionFilterSpec:
+    """set_filter / hard_filter also accept region specs (not just callables)."""
+
+    def _bbox_of(self, data):
+        c = data.coordinates()
+        x_mid = float(c["x"].median())
+        y_mid = float(c["y"].median())
+        return x_mid, y_mid
+
+    def test_set_filter_coord_region(self, data):
+        c = data.coordinates()
+        x_mid, y_mid = self._bbox_of(data)
+        region = ((float(c["x"].min()), float(c["y"].min())), (x_mid, y_mid))
+        filtered = data.set_filter(region)
+        assert filtered.has_filter is True
+        expected = int(
+            ((c["x"] <= x_mid) & (c["y"] <= y_mid)
+             & (c["x"] >= c["x"].min()) & (c["y"] >= c["y"].min())).sum()
+        )
+        assert len(filtered.coordinates()) == expected
+        # soft: bounds still reflect the full frame
+        assert filtered.bounds() == pytest.approx(data.bounds())
+
+    def test_set_filter_region_list_union(self, data):
+        c = data.coordinates()
+        x_mid, y_mid = self._bbox_of(data)
+        r1 = ((float(c["x"].min()), float(c["y"].min())), (x_mid, y_mid))
+        r2 = ((x_mid, y_mid), (float(c["x"].max()), float(c["y"].max())))
+        filtered = data.set_filter([r1, r2])
+        n1 = len(data.set_filter(r1).coordinates())
+        n2 = len(data.set_filter(r2).coordinates())
+        # union >= each part, <= sum of parts (the two boxes touch at the mid)
+        n_union = len(filtered.coordinates())
+        assert n_union >= max(n1, n2)
+        assert n_union <= n1 + n2
+
+
+class TestHardFilter:
+    def test_has_hard_filter_default_false(self, data):
+        assert data.has_hard_filter is False
+        assert data.set_filter(lambda d: d.get_column("leiden").series == "0").has_hard_filter is False
+
+    def test_hard_filter_sets_flag(self, data):
+        hf = data.hard_filter(lambda d: d.get_column("leiden").series == "0")
+        assert hf.has_filter is True
+        assert hf.has_hard_filter is True
+
+    def test_hard_filter_subsets_coordinates(self, data, ad):
+        keep = ad.obs["leiden"] == "0"
+        hf = data.hard_filter(lambda d, m=keep.values: m)
+        assert len(hf.coordinates()) == int(keep.sum())
+
+    def test_hard_filter_bounds_follow_subset(self, data, ad):
+        keep = ad.obs["leiden"] == "0"
+        hf = data.hard_filter(lambda d, m=keep.values: m)
+        sub = hf.coordinates()
+        expected = (
+            float(sub["x"].min()),
+            float(sub["x"].max()),
+            float(sub["y"].min()),
+            float(sub["y"].max()),
+        )
+        assert hf.bounds() == pytest.approx(expected)
+        assert hf.full_bounds() == pytest.approx(expected)
+        # and the subset frame is strictly smaller than the full frame
+        assert hf.full_bounds() != pytest.approx(data.full_bounds())
+
+    def test_hard_filter_coord_region_bounds(self, data):
+        c = data.coordinates()
+        x_mid = float(c["x"].median())
+        y_mid = float(c["y"].median())
+        region = ((float(c["x"].min()), float(c["y"].min())), (x_mid, y_mid))
+        hf = data.hard_filter(region)
+        sub = hf.coordinates()
+        assert hf.full_bounds() == pytest.approx(
+            (
+                float(sub["x"].min()),
+                float(sub["x"].max()),
+                float(sub["y"].min()),
+                float(sub["y"].max()),
+            )
+        )
+
+    def test_hard_filter_grid_region_resolves_against_full(self, grid2_data):
+        # "A1" on the 2x2 grid over full_bounds — grid labels must resolve in the
+        # original coordinate space, not the (post-restrict) subset.
+        hf = grid2_data.hard_filter(("A1", "A1"))
+        # every kept cell falls inside the A1 cell's bbox from the ORIGINAL grid
+        soft = grid2_data.focus_on(("A1", "A1")).bounds()  # A1 bbox in full space
+        sub = hf.coordinates()
+        assert (sub["x"] >= soft[0] - 1e-9).all() and (sub["x"] <= soft[1] + 1e-9).all()
+        assert (sub["y"] >= soft[2] - 1e-9).all() and (sub["y"] <= soft[3] + 1e-9).all()
+
+    def test_hard_filter_moran_bins_over_subset(self, data, ad):
+        from mbf_singlecell_plotter.transforms import compute_grid_moran
+
+        keep = ad.obs["leiden"] == "0"
+        hf = data.hard_filter(lambda d, m=keep.values: m)
+        sub = hf.coordinates()
+        df = compute_grid_moran(hf, n_bins=8, min_cells=1)
+        # top-bin centres must lie within the subset extent (grid spanned over it)
+        assert df["top_bin_x"].min() >= float(sub["x"].min()) - 1e-6
+        assert df["top_bin_x"].max() <= float(sub["x"].max()) + 1e-6
+
+    def test_unfilter_clears_hard_flag(self, data, ad):
+        hf = data.hard_filter(lambda d: d.get_column("leiden").series == "0")
+        cleared = hf.unfilter()
+        assert cleared.has_hard_filter is False
+        assert cleared.has_filter is False
+        assert len(cleared.coordinates()) == ad.n_obs
+        assert cleared.full_bounds() == pytest.approx(data.full_bounds())
+
+    def test_set_filter_replaces_hard_filter(self, data):
+        hf = data.hard_filter(lambda d: d.get_column("leiden").series == "0")
+        soft = hf.set_filter(lambda d: d.get_column("leiden").series == "0")
+        assert soft.has_hard_filter is False
+        # soft filter → bounds back to full frame
+        assert soft.full_bounds() == pytest.approx(data.full_bounds())
 
 
 class TestFilterPlotter:

@@ -583,7 +583,7 @@ def _region_to_bbox(region, reference_data):
     """Resolve a 2-corner region ``(corner1, corner2)`` into ``(xlo, xhi, ylo, yhi)``.
 
     Each corner is either a grid-label string (e.g. ``"A1"``) or an ``(x, y)``
-    float pair. Shared by ``gradient_region`` and ``cell_region`` handling.
+    float pair. Shared by ``gradient_region`` and ``cell_filter`` handling.
     """
     corner1, corner2 = region
     if isinstance(corner1, str) or isinstance(corner2, str):
@@ -630,6 +630,33 @@ def _normalize_regions(region_or_regions):
     ):
         return [region_or_regions]
     return list(region_or_regions)
+
+
+def _regions_to_mask_fn(spec):
+    """Normalize a filter *spec* into a callable ``fn(data) -> pd.Series[bool]``.
+
+    *spec* is either an existing callable (returned unchanged) or a region /
+    list of regions (each a ``(corner1, corner2)`` box of grid labels or
+    ``(x, y)`` pairs).  For region specs the returned closure ORs
+    :func:`_bbox_membership` over ``data.coordinates()`` for every region and
+    returns a boolean Series indexed by obs — the shape expected by
+    :meth:`EmbeddingData._filter_mask`.  Shared by ``set_filter`` /
+    ``hard_filter`` (data.py) and ``cell_filter`` handling below.
+    """
+    if callable(spec):
+        return spec
+
+    regions = _normalize_regions(spec)
+
+    def _fn(data):
+        coords = data.coordinates()
+        rx, ry = coords["x"], coords["y"]
+        mask = np.zeros(len(coords), dtype=bool)
+        for region in regions:
+            mask |= _bbox_membership(rx, ry, _region_to_bbox(region, data))
+        return pd.Series(mask, index=coords.index)
+
+    return _fn
 
 
 def _cross2d(a, b):
@@ -701,7 +728,7 @@ def prepare_embedding_color_df(
     reference_data,
     corner_colors=_EMBEDDING_COLOR_DEFAULTS,
     gradient_region=None,
-    cell_region=None,
+    cell_filter=None,
     outside_color: str = "#C0C0C0",
 ) -> pd.DataFrame:
     """Assign 2D gradient colors to cells based on their position in reference_data.
@@ -726,15 +753,15 @@ def prepare_embedding_color_df(
 
                         The full colour spectrum maps to the gradient_region interior;
                         cells outside receive *outside_color*.
-        cell_region: Optional, restricts which cells receive color. Others get
-                        *outside_color*. A single region is a 2-tuple
-                        ``(corner1, corner2)`` (grid-label strings or ``(x, y)``
-                        float pairs), same as the 2-corner form of
-                        *gradient_region*. Also accepts a list of such regions
-                        (``[(corner1, corner2), ...]``) to highlight several
-                        disjoint regions at once — a cell is colored if it falls
-                        inside *any* of them.
-        outside_color:  Hex color for cells outside *gradient_region*/*cell_region* (default ``"#C0C0C0"``).
+        cell_filter: Optional, restricts which cells receive color. Others get
+                        *outside_color*. Accepts the same spec grammar as
+                        ``EmbeddingData.set_filter``: a single region ``(corner1,
+                        corner2)`` (grid-label strings or ``(x, y)`` float pairs,
+                        same as the 2-corner form of *gradient_region*), a list of
+                        such regions (a cell is colored if it falls inside *any* of
+                        them), or a callable ``fn(reference_data) -> bool mask``.
+                        Regions/callables are resolved in the *reference* embedding.
+        outside_color:  Hex color for cells outside *gradient_region*/*cell_filter* (default ``"#C0C0C0"``).
 
     Returns:
         DataFrame with columns: x, y, color (hex string).
@@ -811,13 +838,12 @@ def prepare_embedding_color_df(
 
     hex_colors = np.array(hex_colors)
 
-    if cell_region is not None:
-        regions = _normalize_regions(cell_region)
-        in_cell_region = np.zeros(len(rx), dtype=bool)
-        for region in regions:
-            if len(region) != 2:
-                raise ValueError("Invalid cell_region")
-            in_cell_region |= _bbox_membership(rx, ry, _region_to_bbox(region, reference_data))
+    if cell_filter is not None:
+        # Resolve regions/callables in the reference embedding, then align the
+        # mask onto the cells actually being plotted (current_coords order).
+        mask = _regions_to_mask_fn(cell_filter)(reference_data)
+        mask = pd.Series(np.asarray(mask), index=reference_data.coordinates().index)
+        in_cell_region = mask.reindex(current_coords.index).fillna(False).to_numpy()
         hex_colors[~in_cell_region] = outside_color
 
     df = current_coords.copy()

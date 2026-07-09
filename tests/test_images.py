@@ -246,8 +246,8 @@ class TestPlotCellDensity:
         assert_image(p)
 
     def test_focus_on_grid(self, plotter_no_boundary, assert_image):
-        """Density zoomed to a grid window via focus_on_grid."""
-        p = plotter_no_boundary.focus_on_grid("K12", "G9").plot_density()
+        """Density zoomed to a grid window via focus_on region."""
+        p = plotter_no_boundary.focus_on(("K12", "G9")).plot_density()
         assert_image(p)
 
     def test_title_override(self, plotter_no_boundary, assert_image):
@@ -460,7 +460,7 @@ class TestPlotScatterLimits:
         y_mid = coords["y"].median()
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
-            .focus_on(x=(coords["x"].min(), x_mid), y=(coords["y"].min(), y_mid))
+            .focus_on(((coords["x"].min(), coords["y"].min()), (x_mid, y_mid)))
             .plot("S100A8")
         )
         assert_image(p)
@@ -468,7 +468,7 @@ class TestPlotScatterLimits:
     def test_grid_limits(self, plotter_no_boundary, data, assert_image):
         p = (
             plotter_no_boundary.style(dot_size=DOT_SIZE)
-            .focus_on_grid("K12", "G9")
+            .focus_on(("K12", "G9"))
             .plot("S100A8")
         )
         assert_image(p)
@@ -919,7 +919,7 @@ class TestPlotEmbeddingColor:
         assert_image(p)
 
     def test_cell_region_rect(self, plotter_no_boundary, assert_image):
-        """cell_region restricts which cells are colored (others get outside_color),
+        """cell_filter restricts which cells are colored (others get outside_color),
         while the gradient itself still spans the full PCA space."""
         ad = plotter_no_boundary._data.ad
         pca = ad.obsm["X_pca"][:, :2]
@@ -929,12 +929,12 @@ class TestPlotEmbeddingColor:
         hw_y = float((pca[:, 1].max() - pca[:, 1].min()) * 0.25)
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
-            cell_region=((cx - hw_x, cy + hw_y), (cx + hw_x, cy - hw_y)),
+            cell_filter=((cx - hw_x, cy + hw_y), (cx + hw_x, cy - hw_y)),
         )
         assert_image(p)
 
     def test_cell_region_list(self, plotter_no_boundary, assert_image):
-        """cell_region as a list of disjoint boxes highlights the union of all of them."""
+        """cell_filter as a list of disjoint boxes highlights the union of all of them."""
         ad = plotter_no_boundary._data.ad
         pca = ad.obsm["X_pca"][:, :2]
         x_min, x_max = float(pca[:, 0].min()), float(pca[:, 0].max())
@@ -945,7 +945,7 @@ class TestPlotEmbeddingColor:
         ylo, yhi = y_min + y_span * 0.33, y_min + y_span * 0.42
         p = plotter_no_boundary.style(dot_size=DOT_SIZE).plot_embedding_color(
             "pca",
-            cell_region=[
+            cell_filter=[
                 (
                     (x_min + x_span * 0.25, yhi),
                     (x_min + x_span * 0.33, ylo),
