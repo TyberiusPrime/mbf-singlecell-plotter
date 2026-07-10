@@ -839,6 +839,8 @@ class EmbeddingData:
                 if self._alternative_sources
                 else ""
             )
+            + "Columns considered: var_index"
+            + ", {self._alternative_id_column} if self.alternative_id_column is not None else A"
         )
 
     def _compute_derived(self, col, derived) -> pd.Series:
@@ -1349,7 +1351,5 @@ class EmbeddingData:
 
         df = pd.DataFrame(histogram)
         for col_name in facet_cols:
-            df[col_name] = pd.Categorical(
-                df[col_name], categories=facet_cats[col_name]
-            )
+            df[col_name] = pd.Categorical(df[col_name], categories=facet_cats[col_name])
         return df
