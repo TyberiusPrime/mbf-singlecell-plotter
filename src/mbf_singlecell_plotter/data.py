@@ -1100,8 +1100,20 @@ class EmbeddingData:
         self,
         key: str,
         min_cells: int = 10,
+        facet: Optional[pd.Series] = None,
+        facet_row: Optional[pd.Series] = None,
+        facet_col: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
-        """Return DataFrame of grid-local category histograms."""
+        """Return DataFrame of grid-local category histograms.
+
+        When *facet* (or *facet_row*/*facet_col*) is a :class:`pandas.Series`
+        aligned to the embedding's cell index, the histogram is computed
+        separately per facet group over the same shared grid, and an
+        ordered-Categorical ``facet`` (or ``facet_row``/``facet_col``) column
+        is added — ready for ``plotnine.facet_wrap``/``facet_grid``.
+        """
+        from .transforms import _facet_categories
+
         expr, _ = self.get_column(key)
         if isinstance(expr.dtype, pd.CategoricalDtype) or pd.api.types.is_bool_dtype(
             expr
@@ -1128,14 +1140,28 @@ class EmbeddingData:
         # (mirrors how ScatterPlotter.plot renders bool columns).
         if pd.api.types.is_bool_dtype(expr):
             expr = expr.astype(str)
+
+        valid_index = coords.index[valid]
+        cell_data: dict[str, Any] = {
+            "x_bin": x_bins[valid],
+            "y_bin": y_bins[valid],
+            "category": expr.loc[valid_index].values,
+        }
+        facet_cols = []
+        facet_cats: dict[str, list] = {}
+        for col_name, series in (
+            ("facet", facet),
+            ("facet_row", facet_row),
+            ("facet_col", facet_col),
+        ):
+            if series is not None:
+                aligned = series.reindex(valid_index)
+                facet_cats[col_name] = [str(v) for v in _facet_categories(aligned)]
+                cell_data[col_name] = aligned.astype(str).values
+                facet_cols.append(col_name)
+
         try:
-            df_cells = pd.DataFrame(
-                {
-                    "x_bin": x_bins[valid],
-                    "y_bin": y_bins[valid],
-                    "category": expr.loc[coords.index[valid]].values,
-                }
-            )
+            df_cells = pd.DataFrame(cell_data)
         except ValueError as e:
             raise ValueError(f"Make sure your obs.keys are distinct!. Was: {e}")
 
@@ -1146,13 +1172,31 @@ class EmbeddingData:
             "frequency": [],
             "total": [],
         }
-        for (ix, iy), sub in df_cells.groupby(["x_bin", "y_bin"]):  # ty: ignore
-            if len(sub) >= min_cells:
-                freqs = sub["category"].value_counts(normalize=True)
-                for cat, freq in freqs.items():
-                    histogram["x"].append(ix)
-                    histogram["y"].append(iy)
-                    histogram["category"].append(cat)
-                    histogram["frequency"].append(freq)
-                    histogram["total"].append(len(sub))
-        return pd.DataFrame(histogram)
+        for col_name in facet_cols:
+            histogram[col_name] = []
+
+        group_cols = facet_cols + ["x_bin", "y_bin"]
+        for group_key, sub in df_cells.groupby(group_cols):  # ty: ignore
+            if len(sub) < min_cells:
+                continue
+            if facet_cols:
+                *facet_vals, ix, iy = group_key
+            else:
+                ix, iy = group_key
+                facet_vals = []
+            freqs = sub["category"].value_counts(normalize=True)
+            for cat, freq in freqs.items():
+                histogram["x"].append(ix)
+                histogram["y"].append(iy)
+                histogram["category"].append(cat)
+                histogram["frequency"].append(freq)
+                histogram["total"].append(len(sub))
+                for col_name, val in zip(facet_cols, facet_vals):
+                    histogram[col_name].append(val)
+
+        df = pd.DataFrame(histogram)
+        for col_name in facet_cols:
+            df[col_name] = pd.Categorical(
+                df[col_name], categories=facet_cats[col_name]
+            )
+        return df

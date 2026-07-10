@@ -2156,15 +2156,38 @@ class ScatterPlotter:
             Fraction of each grid square covered by the tiles at full size
             (0 < fill_fraction ≤ 1).  Defaults to 1.0 when ``scale_by_count``
             is True, 0.8 otherwise.
+
+        Honours the plotter's faceting (:meth:`facet` / :meth:`facet_2d`),
+        computing a separate grid-local histogram per facet group.
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_grid_histogram()")
 
-        hdf = self._data.grid_local_histogram(column, min_cell_count)
+        data = self._data
+
+        facet_series = None
+        if self._facet_variable is not None:
+            facet_series, _ = data.get_column(self._facet_variable)
+
+        facet_row_series = None
+        facet_col_series = None
+        if self._facet_row_variable is not None:
+            facet_row_series, _ = data.get_column(self._facet_row_variable)
+        if self._facet_col_variable is not None:
+            facet_col_series, _ = data.get_column(self._facet_col_variable)
+
+        hdf = data.grid_local_histogram(
+            column,
+            min_cell_count,
+            facet=facet_series,
+            facet_row=facet_row_series,
+            facet_col=facet_col_series,
+        )
         hdf["category"] = pd.Categorical(
             hdf["category"], sorted(hdf["category"].unique())
         )
-        hdf = hdf.sort_values(["x", "y", "category"])
+        facet_cols = [c for c in ("facet", "facet_row", "facet_col") if c in hdf.columns]
+        hdf = hdf.sort_values(facet_cols + ["x", "y", "category"])
         cats = list(hdf["category"].cat.categories)
         colors = self._colors_as_list(cats)
 
@@ -2180,7 +2203,7 @@ class ScatterPlotter:
         hdf["frequency"] = hdf["frequency"] * hdf["cell_factor"]
 
         offset = []
-        for _ignored, group in hdf.groupby(["x", "y"]):
+        for _ignored, group in hdf.groupby(facet_cols + ["x", "y"], observed=True):
             offset.extend(group["frequency"].cumsum().shift(fill_value=0))
 
         if vertical:
@@ -2257,8 +2280,11 @@ class ScatterPlotter:
                 panel_grid=p9.element_blank(),
                 axis_ticks_length=3,
                 axis_title=p9.element_blank(),
+                **self._facet_theme_overwrites(),
             )
         )
+
+        p = self._apply_facet_layer(p)
 
         p = self._register_fixed_panel(p)
 

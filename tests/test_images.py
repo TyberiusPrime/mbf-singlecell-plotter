@@ -510,6 +510,22 @@ class TestPlotGridLocalHistogram:
         )
         assert_image(p)
 
+    def test_facet(self, plotter_no_boundary, assert_image):
+        """Grid histogram honours .facet() — one panel per facet group."""
+        p = plotter_no_boundary.facet("coarse", n_col=3).plot_grid_histogram(
+            CAT_COL, min_cell_count=5
+        )
+        assert p.facet.__class__.__name__ == "facet_wrap"
+        assert_image(p)
+
+    def test_facet_2d(self, plotter_no_boundary, assert_image):
+        """Grid histogram honours .facet_2d() — facet_grid(row ~ col)."""
+        p = plotter_no_boundary.facet_2d("bool", "coarse").plot_grid_histogram(
+            CAT_COL, min_cell_count=5
+        )
+        assert p.facet.__class__.__name__ == "facet_grid"
+        assert_image(p)
+
 
 # ---------------------------------------------------------------------------
 # plot_histogram — global value_counts bar plot
