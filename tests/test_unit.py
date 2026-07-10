@@ -20,6 +20,7 @@ from mbf_singlecell_plotter import (
     map_to_integers,
     unmap,
 )
+from conftest import MULTI_DIGIT_COLUMN
 
 # The categorical obs column in the example data
 CAT_COL = "leiden"
@@ -596,6 +597,44 @@ class TestPlotHistogram:
 
         with pytest.raises(ValueError, match="not found in column"):
             plotter_no_boundary.plot_histogram(CAT_COL, normalize_to="__nonexistent__")
+
+
+# ---------------------------------------------------------------------------
+# Categorical color/category ordering — .plot() vs .plot_histogram() parity
+# ---------------------------------------------------------------------------
+
+
+class TestCategoricalColorOrder:
+    """Regression coverage: a plain object-dtype column with numeric-string
+    labels (e.g. "1", "2", "10") must be natsorted the same way by every
+    categorical plot method, not just pandas' default lexicographic
+    ``astype("category")`` order (which would put "10" before "2").
+    """
+
+    def test_plot_uses_natsorted_order(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot(MULTI_DIGIT_COLUMN)
+        assert list(p.data["expression"].cat.categories) == ["1", "2", "3", "10"]
+
+    def test_plot_histogram_uses_natsorted_order(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot_histogram(MULTI_DIGIT_COLUMN)
+        assert p.data["category"].tolist() == ["1", "2", "3", "10"]
+
+    def test_plot_and_histogram_agree(self, plotter_no_boundary):
+        """Same column, same category order, regardless of which method built it."""
+        p_scatter = plotter_no_boundary.plot(MULTI_DIGIT_COLUMN)
+        p_hist = plotter_no_boundary.plot_histogram(MULTI_DIGIT_COLUMN)
+        assert (
+            list(p_scatter.data["expression"].cat.categories)
+            == p_hist.data["category"].tolist()
+        )
+
+    def test_existing_category_dtype_order_is_preserved(self, plotter_no_boundary, ad):
+        """A column that is already dtype 'category' keeps its own category
+        order (not natsorted) — matches plot_histogram/plot_violin/plot_ridgeline."""
+        p = plotter_no_boundary.plot(CAT_COL)
+        assert list(p.data["expression"].cat.categories) == list(
+            ad.obs[CAT_COL].cat.categories.astype(str)
+        )
 
 
 # ---------------------------------------------------------------------------

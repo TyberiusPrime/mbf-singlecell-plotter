@@ -57,6 +57,12 @@ _CELL_TYPE_LABELS = {
     "8": "Platelets",
 }
 
+# A plain object-dtype (NOT pandas category) column with numeric-string labels
+# whose lexicographic order differs from natural-sort order — regression
+# coverage for natsort vs. default-category-sort category ordering.
+MULTI_DIGIT_COLUMN = "multi_digit"
+_MULTI_DIGIT_LABELS = ["1", "2", "3", "10"]
+
 
 @pytest.fixture(scope="session")
 def ad():
@@ -74,6 +80,9 @@ def ad():
     res.obs[CELL_TYPE_LABEL_COLUMN] = (
         res.obs["leiden"].astype(str).map(_CELL_TYPE_LABELS).astype("category")
     )
+    n = res.n_obs
+    labels = (_MULTI_DIGIT_LABELS * (n // len(_MULTI_DIGIT_LABELS) + 1))[:n]
+    res.obs[MULTI_DIGIT_COLUMN] = pd.Series(labels, index=res.obs.index, dtype=object)
     return res
 
 

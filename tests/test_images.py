@@ -678,6 +678,18 @@ class TestPlotRidgeline:
         )
         assert_image(p)
 
+    def test_facet_column(self, plotter_no_boundary, assert_image):
+        """.facet() adds a second grid dimension (one column per facet value)."""
+        p = plotter_no_boundary.facet("bool").plot_ridgeline("S100A8", CAT_COL)
+        assert_image(p)
+
+    def test_facet_2d_rejected(self, plotter_no_boundary):
+        """.facet_2d() conflicts with group_by owning the row axis."""
+        with pytest.raises(ValueError, match="facet_2d"):
+            plotter_no_boundary.facet_2d("bool", "coarse").plot_ridgeline(
+                "S100A8", CAT_COL
+            )
+
 
 # ---------------------------------------------------------------------------
 # panel_size — fixed scatter-panel dimensions

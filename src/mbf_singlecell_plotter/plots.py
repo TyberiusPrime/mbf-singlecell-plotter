@@ -1461,9 +1461,11 @@ class ScatterPlotter:
             and (expr.dtype != "category")
             and (expr.dtype != "bool")
         )
-        if not is_numerical and expr.dtype != "category":
-            expr = expr.astype("category")
-
+        # Leave non-numerical dtypes as-is (object/bool/category) — forcing an
+        # early astype("category") here would bake in pandas' default
+        # (lexicographic) category order and make _build_categorical's own
+        # dtype check always take the "already category" branch, silently
+        # skipping its natsorted(...) fallback for non-category columns.
         df = coords.copy()
         df["expression"] = expr
 
@@ -2608,24 +2610,31 @@ class ScatterPlotter:
             alpha:      Fill transparency for the density curves.
             row_height: Height (inches) of each stacked row.
             scales:     Passed to ``facet_grid`` — ``"free_y"`` (default) lets
-                        each row's peak fill its own panel height; ``"fixed"``
-                        shares one density scale across all rows.
+                        each row's peak fill its own panel height (shared
+                        across facet columns within a row); ``"fixed"``
+                        shares one density scale across all rows and columns.
 
         The discrete fill palette is taken from :meth:`colormap_discrete`.
-        Does not support the plotter's own faceting (:meth:`facet` /
-        :meth:`facet_2d`) — *group_by* already drives the stacked rows.
+
+        *group_by* always drives the stacked rows, so :meth:`facet_2d` (which
+        would also claim the row axis) is not supported. :meth:`facet` *is*
+        supported — it adds a second grid dimension, one column per value of
+        the faceting variable (``facet_grid(group_by ~ facet)`` rather than
+        its usual ``facet_wrap``), so ``n_col``/``dir``/etc. from
+        :meth:`facet` are ignored here.
 
         Raises:
             RuntimeError: if no data source has been set.
             ValueError:   if *column* is not numeric, *group_by* is numeric,
-                          or the plotter's own faceting is configured.
+                          or :meth:`facet_2d` is configured.
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_ridgeline()")
-        if self._is_faceted():
+        if self._facet_row_variable is not None or self._facet_col_variable is not None:
             raise ValueError(
-                "plot_ridgeline() cannot combine .facet()/.facet_2d() with "
-                "group_by — group_by already drives the stacked rows"
+                "plot_ridgeline() does not support .facet_2d() — group_by "
+                "already drives the stacked rows; use .facet(variable) to "
+                "add a column facet instead"
             )
 
         data = self._data
@@ -2653,11 +2662,27 @@ class ScatterPlotter:
         cats_str = [str(c) for c in cats]
 
         df = pd.DataFrame({"value": expr, "group": grp.reindex(expr.index).astype(str)})
+
+        has_col_facet = self._facet_variable is not None
+        if has_col_facet:
+            fv, _ = data.get_column(self._facet_variable)
+            if fv.dtype == "category":
+                facet_cats = list(fv.cat.categories)
+            else:
+                facet_cats = natsorted([c for c in fv.dropna().unique()])
+            facet_cats_str = [str(c) for c in facet_cats]
+            df["facet_col"] = fv.reindex(expr.index).astype(str)
+
         df = df.dropna(subset=["value"])
         df["group"] = pd.Categorical(df["group"], categories=cats_str)
+        if has_col_facet:
+            df["facet_col"] = pd.Categorical(df["facet_col"], categories=facet_cats_str)
 
         colors = self._colors_as_list(cats_str)
         color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
+        legend_title = (
+            self._cat_colors_title if self._cat_colors_title is not None else grp_name
+        )
 
         density_kwargs = dict(alpha=alpha, color="#333333", size=0.3, trim=trim)
         if bw is not None:
@@ -2666,8 +2691,12 @@ class ScatterPlotter:
         p = (
             p9.ggplot(df, p9.aes(x="value", fill="group"))
             + p9.geom_density(**density_kwargs)
-            + p9.scale_fill_manual(values=color_values, guide=None)
-            + p9.facet_grid("group ~ .", scales=scales)
+            # No legend: the row labels already name each group; guide=None keeps
+            # this scale purely for color assignment (name= is otherwise inert).
+            + p9.scale_fill_manual(values=color_values, name=legend_title, guide=None)
+            + p9.facet_grid(
+                "group ~ facet_col" if has_col_facet else "group ~ .", scales=scales
+            )
             + p9.labs(x=self._display_name(data, expr_name), y="Density")
         )
 
@@ -2677,7 +2706,8 @@ class ScatterPlotter:
             p = p + p9.labs(title=self._display_name(data, expr_name))
 
         if self.fig_size is None:
-            fig_size = (6, row_height * len(cats_str) + 1.2)
+            n_col = len(facet_cats_str) if has_col_facet else 1
+            fig_size = (6 * n_col, row_height * len(cats_str) + 1.2)
         else:
             fig_size = self.fig_size
 
