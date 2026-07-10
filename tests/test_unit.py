@@ -98,6 +98,88 @@ class TestGetColumn:
             data.get_column("__nonexistent_column__")
 
 
+class TestIsGene:
+    """is_gene() must mirror get_column()'s resolution order: obs columns are
+    never genes, var-index rows (however addressed) always are."""
+
+    def test_categorical_obs_column_is_not_gene(self, data):
+        assert data.is_gene(CAT_COL) is False
+
+    def test_numeric_obs_column_is_not_gene(self, data):
+        assert data.is_gene(NUMERIC_COL) is False
+
+    def test_bool_obs_column_is_not_gene(self, ad):
+        ad2 = ad.copy()
+        ad2.obs["is_half"] = [i < ad2.n_obs // 2 for i in range(ad2.n_obs)]
+        data = EmbeddingData(ad2, "umap")
+        assert data.is_gene("is_half") is False
+
+    def test_gene_by_name_is_gene(self, data):
+        assert data.is_gene("S100A8") is True
+
+    def test_missing_name_is_not_gene(self, data):
+        # is_gene never raises — an unresolvable name is simply not a gene.
+        assert data.is_gene("__nonexistent_column__") is False
+
+    def test_gene_by_alternative_id_column(self, ad):
+        data = EmbeddingData(ad, "umap", alternative_id_column="gene_ids")
+        assert data.is_gene("ENSG00000143546") is True
+
+    def test_obs_column_unaffected_by_alternative_id_column(self, ad):
+        data = EmbeddingData(ad, "umap", alternative_id_column="gene_ids")
+        assert data.is_gene(NUMERIC_COL) is False
+
+    def test_gene_addressed_via_symbol_id_space_pattern(self):
+        # var index entries of the form "SYMBOL ENSID" — a different addressing
+        # scheme than alternative_id_column, resolved by prefix/suffix match.
+        n = 10
+        ad = anndata.AnnData(X=np.random.rand(n, 2).astype(np.float32))
+        ad.obs_names = [f"cell{i}" for i in range(n)]
+        ad.var_names = ["GENEA ENSG001", "GENEB ENSG002"]
+        ad.obsm["umap"] = np.random.rand(n, 2)
+        ad.obs["cluster"] = pd.Categorical(["a", "b"] * (n // 2))
+        data = EmbeddingData(ad, "umap")
+        assert data.is_gene("GENEA") is True
+        assert data.is_gene("ENSG001") is True
+        assert data.is_gene("cluster") is False
+
+    def test_derived_column_is_not_gene(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"double_genes": lambda d: d.get_column(NUMERIC_COL).series * 2}
+        )
+        assert data.is_gene("double_genes") is False
+
+    def test_derived_column_tuple_is_not_gene(self, ad):
+        data = EmbeddingData(ad, "umap").add_derived_source(
+            {"double_genes": lambda d: d.get_column(NUMERIC_COL).series * 2},
+            name="derived1",
+        )
+        assert data.is_gene(("derived1", "double_genes")) is False
+
+    def test_gene_only_in_alternative_source(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt)
+        assert data.is_gene("EXTRA_GENE") is True
+
+    def test_obs_column_only_in_alternative_source_is_not_gene(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE", extra_obs="extra_annot")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt)
+        assert data.is_gene("extra_annot") is False
+
+    def test_tuple_routes_gene_to_named_alternative_source(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        assert data.is_gene(("imp", "EXTRA_GENE")) is True
+
+    def test_tuple_routes_obs_column_to_named_alternative_source(self, ad):
+        alt = _make_alt_ad(ad, extra_gene="EXTRA_GENE", extra_obs="extra_annot")
+        data = EmbeddingData(ad, "umap").add_alternative_source(alt, name="imp")
+        assert data.is_gene(("imp", "extra_annot")) is False
+
+    def test_tuple_unknown_source_is_not_gene(self, ad):
+        assert EmbeddingData(ad, "umap").is_gene(("nope", "x")) is False
+
+
 class TestGetCoordinateDataframe:
     def test_columns_present(self, data):
         df = data.coordinates()
