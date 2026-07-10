@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 from conftest import CELL_TYPE_COLUMN as CAT_COL
+from conftest import CELL_TYPE_LABEL_COLUMN
 
 # Dot size used across all scatter tests for legible reference images
 DOT_SIZE = 2
@@ -629,6 +630,51 @@ class TestPlotViolin:
         ]
         p = plotter_no_boundary.colormap_discrete(colors).plot_violin(
             "S100A8", group_by=CAT_COL
+        )
+        assert_image(p)
+
+
+# ---------------------------------------------------------------------------
+# plot_ridgeline — compact per-category density rows
+# ---------------------------------------------------------------------------
+
+
+class TestPlotRidgeline:
+    def test_basic(self, plotter_no_boundary, assert_image):
+        """One density row per leiden cluster."""
+        p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL)
+        assert_image(p)
+
+    def test_fixed_scales(self, plotter_no_boundary, assert_image):
+        """scales='fixed' shares one density scale across all rows."""
+        p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL, scales="fixed")
+        assert_image(p)
+
+    def test_long_labels(self, plotter_no_boundary, assert_image):
+        """Multi-character/multi-word row labels don't get clipped."""
+        p = plotter_no_boundary.plot_ridgeline("S100A8", CELL_TYPE_LABEL_COLUMN)
+        assert_image(p)
+
+    def test_row_height(self, plotter_no_boundary, assert_image):
+        """A smaller row_height packs the rows tighter."""
+        p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL, row_height=0.3)
+        assert_image(p)
+
+    def test_custom_colors(self, plotter_no_boundary, assert_image):
+        """Custom discrete palette applied via colormap_discrete."""
+        colors = [
+            "#E41A1C",
+            "#377EB8",
+            "#4DAF4A",
+            "#984EA3",
+            "#FF7F00",
+            "#A65628",
+            "#F781BF",
+            "#999999",
+            "#FFFF33",
+        ]
+        p = plotter_no_boundary.colormap_discrete(colors).plot_ridgeline(
+            "S100A8", CAT_COL
         )
         assert_image(p)
 

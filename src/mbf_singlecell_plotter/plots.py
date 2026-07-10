@@ -2585,6 +2585,129 @@ class ScatterPlotter:
 
         return p
 
+    def plot_ridgeline(
+        self,
+        column: str,
+        group_by: str,
+        *,
+        bw: Optional[float] = None,
+        trim: bool = True,
+        alpha: float = 0.9,
+        row_height: float = 0.5,
+        scales: str = "free_y",
+    ) -> p9.ggplot:
+        """Build a compact, one-row-per-category density plot.
+
+        Args:
+            column:     Numeric obs column or gene name (x-axis).
+            group_by:   Categorical obs column; each value becomes its own
+                        stacked row, labelled on the right.
+            bw:         Bandwidth for the density estimate (``geom_density``'s
+                        ``bw``); ``None`` uses the plotnine default.
+            trim:       Trim each density curve to its group's observed range.
+            alpha:      Fill transparency for the density curves.
+            row_height: Height (inches) of each stacked row.
+            scales:     Passed to ``facet_grid`` — ``"free_y"`` (default) lets
+                        each row's peak fill its own panel height; ``"fixed"``
+                        shares one density scale across all rows.
+
+        The discrete fill palette is taken from :meth:`colormap_discrete`.
+        Does not support the plotter's own faceting (:meth:`facet` /
+        :meth:`facet_2d`) — *group_by* already drives the stacked rows.
+
+        Raises:
+            RuntimeError: if no data source has been set.
+            ValueError:   if *column* is not numeric, *group_by* is numeric,
+                          or the plotter's own faceting is configured.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .plot_ridgeline()")
+        if self._is_faceted():
+            raise ValueError(
+                "plot_ridgeline() cannot combine .facet()/.facet_2d() with "
+                "group_by — group_by already drives the stacked rows"
+            )
+
+        data = self._data
+        expr, expr_name = data.get_column(column)
+
+        is_numerical = (
+            expr.dtype != "object" and expr.dtype != "category" and expr.dtype != "bool"
+        )
+        if not is_numerical:
+            raise ValueError(
+                f"plot_ridgeline() is for numeric columns; {column!r} is not numeric"
+            )
+
+        grp, grp_name = data.get_column(group_by)
+        grp_is_num = (
+            grp.dtype != "object" and grp.dtype != "category" and grp.dtype != "bool"
+        )
+        if grp_is_num:
+            raise ValueError(f"group_by={group_by!r} must be categorical, not numeric")
+
+        if grp.dtype == "category":
+            cats = list(grp.cat.categories)
+        else:
+            cats = natsorted([c for c in grp.unique() if not pd.isna(c)])
+        cats_str = [str(c) for c in cats]
+
+        df = pd.DataFrame({"value": expr, "group": grp.reindex(expr.index).astype(str)})
+        df = df.dropna(subset=["value"])
+        df["group"] = pd.Categorical(df["group"], categories=cats_str)
+
+        colors = self._colors_as_list(cats_str)
+        color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
+
+        density_kwargs = dict(alpha=alpha, color="#333333", size=0.3, trim=trim)
+        if bw is not None:
+            density_kwargs["bw"] = bw
+
+        p = (
+            p9.ggplot(df, p9.aes(x="value", fill="group"))
+            + p9.geom_density(**density_kwargs)
+            + p9.scale_fill_manual(values=color_values, guide=None)
+            + p9.facet_grid("group ~ .", scales=scales)
+            + p9.labs(x=self._display_name(data, expr_name), y="Density")
+        )
+
+        if self._title_override is not _UNSET:
+            p = p + p9.labs(title=self._title_override)
+        else:
+            p = p + p9.labs(title=self._display_name(data, expr_name))
+
+        if self.fig_size is None:
+            fig_size = (6, row_height * len(cats_str) + 1.2)
+        else:
+            fig_size = self.fig_size
+
+        p = p + p9.theme_minimal(base_size=self.base_size)
+        p = p + p9.theme(
+            figure_size=fig_size,
+            panel_background=p9.element_rect(fill=self._bg_color, color=None),
+            panel_border=p9.element_blank(),
+            axis_line_x=p9.element_line(color=self._spine_color, size=0.5),
+            axis_line_y=p9.element_line(color=self._spine_color, size=0.5),
+            panel_spacing_y=0.006,
+            panel_grid_major_x=p9.element_line(
+                color="#D8D8D8", size=0.3, linetype="dotted"
+            ),
+            panel_grid_major_y=p9.element_blank(),
+            panel_grid_minor=p9.element_blank(),
+            strip_background=p9.element_blank(),
+            strip_text_y=p9.element_text(angle=0, ha="left", color=self._tick_color),
+            axis_text_y=p9.element_blank(),
+            axis_ticks_major_y=p9.element_blank(),
+            axis_text_x=p9.element_text(color=self._tick_color),
+            axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
+            plot_margin_right=0.06,
+            **self._theme_overwrites,
+        )
+
+        p = self._register_fixed_panel(p)
+
+        return p
+
     def plot_embedding_color(
         self,
         reference_embedding,

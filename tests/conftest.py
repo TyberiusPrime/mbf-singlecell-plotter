@@ -43,6 +43,20 @@ CELL_TYPE_COLUMN = "leiden"
 # A coarse (3-category) grouping derived from leiden, for 2-D facet tests.
 COARSE_COLUMN = "coarse"
 
+# A leiden → descriptive-name mapping, for testing multi-character facet/row labels.
+CELL_TYPE_LABEL_COLUMN = "cell_type_label"
+_CELL_TYPE_LABELS = {
+    "0": "CD4 Naive T cells",
+    "1": "CD14+ Monocytes",
+    "2": "B cells",
+    "3": "CD8 T cells",
+    "4": "NK cells",
+    "5": "FCGR3A+ Monocytes",
+    "6": "Dendritic cells",
+    "7": "Megakaryocytes",
+    "8": "Platelets",
+}
+
 
 @pytest.fixture(scope="session")
 def ad():
@@ -57,6 +71,9 @@ def ad():
     coarse[leiden_int < 3] = "L"
     coarse[leiden_int >= 6] = "H"
     res.obs[COARSE_COLUMN] = coarse.astype("category")
+    res.obs[CELL_TYPE_LABEL_COLUMN] = (
+        res.obs["leiden"].astype(str).map(_CELL_TYPE_LABELS).astype("category")
+    )
     return res
 
 
