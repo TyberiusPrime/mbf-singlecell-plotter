@@ -999,7 +999,12 @@ class ScatterPlotter:
 
         For numerical data (default ``enabled=True``): points are sorted by
         expression value before drawing, so the highest values end up on top.
-        Set ``ascending=False`` to put the lowest values on top instead.
+        Set ``ascending=False`` to put the lowest values on top instead — this
+        applies to the *whole* point stack, including the zero-value underlay
+        and the clipped (``>max_quantile``) points, so with ``ascending=False``
+        the clipped points sit at the *bottom* rather than on top. The
+        colorbar is flipped to match, so the colorbar end corresponding to the
+        values drawn on top is always at the top of the bar.
 
         For categorical data (default ``enabled=True``): points are grouped
         and drawn by category, so the last category (in its natural /
@@ -3176,30 +3181,51 @@ class ScatterPlotter:
         if self._background_enabled:
             p = self._add_background_layer(p, df)
 
-        # Zero underlay
+        # Point layers, ordered low → high by expression so that the LAST layer
+        # added (painted on top) reflects the chosen "on top" direction.
+        # With ``ascending=True`` (default) the highest values end up on top, so
+        # the clipped (>max_quantile) points are added last. With
+        # ``ascending=False`` we want the *lowest* values on top, so the whole
+        # stack is reversed — otherwise the clipped (highest) points would
+        # stubbornly sit on top of everything, contradicting the requested
+        # draw order. The seed (random) and enabled=False (dataset-order) modes
+        # have no meaningful direction and keep the default low→high stack.
+        point_layers = []
         if self._layer_zeros and len(df_zeros) > 0:
-            p = p + p9.geom_point(
-                data=df_zeros,
-                mapping=p9.aes("x", "y"),
-                color=self._zero_color,
-                size=self._zero_dot_size,
-                inherit_aes=False,
+            point_layers.append(
+                p9.geom_point(
+                    data=df_zeros,
+                    mapping=p9.aes("x", "y"),
+                    color=self._zero_color,
+                    size=self._zero_dot_size,
+                    inherit_aes=False,
+                )
             )
-
-        # Main scatter (gradient range)
         if self._layer_data:
-            p = p + p9.geom_point(size=self._dot_size, alpha=self._dot_alpha)
-
-        # Clipped values drawn on top in clip color
-        if self._layer_data and len(df_above) > 0:
-            p = p + p9.geom_point(
-                data=df_above,
-                mapping=p9.aes("x", "y"),
-                color=self._upper_clip_color,
-                size=self._dot_size,
-                alpha=self._dot_alpha,
-                inherit_aes=False,
+            point_layers.append(
+                p9.geom_point(size=self._dot_size, alpha=self._dot_alpha)
             )
+        if self._layer_data and len(df_above) > 0:
+            point_layers.append(
+                p9.geom_point(
+                    data=df_above,
+                    mapping=p9.aes("x", "y"),
+                    color=self._upper_clip_color,
+                    size=self._dot_size,
+                    alpha=self._dot_alpha,
+                    inherit_aes=False,
+                )
+            )
+
+        if (
+            self._anti_overplot
+            and self._anti_overplot_seed is None
+            and not self._anti_overplot_ascending
+        ):
+            point_layers.reverse()
+
+        for layer in point_layers:
+            p = p + layer
 
         # Color scale
         cmap_colors = self._get_cmap_colors()

@@ -247,6 +247,13 @@ For numerical data, points are by default drawn in order of value, so high
 values end up on top. For categorical data, points are by default drawn
 grouped by category, so the last category ends up on top.
 
+For numerical data, ``ascending=False`` reverses the *whole* point stack —
+including the zero-value underlay and the clipped (``>max_quantile``) points —
+so the lowest values end up on top and the clipped points sit at the bottom
+rather than on top of everything. The colorbar is flipped to match the draw
+order, so the end of the colorbar corresponding to the values drawn on top is
+always at the top of the bar.
+
 ```python
 plotter.anti_overplot(
     enabled = True, # True == default; False = original (dataset) row order

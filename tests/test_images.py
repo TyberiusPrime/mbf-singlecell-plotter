@@ -200,6 +200,122 @@ class TestPlotScatterCategorical:
 
 
 # ---------------------------------------------------------------------------
+# anti_overplot — ascending must be respected in the rendered output
+# ---------------------------------------------------------------------------
+
+
+class TestAntiOverplotAscending:
+    """Behavioral guard: ``anti_overplot(ascending=...)`` must actually change
+    the rendered draw order, not be silently ignored.
+
+    The snapshot tests (test_leiden_clusters / test_leiden_flip_order) lock in
+    a single rendering each and cannot detect a regression that makes both
+    directions produce identical output — after a ``REGENERATE_REFS`` the two
+    references would simply become equal.  These tests instead render both
+    directions and assert they differ, so the contract survives reference
+    regeneration.
+    """
+
+    # Fraction of panel pixels that must differ for ascending=True vs
+    # ascending=False to count as "respected".  Well above the 0.1 % image-match
+    # tolerance, well below the ~1.7 % (categorical) and ~3.8 % (numerical)
+    # observed *draw-order* differences.
+    MIN_DIFF_FRAC = 0.005
+
+    # Compare only the scatter panel: the right ~20 % holds the colorbar
+    # (numerical) / discrete legend (categorical).  For numerical data the
+    # colorbar is *also* reversed when ascending=False (a side-effect), so
+    # comparing the full figure could hide a regression that breaks only the
+    # documented point draw order.  Cropping to the panel isolates exactly the
+    # contract anti_overplot() documents.
+    PANEL_WIDTH_FRAC = 0.80
+
+    def _panel(self, arr):
+        return arr[:, : int(arr.shape[1] * self.PANEL_WIDTH_FRAC)]
+
+    def _diff_frac(self, a, b):
+        assert a.shape == b.shape, f"{a.shape} != {b.shape}"
+        diff = np.abs(a.astype(int) - b.astype(int)).max(axis=2) > 5
+        return float(diff.mean())
+
+    def test_categorical_flips_draw_order(self, plotter_no_boundary):
+        from image_comparison import _plotnine_to_array
+
+        base = plotter_no_boundary.style(dot_size=DOT_SIZE)
+        asc = _plotnine_to_array(base.anti_overplot(ascending=True).plot(CAT_COL))
+        desc = _plotnine_to_array(base.anti_overplot(ascending=False).plot(CAT_COL))
+        default = _plotnine_to_array(base.plot(CAT_COL))
+
+        # Default draw order is ascending (anti_overplot on, ascending=True).
+        assert self._diff_frac(self._panel(default), self._panel(asc)) < 0.001
+        # Flipping the direction must change which category paints on top.
+        assert self._diff_frac(self._panel(asc), self._panel(desc)) > self.MIN_DIFF_FRAC, (
+            "ascending=True vs ascending=False produced nearly identical "
+            "categorical output — `ascending` is not respected."
+        )
+
+    def test_numerical_flips_draw_order(self, plotter_no_boundary):
+        from image_comparison import _plotnine_to_array
+
+        base = plotter_no_boundary.style(dot_size=DOT_SIZE)
+        asc = _plotnine_to_array(base.anti_overplot(ascending=True).plot("CST3"))
+        desc = _plotnine_to_array(base.anti_overplot(ascending=False).plot("CST3"))
+        assert self._diff_frac(self._panel(asc), self._panel(desc)) > self.MIN_DIFF_FRAC, (
+            "ascending=True vs ascending=False produced nearly identical "
+            "numerical output — `ascending` is not respected."
+        )
+
+    def test_numerical_clip_points_respect_ascending(self):
+        """The clipped (>max_quantile) points must follow ``ascending`` and not
+        be pinned on top of everything.
+
+        Regression: the clip layer used to be added last unconditionally, so
+        even ``ascending=False`` (lowest-on-top) drew the highest, clipped
+        points on top.  Here a clip point and a zero point overlap at the same
+        coordinate; ``ascending=True`` paints the clip (red) on top while
+        ``ascending=False`` paints the zero (grey) on top — so the clip colour
+        is visible only for ``ascending=True``.
+        """
+        import anndata
+        from mbf_singlecell_plotter import EmbeddingData, ScatterPlotter
+        from image_comparison import _plotnine_to_array
+
+        # 18 normal filler points spread along x (for sane axes / quantile),
+        # plus a clip point and a zero point stacked at the same coordinate.
+        filler_x = np.linspace(-5, 5, 18)
+        coords = [[float(x), 0.0] for x in filler_x] + [[3.0, 0.0], [3.0, 0.0]]
+        expr = [1.0] * 18 + [10.0, 0.0]  # 18 normal, 1 clip (>95th pct), 1 zero
+        ad = anndata.AnnData(X=np.array(expr, dtype="float32").reshape(-1, 1))
+        ad.obs_names = [f"c{i}" for i in range(len(coords))]
+        ad.var_names = ["GENE"]
+        ad.obsm["X_umap"] = np.array(coords, dtype="float32")
+        data = EmbeddingData(ad, "umap")
+        # Equal, large dots so the top point fully covers the one beneath.
+        base = ScatterPlotter().set_source(data).style(dot_size=40).zeros(dot_size=40)
+
+        asc = _plotnine_to_array(base.anti_overplot(ascending=True).plot("GENE"))
+        desc = _plotnine_to_array(base.anti_overplot(ascending=False).plot("GENE"))
+
+        def count_color(arr, target, tol=25):
+            panel = arr[:, : int(arr.shape[1] * self.PANEL_WIDTH_FRAC)]
+            d = np.abs(panel.astype(int) - np.array(target)).max(axis=2)
+            return int((d <= tol).sum())
+
+        clip_red = (255, 0, 0)  # default _upper_clip_color #FF0000
+        asc_red = count_color(asc, clip_red)
+        desc_red = count_color(desc, clip_red)
+        # Clip is on top (visible) only for ascending=True.
+        assert asc_red > 500, (
+            f"clip colour not visible for ascending=True ({asc_red} px); "
+            "expected the clipped point on top."
+        )
+        assert desc_red < 100, (
+            f"clip colour still visible with ascending=False ({desc_red} px) — "
+            "clipped points are drawn on top instead of respecting `ascending`."
+        )
+
+
+# ---------------------------------------------------------------------------
 # plot_density
 # ---------------------------------------------------------------------------
 
