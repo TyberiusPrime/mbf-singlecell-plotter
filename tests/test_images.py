@@ -27,6 +27,10 @@ from conftest import CELL_TYPE_LABEL_COLUMN
 # Dot size used across all scatter tests for legible reference images
 DOT_SIZE = 2
 
+# The numeric obs column used by TestPlotHistogramNumeric (mirrors NUMERIC_COL
+# in test_unit.py)
+NUMERIC_COL = "n_genes"
+
 
 # ---------------------------------------------------------------------------
 # plot — numerical (gene expression), no boundary overlay
@@ -688,6 +692,33 @@ class TestPlotHistogram:
     def test_facet_normalized(self, plotter_no_boundary, assert_image):
         # bool facet splits cells 50/50; leiden "0" appears in both halves.
         p = plotter_no_boundary.facet("bool").plot_histogram(CAT_COL, normalize_to="0")
+        assert_image(p)
+
+
+# ---------------------------------------------------------------------------
+# plot_histogram — numeric column, geom_histogram
+# ---------------------------------------------------------------------------
+
+
+class TestPlotHistogramNumeric:
+    def test_basic(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.plot_histogram(NUMERIC_COL)
+        assert_image(p)
+
+    def test_stat_bin_args(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.plot_histogram(NUMERIC_COL, stat_bin_args={"bins": 15})
+        assert_image(p)
+
+    def test_facet(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.facet("coarse", n_col=3).plot_histogram(NUMERIC_COL)
+        assert_image(p)
+
+    def test_facet_2d(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.facet_2d("bool", "coarse").plot_histogram(NUMERIC_COL)
+        assert_image(p)
+
+    def test_fixed_panel(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.panel_size(3, 3).plot_histogram(NUMERIC_COL)
         assert_image(p)
 
 

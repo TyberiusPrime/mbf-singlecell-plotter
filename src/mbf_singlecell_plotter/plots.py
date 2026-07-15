@@ -2300,28 +2300,38 @@ class ScatterPlotter:
         return p
 
     def plot_histogram(
-        self, column: str, normalize_to: Optional[str] = None
+        self,
+        column: str,
+        normalize_to: Optional[str] = None,
+        stat_bin_args: Optional[dict] = None,
     ) -> p9.ggplot:
-        """Build a bar plot of the ``value_counts`` of a categorical column.
+        """Build a histogram of *column*.
 
-        Bars are coloured per category using the discrete palette configured
-        via :meth:`colormap_discrete` (defaulting to
-        ``DEFAULT_COLORS_CATEGORIES``), and the fill legend is hidden because
-        the x-axis already labels the categories.
+        Categorical columns get a bar plot of ``value_counts`` (bars coloured
+        per category via :meth:`colormap_discrete`, fill legend hidden since
+        the x-axis already labels the categories). Numeric columns get a
+        binned ``geom_histogram``. Dispatches to
+        :meth:`_plot_histogram_categorical` / :meth:`_plot_histogram_numeric`
+        based on *column*'s dtype.
 
         Honours the plotter's faceting (:meth:`facet` / :meth:`facet_2d`,
-        computing counts per facet group), :meth:`title`,
+        computing counts/bins per facet group), :meth:`title`,
         :meth:`panel_size` and :meth:`theme` configuration, mirroring the
         other ``plot_*`` methods.  Returns the plotnine ``ggplot`` object.
 
         Raises:
             RuntimeError: if no data source has been set.
-            ValueError:  if *column* is numeric.
 
         **Parameters**
 
-        - ``normalize_to``: optional column value. When provided, every bin
-          count is divided by this value's count so that it becomes ``1.0`` on the y-axis.
+        - ``normalize_to``: categorical columns only, ignored for numeric
+          ones. Optional column value. When provided, every bin count is
+          divided by this value's count so that it becomes ``1.0`` on the
+          y-axis.
+        - ``stat_bin_args``: numeric columns only, ignored for categorical
+          ones. Optional dict of ``stat_bin`` keyword arguments (e.g.
+          ``bins``, ``binwidth``, ``boundary``), forwarded to
+          ``geom_histogram``.
         """
         if self._data is None:
             raise RuntimeError("call .set_source() before .plot_histogram()")
@@ -2333,10 +2343,15 @@ class ScatterPlotter:
             expr.dtype != "object" and expr.dtype != "category" and expr.dtype != "bool"
         )
         if is_numerical:
-            raise ValueError(
-                f"plot_histogram() is for categorical columns; {column!r} is numeric"
+            return self._plot_histogram_numeric(
+                data, expr, expr_name, stat_bin_args or {}
             )
+        else:
+            return self._plot_histogram_categorical(data, expr, expr_name, normalize_to)
 
+    def _plot_histogram_categorical(
+        self, data, expr: pd.Series, expr_name: str, normalize_to: Optional[str]
+    ) -> p9.ggplot:
         if expr.dtype == "category":
             cats = list(expr.cat.categories)
         else:
@@ -2437,6 +2452,66 @@ class ScatterPlotter:
         if self.fig_size is None:
             if self._is_faceted():
                 n_col, n_row = self._facet_grid_dims(counts)
+                fig_size = (6 * n_col, 5 * n_row)
+            else:
+                fig_size = (6, 5)
+        else:
+            fig_size = self.fig_size
+
+        p = p + p9.theme_minimal(base_size=self.base_size)
+        p = p + p9.theme(
+            figure_size=fig_size,
+            panel_background=p9.element_rect(fill=self._bg_color, color=None),
+            panel_border=p9.element_rect(color=self._spine_color, size=0.5, fill=None),
+            panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
+            panel_grid_minor=p9.element_blank(),
+            axis_text=p9.element_text(color=self._tick_color),
+            axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
+            axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
+            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
+        )
+
+        p = self._register_fixed_panel(p)
+
+        return p
+
+    def _plot_histogram_numeric(
+        self, data, expr: pd.Series, expr_name: str, stat_bin_args: dict
+    ) -> p9.ggplot:
+        df = pd.DataFrame({"value": expr})
+
+        facet_cols = []
+        if self._facet_variable is not None:
+            fv, _ = data.get_column(self._facet_variable)
+            df["facet"] = pd.Categorical(fv.reindex(expr.index).astype(str))
+            facet_cols.append("facet")
+        if self._facet_row_variable is not None:
+            rv, _ = data.get_column(self._facet_row_variable)
+            df["facet_row"] = pd.Categorical(rv.reindex(expr.index).astype(str))
+            facet_cols.append("facet_row")
+        if self._facet_col_variable is not None:
+            cv, _ = data.get_column(self._facet_col_variable)
+            df["facet_col"] = pd.Categorical(cv.reindex(expr.index).astype(str))
+            facet_cols.append("facet_col")
+
+        color = self._colors_as_list([expr_name])[0]
+
+        p = (
+            p9.ggplot(df, p9.aes(x="value"))
+            + p9.geom_histogram(fill=color, **stat_bin_args)
+            + p9.labs(x=self._display_name(data, expr_name), y="count")
+        )
+
+        p = self._apply_facet_layer(p)
+
+        if self._title_override is not _UNSET:
+            p = p + p9.labs(title=self._title_override)
+        else:
+            p = p + p9.labs(title=self._display_name(data, expr_name))
+
+        if self.fig_size is None:
+            if self._is_faceted():
+                n_col, n_row = self._facet_grid_dims(df)
                 fig_size = (6 * n_col, 5 * n_row)
             else:
                 fig_size = (6, 5)

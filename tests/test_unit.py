@@ -516,9 +516,36 @@ class TestPlotHistogram:
         # total must equal the number of cells
         assert p.data["count"].sum() == ad.n_obs
 
-    def test_numeric_column_raises(self, plotter_no_boundary):
-        with pytest.raises(ValueError, match="numeric"):
-            plotter_no_boundary.plot_histogram(NUMERIC_COL)
+    def test_numeric_column_builds_geom_histogram(self, plotter_no_boundary):
+        import plotnine as p9
+
+        p = plotter_no_boundary.plot_histogram(NUMERIC_COL)
+        assert isinstance(p, p9.ggplot)
+        assert any(isinstance(g.geom, p9.geom_histogram) for g in p.layers)
+        assert p.data["value"].tolist() == list(
+            plotter_no_boundary._data.get_column(NUMERIC_COL)[0]
+        )
+
+    def test_numeric_column_forwards_stat_bin_args(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot_histogram(NUMERIC_COL, stat_bin_args={"bins": 7})
+        layer = next(g for g in p.layers if isinstance(g.geom, p9.geom_histogram))
+        assert layer.stat.params["bins"] == 7
+
+    def test_numeric_column_ignores_normalize_to(self, plotter_no_boundary):
+        """normalize_to doesn't apply to numeric columns — passing it is a no-op."""
+        p_plain = plotter_no_boundary.plot_histogram(NUMERIC_COL)
+        p_with_normalize = plotter_no_boundary.plot_histogram(
+            NUMERIC_COL, normalize_to="4"
+        )
+        assert p_plain.data["value"].tolist() == p_with_normalize.data["value"].tolist()
+
+    def test_categorical_column_ignores_stat_bin_args(self, plotter_no_boundary):
+        """stat_bin_args doesn't apply to categorical columns — passing it is a no-op."""
+        p_plain = plotter_no_boundary.plot_histogram(CAT_COL)
+        p_with_bins = plotter_no_boundary.plot_histogram(
+            CAT_COL, stat_bin_args={"bins": 7}
+        )
+        assert p_plain.data.equals(p_with_bins.data)
 
     def test_uses_configured_colors(self, plotter_no_boundary):
         """Rendered bars must use the colormap_discrete palette."""
