@@ -1642,6 +1642,236 @@ class TestAlternativeSourceNamesPlotter:
 
 
 # ---------------------------------------------------------------------------
+# Source-routed embeddings: (source_name, embedding)
+# ---------------------------------------------------------------------------
+
+
+def _embedding_ad(primary, key="umap", *, factor=1000.0, shuffle=False, drop=0):
+    """Copy *primary* and offset its ``X_<key>`` embedding by *factor*.
+
+    Produces an AnnData sharing the primary's ``obs_names`` (optionally
+    reversed or with the last *drop* cells dropped) and a deliberately
+    distinct embedding, so coordinates pulled from this source are
+    unambiguously traceable to it.  Used to test the
+    ``EmbeddingData(ad, (source_name, key))`` source-routing form.
+    """
+    alt = primary.copy()
+    alt.obsm["X_" + key] = primary.obsm["X_" + key] + factor
+    if drop:
+        alt = alt[: alt.n_obs - drop].copy()
+    if shuffle:
+        order = list(range(alt.n_obs))[::-1]
+        alt = alt[order].copy()
+    return alt
+
+
+class TestSourceRoutedEmbedding:
+    """Source-routed embedding: ``EmbeddingData(ad, (source_name, key))`` pulls the
+    embedding array from a named alternative source instead of the primary ``ad.obsm``."""
+
+    def test_coordinates_come_from_alternative_not_primary(self, ad):
+        alt = _embedding_ad(ad, factor=1000.0)
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        coords = data.coordinates()
+        primary_x = ad.obsm["X_umap"][:, 0]
+        # offset by +1000 → distinct from primary, proving it came from alt
+        np.testing.assert_allclose(coords["x"].values, primary_x + 1000.0)
+        np.testing.assert_allclose(coords["y"].values, ad.obsm["X_umap"][:, 1] + 1000.0)
+        assert coords.index.equals(ad.obs_names)
+
+    def test_bare_key_resolves_to_X_prefix(self, ad):
+        # "umap" (bare) resolves to "X_umap" inside the alternative source
+        alt = _embedding_ad(ad)
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        assert data.embedding == "X_umap"
+
+    def test_pca_tuple_inside_source_spec(self, ad):
+        alt = _embedding_ad(ad, key="pca", factor=500.0)
+        data = (
+            EmbeddingData(ad, ("alt", ("pca", 0, 1)))
+            .add_alternative_source(alt, name="alt")
+        )
+        coords = data.coordinates()
+        pca = ad.obsm["X_pca"]
+        np.testing.assert_allclose(coords["x"].values, pca[:, 0] + 500.0)
+        np.testing.assert_allclose(coords["y"].values, pca[:, 1] + 500.0)
+
+    def test_embedding_source_property(self, ad):
+        alt = _embedding_ad(ad)
+        routed = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        assert routed.embedding_source == "alt"
+        # primary embedding has no source routing
+        assert EmbeddingData(ad, "umap").embedding_source is None
+
+    def test_embedding_property_lazy_after_construction(self, ad):
+        # source registered AFTER construction — embedding key resolves lazily
+        data = EmbeddingData(ad, ("alt", "umap"))
+        assert data.embedding_source == "alt"
+        data = data.add_alternative_source(_embedding_ad(ad), name="alt")
+        assert data.embedding == "X_umap"
+
+    def test_reindex_when_alternative_shuffled(self, ad):
+        """Alternative stores the embedding in reversed obs order — coordinates
+        must reindex back onto the primary obs_names."""
+        alt = _embedding_ad(ad, factor=0.0, shuffle=True)  # same values, new order
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        coords = data.coordinates()
+        # after reindex, primary cell i keeps its own embedding value
+        np.testing.assert_allclose(coords["x"].values, ad.obsm["X_umap"][:, 0])
+        assert coords.index.equals(ad.obs_names)
+
+    def test_missing_cells_in_alternative_become_nan(self, ad):
+        alt = _embedding_ad(ad, factor=0.0, drop=5)
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        coords = data.coordinates()
+        assert len(coords) == ad.n_obs
+        missing = set(ad.obs_names[-5:]) - set(alt.obs_names)
+        assert missing
+        assert coords.loc[list(missing)]["x"].isna().all()
+
+    def test_gene_expression_still_from_primary(self, ad):
+        """Source-routing the embedding does not change column resolution:
+        genes/obs still come from the primary source."""
+        alt = _embedding_ad(ad)
+        # alt has no EXTRA_GENE column, so a plain lookup must hit the primary
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        primary_series, _ = EmbeddingData(ad, "umap").get_column("S100A8")
+        series, name = data.get_column("S100A8")
+        assert name == "S100A8"
+        assert series.index.equals(ad.obs_names)
+        np.testing.assert_allclose(series.values, primary_series.values)
+
+    def test_bounds_reflect_alternative_embedding(self, ad):
+        alt = _embedding_ad(ad, factor=1000.0)
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        x_min, x_max, y_min, y_max = data.bounds()
+        # bounds are offset by +1000 relative to the primary's range
+        px = ad.obsm["X_umap"][:, 0]
+        assert x_min == pytest.approx(px.min() + 1000.0)
+        assert x_max == pytest.approx(px.max() + 1000.0)
+
+    def test_raises_when_source_not_registered(self, ad):
+        data = EmbeddingData(ad, ("nope", "umap"))  # source added later / never
+        with pytest.raises(KeyError, match="not a registered alternative source"):
+            data.coordinates()
+        with pytest.raises(KeyError):
+            _ = data.embedding
+
+    def test_raises_when_embedding_key_missing_in_source(self, ad):
+        alt = _embedding_ad(ad)  # has X_umap but not X_tsne
+        data = (
+            EmbeddingData(ad, ("alt", "tsne"))
+            .add_alternative_source(alt, name="alt")
+        )
+        with pytest.raises(KeyError, match="not found in source obsm"):
+            data.coordinates()
+
+    def test_invalid_inner_spec_raises(self, ad):
+        with pytest.raises(ValueError, match="second element"):
+            EmbeddingData(ad, ("alt", 5))
+
+    def test_invalid_inner_tuple_raises(self, ad):
+        with pytest.raises(ValueError, match="Source-routed tuple embedding"):
+            EmbeddingData(ad, ("alt", ("pca", 0)))  # not a 3-tuple
+
+    def test_constructor_registers_source_eagerly(self, ad):
+        # the source may be passed at construction via alternative_sources
+        alt = _embedding_ad(ad)
+        data = EmbeddingData(ad, ("alt", "umap"), alternative_sources=[("alt", alt)])
+        coords = data.coordinates()
+        np.testing.assert_allclose(
+            coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0
+        )
+
+    def test_alternative_already_an_embedding_data(self, ad):
+        # add_alternative_source unwraps EmbeddingData → uses its .ad
+        alt_ad = _embedding_ad(ad)
+        alt_data = EmbeddingData(alt_ad, "umap")
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt_data, name="alt")
+        )
+        coords = data.coordinates()
+        np.testing.assert_allclose(
+            coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0
+        )
+
+
+class TestSourceRoutedEmbeddingPlotter:
+    def test_plotter_uses_alternative_embedding(self, ad):
+        import plotnine as p9
+
+        alt = _embedding_ad(ad, factor=1000.0)
+        sp = (
+            ScatterPlotter()
+            .set_source(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        # gene expression ("S100A8") still comes from the primary, but the
+        # plotted x/y coordinates come from the alternative (offset by +1000).
+        p = sp.plot("S100A8")
+        assert isinstance(p, p9.ggplot)
+        # primary UMAP x is ~O(10); the alternative's is shifted to ~O(1010)
+        assert p.data["x"].mean() > 500
+        primary_p = ScatterPlotter().set_source(ad, "umap").plot("S100A8")
+        assert primary_p.data["x"].mean() < 500
+
+    def test_set_source_accepts_routed_tuple(self, ad):
+        alt = _embedding_ad(ad, factor=1000.0)
+        sp = (
+            ScatterPlotter()
+            .set_source(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        assert sp._data.embedding_source == "alt"
+        coords = sp._data.coordinates()
+        np.testing.assert_allclose(
+            coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0
+        )
+
+
+class TestSourceRoutedEmbeddingH5adFacade:
+    def test_h5ad_facade_embedding_source(self, ad, tmp_path):
+        pytest.importorskip("h5py")
+        from mbf_singlecell_plotter import H5adFacade
+
+        alt = _embedding_ad(ad, factor=1000.0)
+        path = tmp_path / "alt_emb.h5ad"
+        alt.write_h5ad(path)
+
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(H5adFacade(path), name="alt")
+        )
+        coords = data.coordinates()
+        assert coords.index.equals(ad.obs_names)
+        np.testing.assert_allclose(
+            coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0
+        )
+
+
+# ---------------------------------------------------------------------------
 # Derived sources: on-demand computed columns
 # ---------------------------------------------------------------------------
 

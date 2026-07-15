@@ -126,7 +126,20 @@ class DerivedSource(NamedTuple):
 
 
 class EmbeddingData:
-    """Wraps an AnnData + embedding choice. Pure data extraction, no plotting."""
+    """Wraps an AnnData + embedding choice. Pure data extraction, no plotting.
+
+    The embedding array normally comes from the primary source's ``obsm``.
+    To read it from a *named alternative source* instead (e.g. gene
+    expression from the primary ``ad`` but the UMAP coordinates from a second
+    ``ad2``), pass a source-routed tuple as ``embedding``::
+
+        data = EmbeddingData(ad, ("ad2", "umap"))
+        data = data.add_alternative_source(ad2, name="ad2")
+
+    The 2-tuple ``(source_name, key)`` parallels the ``(source_name, column)``
+    routing used by :meth:`get_column`; the coordinates are reindexed onto the
+    primary ``obs_names`` exactly like alternative-source columns.
+    """
 
     def __init__(
         self,
@@ -172,24 +185,74 @@ class EmbeddingData:
             derived_sources or [], existing_names=alt_names
         )
 
-        # Resolve embedding — check tuple BEFORE string concatenation
+        # Resolve embedding.  Accepted forms:
+        #   "umap"                        primary source .obsm key
+        #   ("pca", 0, 1)                 primary source .obsm key + two columns
+        #   (source_name, "umap")         named alternative source .obsm key
+        #   (source_name, ("pca", 0, 1))  named alternative source + two columns
+        #
+        # The source-routed 2-tuple forms are resolved LAZILY: the named
+        # alternative source is usually registered via add_alternative_source()
+        # *after* construction, so its .obsm keys cannot be validated here.
+        # Validation (and the obsm read) happens on first coordinates()/embedding
+        # access — see _embedding_source_ad() / _resolve_obsm_key().
+        self._embedding_source: Optional[str] = None
+        self._embedding_raw_key: Optional[str] = None
         if isinstance(embedding, tuple):
-            if len(embedding) != 3:
-                raise ValueError(
-                    "Tuple embedding must be ('key', col1, col2), e.g. ('pca', 0, 1)"
-                )
-            key_raw, c1, c2 = embedding
-            if key_raw in ad.obsm:
-                key = key_raw
-            elif "X_" + key_raw in ad.obsm:
-                key = "X_" + key_raw
+            if len(embedding) == 2 and isinstance(embedding[0], str):
+                # Source-routed embedding — pull the array from a named
+                # alternative source instead of the primary .obsm.
+                source_name, inner = embedding
+                if isinstance(inner, str):
+                    self._embedding_source = source_name
+                    self._embedding_raw_key = inner
+                    self._embedding = None
+                    self._embedding_cols: Optional[tuple[int, int]] = None
+                elif isinstance(inner, tuple):
+                    if (
+                        len(inner) != 3
+                        or not isinstance(inner[0], str)
+                        or not isinstance(inner[1], int)
+                        or not isinstance(inner[2], int)
+                    ):
+                        raise ValueError(
+                            "Source-routed tuple embedding must be "
+                            "(source_name, (key, col1, col2)), e.g. "
+                            "('ad2', ('pca', 0, 1)); got " + repr(inner)
+                        )
+                    key_raw, c1, c2 = inner
+                    self._embedding_source = source_name
+                    self._embedding_raw_key = key_raw
+                    self._embedding = None
+                    self._embedding_cols = (c1, c2)
+                else:
+                    raise ValueError(
+                        "Source-routed embedding must be (source_name, key) or "
+                        "(source_name, (key, col1, col2)); the second element "
+                        "must be a str or 3-tuple, got "
+                        f"{type(inner).__name__}"
+                    )
+            elif len(embedding) == 3:
+                # Primary source — check tuple BEFORE string concatenation.
+                key_raw, c1, c2 = embedding
+                if key_raw in ad.obsm:
+                    key = key_raw
+                elif "X_" + key_raw in ad.obsm:
+                    key = "X_" + key_raw
+                else:
+                    raise KeyError(
+                        f"Embedding {key_raw!r} not found in ad.obsm. Available: "
+                        + ", ".join(sorted(ad.obsm.keys()))
+                    )
+                self._embedding = key
+                self._embedding_cols = (c1, c2)
             else:
-                raise KeyError(
-                    f"Embedding {key_raw!r} not found in ad.obsm. Available: "
-                    + ", ".join(sorted(ad.obsm.keys()))
+                raise ValueError(
+                    "Tuple embedding must be (key, col1, col2) for the primary "
+                    "source, or (source_name, key) / "
+                    "(source_name, (key, col1, col2)) to pull the embedding from "
+                    "a named alternative source"
                 )
-            self._embedding = key
-            self._embedding_cols: Optional[tuple[int, int]] = (c1, c2)
         elif isinstance(embedding, str):
             if embedding in ad.obsm:
                 self._embedding = embedding
@@ -203,7 +266,10 @@ class EmbeddingData:
             self._embedding_cols = None
         else:
             raise ValueError(
-                f"embedding must be a string or 3-tuple, got {type(embedding)}"
+                "embedding must be a string, a (key, col1, col2) tuple, or a "
+                "(source_name, key) / (source_name, (key, col1, col2)) tuple "
+                "to source the embedding from a named alternative; got "
+                f"{type(embedding).__name__}"
             )
         self._focus: Optional[tuple[float, float, float, float]] = (
             None  # (x_min, x_max, y_min, y_max)
@@ -236,7 +302,80 @@ class EmbeddingData:
 
     @property
     def embedding(self) -> str:
-        return self._embedding
+        """The resolved obsm key backing this embedding (e.g. ``"X_umap"``).
+
+        For a source-routed embedding — ``EmbeddingData(ad, (source, key))`` —
+        the key is resolved lazily against the named alternative source on
+        first access (sources are registered after construction).  Raises
+        ``KeyError`` if that source is not registered or lacks the key.
+        """
+        if self._embedding is not None:
+            return self._embedding
+        # Source-routed — resolve the obsm key lazily.
+        return self._resolved_source_embedding()[1]
+
+    @property
+    def embedding_source(self) -> Optional[str]:
+        """Name of the alternative source backing the embedding, or ``None``.
+
+        ``None`` means the embedding array is read from the primary source's
+        ``obsm``.  A non-``None`` value is the registered name of the
+        alternative source supplying the embedding (set via
+        ``embedding=(name, ...)``).
+        """
+        return self._embedding_source
+
+    def _embedding_source_ad(self):
+        """Return the AnnData-like object the embedding array is read from.
+
+        The primary ``self.ad`` by default; for a source-routed embedding the
+        named alternative source's ``ad`` (resolved lazily — alternatives are
+        registered after construction).  Raises ``KeyError`` if the named
+        source is missing.  Derived sources cannot host an embedding (they
+        yield computed ``Series``, not arrays), so only alternative sources
+        are consulted.
+        """
+        if self._embedding_source is None:
+            return self.ad
+        for alt in self._alternative_sources:
+            if alt.name == self._embedding_source:
+                return alt.ad
+        registered = [
+            s.name for s in self._alternative_sources if s.name is not None
+        ]
+        raise KeyError(
+            f"Embedding source {self._embedding_source!r} is not a registered "
+            f"alternative source. Registered names: {registered!r}"
+        )
+
+    def _resolved_source_embedding(self):
+        """Resolve a source-routed embedding to ``(source_ad, obsm_key)``.
+
+        Only valid when :attr:`_embedding_source` is not ``None`` (the
+        source-routed case); the primary case reads :attr:`_embedding` directly.
+        Raises ``KeyError`` if the named source is unregistered or lacks the
+        key.  The raw key is guaranteed non-``None`` by construction (see
+        :meth:`__init__`).
+        """
+        src_ad = self._embedding_source_ad()
+        assert self._embedding_raw_key is not None  # set iff source-routed
+        return src_ad, self._resolve_obsm_key(src_ad, self._embedding_raw_key)
+
+    @staticmethod
+    def _resolve_obsm_key(ad, key_raw: str) -> str:
+        """Resolve a raw embedding key against ``ad.obsm`` (``"umap"`` → ``"X_umap"``).
+
+        Accepts an exact ``obsm`` key or a bare name prefixed with ``"X_"``.
+        Raises ``KeyError`` listing the available keys if neither matches.
+        """
+        if key_raw in ad.obsm:
+            return key_raw
+        if "X_" + key_raw in ad.obsm:
+            return "X_" + key_raw
+        raise KeyError(
+            f"Embedding {key_raw!r} not found in source obsm. Available: "
+            + ", ".join(sorted(ad.obsm.keys()))
+        )
 
     @property
     def layer(self) -> str:
@@ -885,18 +1024,32 @@ class EmbeddingData:
         """Return x, y DataFrame for *every* cell, ignoring the active filter.
 
         Index is the primary ``obs_names``.  Used by bounds/grid helpers so the
-        embedding frame always reflects the complete dataset.
+        embedding frame always reflects the complete dataset.  For a
+        source-routed embedding, the array is read from the named alternative
+        source and reindexed onto the primary ``obs_names`` — mirroring
+        :meth:`get_column`'s alignment behaviour (extra cells dropped, primary
+        cells absent from the source → ``NaN`` coordinates).
         """
+        src_ad = self._embedding_source_ad()
+        if self._embedding_source is None:
+            key = self._embedding
+        else:
+            src_ad, key = self._resolved_source_embedding()
         if self._embedding_cols is not None:
             c1, c2 = self._embedding_cols
-            arr = self.ad.obsm[self._embedding][:, [c1, c2]]
+            arr = src_ad.obsm[key][:, [c1, c2]]
         else:
-            arr = self.ad.obsm[self._embedding][:, :2]
-        return (
+            arr = src_ad.obsm[key][:, :2]
+        df = (
             pd.DataFrame(arr, columns=np.array(["x", "y"]))
-            .assign(index=self.ad.obs.index)
+            .assign(index=src_ad.obs.index)
             .set_index("index")
         )
+        # Align the alternative source's embedding onto the primary obs_names
+        # (no-op for the primary source / perfectly-aligned alternatives).
+        if self._embedding_source is not None:
+            df = df.reindex(self.ad.obs_names)
+        return df
 
     def get_X_csr(self):
         """Return the primary source's ``X`` as a scipy CSR sparse matrix.

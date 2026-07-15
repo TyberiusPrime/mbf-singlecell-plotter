@@ -61,6 +61,22 @@ plotter.set_source(ad_or_data, embedding="umap", layer='X', transform=lambda x: 
 plotter.set_source(ad, embedding=("pca", 0, 1))
 ```
 
+You can also pull the **embedding from a different (named alternative) source**
+than the primary one — e.g. gene expression from `ad` but the UMAP
+coordinates from a second `ad2`. Use a `(source_name, embedding)` tuple,
+paralleling `(source_name, column)` column routing:
+```python
+plotter = (
+    ScatterPlotter()
+    .set_source(ad, embedding=("ad2", "umap"))   # embedding from ad2
+    .add_alternative_source(ad2, name="ad2")
+)
+plotter.plot("S100A8")  # expression from ad, points placed via ad2's UMAP
+```
+The inner spec accepts the same forms as the primary embedding — a bare key
+(`"umap"`) or a column tuple (`("pca", 0, 1)`). Coordinates are reindexed onto
+the primary `obs_names`, exactly like alternative-source columns.
+
 Layer within the data source (ad.layer['xyz']) can be chosen via `layer`, 'X' means the .X
 instead of ad.layer['X']!
 
@@ -574,6 +590,18 @@ data = EmbeddingData(
 1. Exact key in `ad.obsm` (e.g. `"X_umap"`).
 2. `"X_" + key` (e.g. `"umap"` → `"X_umap"`).
 3. Tuple `("pca", 0, 1)` — picks columns 0 and 1 from the named array.
+4. Source-routed tuple `(source_name, spec)` — reads the embedding from the
+   named alternative source instead of the primary `ad.obsm`. `spec` may be a
+   bare key (`"umap"`) or a column tuple (`("pca", 0, 1)`). The source must be
+   registered (via `add_alternative_source` / `alternative_sources`); it is
+   resolved lazily, so it can be registered after construction. Coordinates
+   are reindexed onto the primary `obs_names`.
+
+```python
+# embedding from ad2, expression/obs still resolved from the primary ad
+data = EmbeddingData(ad, ("ad2", "umap")).add_alternative_source(ad2, name="ad2")
+data.embedding_source  # → "ad2"
+```
 
 ```python
 # Register fallback sources imperatively (returns a new EmbeddingData)
