@@ -291,6 +291,11 @@ def compute_grid_moran(
     from scipy import sparse as sp
 
     coords = data.coordinates()
+    # Drop cells lacking an embedding coordinate. These arise from a
+    # source-routed embedding whose source is missing some primary cells
+    # (reindex → NaN); binning NaN via searchsorted piles every such cell into
+    # the last bin and corrupts the per-bin means, so exclude them entirely.
+    coords = coords.dropna(subset=["x", "y"])
     x = coords["x"].values
     y = coords["y"].values
 

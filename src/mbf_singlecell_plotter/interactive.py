@@ -107,6 +107,11 @@ def _grid_binning(data):
     cell_h = (y_max_d - y_min_d) / gs
 
     all_coords = data_full.coordinates()
+    # Drop cells with no embedding coordinate (NaN). These come from a
+    # source-routed embedding whose source drops some primary cells; otherwise
+    # searchsorted bins them all into the last grid cell, skewing the overlay
+    # counts and the per-bin cluster membership.
+    all_coords = all_coords.dropna(subset=["x", "y"])
     x_edges = np.linspace(x_min_d, x_max_d, gs + 1)
     y_edges = np.linspace(y_min_d, y_max_d, gs + 1)
     xi_all = np.clip(np.searchsorted(x_edges[1:-1], all_coords["x"].values), 0, gs - 1)

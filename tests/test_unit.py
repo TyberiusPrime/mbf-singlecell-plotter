@@ -1871,6 +1871,94 @@ class TestSourceRoutedEmbeddingH5adFacade:
         )
 
 
+class TestSourceRoutedEmbeddingNanCoords:
+    """When the embedding source drops some primary cells, those cells become
+    NaN coordinates after reindex. The grid-binning / Moran consumers must drop
+    them instead of piling every NaN cell into the last grid bin."""
+
+    def _routed_with_drops(self, ad, drop=200):
+        """Source-routed embedding whose alternative is missing the last *drop*
+        primary cells → that many NaN coordinates."""
+        alt = ad[:-drop].copy()
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        return data, drop
+
+    def test_coordinates_contain_nan_for_dropped_cells(self, ad):
+        data, drop = self._routed_with_drops(ad)
+        coords = data.coordinates()
+        assert len(coords) == ad.n_obs  # still full-length (aligned)
+        assert int(coords["x"].isna().sum()) == drop
+        assert int(coords["y"].isna().sum()) == drop
+
+    def test_compute_grid_moran_drops_nan_cells(self, ad):
+        from mbf_singlecell_plotter.transforms import compute_grid_moran
+
+        data, drop = self._routed_with_drops(ad)
+        df = compute_grid_moran(data, n_bins=12, min_cells=3)
+        # top-bin centres land inside the valid (non-NaN) coordinate extent
+        valid = data.coordinates().dropna(subset=["x", "y"])
+        assert float(df["top_bin_x"].min()) >= float(valid["x"].min()) - 1e-6
+        assert float(df["top_bin_x"].max()) <= float(valid["x"].max()) + 1e-6
+
+    def test_grid_binning_excludes_nan_cells(self, ad):
+        from collections import Counter
+        from mbf_singlecell_plotter.interactive import _grid_binning
+
+        data, drop = self._routed_with_drops(ad)
+        b = _grid_binning(data)
+        # the NaN cells are dropped entirely from the per-cell bin arrays
+        assert len(b["xi_all"]) == ad.n_obs - drop
+        counts = Counter(zip(b["xi_all"].tolist(), b["yi_all"].tolist()))
+        # no single bin swallows the dropped cells (would be >= drop)
+        assert counts.most_common(1)[0][1] < drop
+
+    def test_interactive_moran_grid_handles_nan_coords(self, ad, tmp_path):
+        data, drop = self._routed_with_drops(ad)
+        sp = ScatterPlotter().set_source(data)
+        out = tmp_path / "moran.html"
+        sp.save_interactive_moran_grid("S100A8", out, min_cells=3, min_moran=0.05)
+        assert out.exists()
+        cells = _parse_cells_html(out.read_text())
+        total = sum(c["n_cells"] for c in cells)
+        assert total == ad.n_obs - drop  # NaN cells excluded from counts
+        assert max(c["n_cells"] for c in cells) < drop  # no NaN pile-up
+
+    def test_interactive_cluster_markers_handles_nan_coords(self, ad, tmp_path):
+        data, drop = self._routed_with_drops(ad)
+        sp = ScatterPlotter().set_source(data)
+        out = tmp_path / "cluster.html"
+        sp.save_interactive_cluster_markers(CAT_COL, out)
+        assert out.exists()
+        cells = _parse_cells_html(out.read_text())
+        total = sum(c["n_cells"] for c in cells)
+        assert total == ad.n_obs - drop
+        assert max(c["n_cells"] for c in cells) < drop
+
+    def test_no_nan_filtering_when_fully_aligned(self, ad):
+        """A perfectly-aligned alternative (no drops) keeps every cell — no
+        regression for the common (non-NaN) case."""
+        from mbf_singlecell_plotter.interactive import _grid_binning
+
+        alt = _embedding_ad(ad)  # same obs_names, no drops
+        data = (
+            EmbeddingData(ad, ("alt", "umap"))
+            .add_alternative_source(alt, name="alt")
+        )
+        b = _grid_binning(data)
+        assert len(b["xi_all"]) == ad.n_obs
+
+
+def _parse_cells_html(html):
+    """Extract the ``const CELLS = [...]`` JSON array from an interactive HTML."""
+    import json
+    import re
+
+    return json.loads(re.search(r"const CELLS = (\[.*?\]);", html, re.DOTALL).group(1))
+
+
 # ---------------------------------------------------------------------------
 # Derived sources: on-demand computed columns
 # ---------------------------------------------------------------------------
