@@ -1022,7 +1022,7 @@ class ScatterPlotter:
         order.
 
 
-        Contrast to plotting the outlier layer (outlier()), which enabled 
+        Contrast to plotting the outlier layer (outlier()), which enabled
         by default for categorical data, draws outliers on top *after*
         this anti overplotting measure.
         """
@@ -2193,7 +2193,9 @@ class ScatterPlotter:
         hdf["category"] = pd.Categorical(
             hdf["category"], sorted(hdf["category"].unique())
         )
-        facet_cols = [c for c in ("facet", "facet_row", "facet_col") if c in hdf.columns]
+        facet_cols = [
+            c for c in ("facet", "facet_row", "facet_col") if c in hdf.columns
+        ]
         hdf = hdf.sort_values(facet_cols + ["x", "y", "category"])
         cats = list(hdf["category"].cat.categories)
         colors = self._colors_as_list(cats)
@@ -2846,7 +2848,9 @@ class ScatterPlotter:
             import numpy as _np
 
             if len(gradient_region) == 2:
-                if isinstance(gradient_region[0], str) or isinstance(gradient_region[1], str):
+                if isinstance(gradient_region[0], str) or isinstance(
+                    gradient_region[1], str
+                ):
                     c1 = _corner_to_bounds(gradient_region[0], ref_data)
                     c2 = _corner_to_bounds(gradient_region[1], ref_data)
                     xlo = min(c1[0], c1[1], c2[0], c2[1])
@@ -2861,7 +2865,8 @@ class ScatterPlotter:
                 corners = [(xlo, yhi), (xhi, yhi), (xhi, ylo), (xlo, ylo)]
             else:
                 pts4 = sorted(
-                    [_np.array(c, dtype=float) for c in gradient_region], key=lambda p: -p[1]
+                    [_np.array(c, dtype=float) for c in gradient_region],
+                    key=lambda p: -p[1],
                 )
                 top_two = sorted(pts4[:2], key=lambda pt: pt[0])
                 bot_two = sorted(pts4[2:], key=lambda pt: pt[0])
@@ -3019,7 +3024,9 @@ class ScatterPlotter:
                     f"not enough colors: dict is missing entries for: {missing}"
                 )
             return [normalized[str(c)] for c in cats]
-        colors = self._cat_colors or DEFAULT_COLORS_CATEGORIES
+        colors = self._cat_colors or DEFAULT_COLORS_CATEGORIES.get(
+            len(cats), DEFAULT_COLORS_CATEGORIES["any"]
+        )
         if len(colors) < len(cats):
             raise ValueError(
                 f"not enough colors: {len(colors)} provided for {len(cats)} categories"

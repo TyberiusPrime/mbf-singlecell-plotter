@@ -19,7 +19,8 @@ DEFAULT_COLORS_BORDERS = [
     "#F52A2A",
 ]
 
-DEFAULT_COLORS_CATEGORIES = [
+DEFAULT_COLORS_CATEGORIES = {
+        'any': [
     "#98414f",
     "#ab7780",
     "#776431",
@@ -31,7 +32,13 @@ DEFAULT_COLORS_CATEGORIES = [
     "#573875",
     "#c89c0a",
     "#a070a9",
-]
+],
+    2:
+    [
+        "#905fd0",
+        "#ade292"
+    ]
+}
 
 
 def embedding_theme(
