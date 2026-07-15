@@ -1,3 +1,5 @@
+import pandas as pd
+
 def map_to_integers(series, upper, min=None, max=None):
     """Map values into 0...upper-1."""
     min = series.min() if min is None else min
@@ -22,7 +24,7 @@ def within_grid(embedding_data, top_left, bottom_right):
     left = int(top_left[1:])
     bottom = bottom_right[0]
     right = int(bottom_right[1:])
-    return (
+    return ~pd.isnull(coords) & (
         (coords.str[0] >= top)
         & (coords.str[1:].astype(int) >= left)
         & (coords.str[0] <= bottom)
