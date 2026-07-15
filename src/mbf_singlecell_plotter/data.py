@@ -1169,6 +1169,35 @@ class EmbeddingData:
             return X.tocsr()
         return sp.csr_matrix(np.asarray(X))
 
+    def n_genes_per_cell(self) -> pd.Series:
+        """Return the number of genes with nonzero expression, per cell.
+
+        Counts stored nonzero entries per row of :meth:`get_X_csr`. Honors
+        the active cell filter (:meth:`set_filter` / :meth:`hard_filter`),
+        matching :meth:`coordinates`.
+        """
+        X = self.get_X_csr()
+        mask = self._filter_mask()
+        index = self.ad.obs_names
+        if mask is not None:
+            X = X[mask]
+            index = index[mask]
+        return pd.Series(np.diff(X.indptr), index=index, name="n_genes")
+
+    def n_cells_per_gene(self) -> pd.Series:
+        """Return the number of cells with nonzero expression, per gene.
+
+        Counts stored nonzero entries per column of :meth:`get_X_csr`.
+        Honors the active cell filter (:meth:`set_filter` / :meth:`hard_filter`),
+        matching :meth:`coordinates`.
+        """
+        X = self.get_X_csr()
+        mask = self._filter_mask()
+        if mask is not None:
+            X = X[mask]
+        counts = np.bincount(X.indices, minlength=X.shape[1])
+        return pd.Series(counts, index=self.ad.var.index, name="n_cells")
+
     # ── grid helpers ────────────────────────────────────────────────────────
 
     def point_to_grid(

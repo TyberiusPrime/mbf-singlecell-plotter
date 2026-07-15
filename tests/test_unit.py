@@ -1616,6 +1616,67 @@ class TestLayerAndTransformH5adFacade:
 
 
 # ---------------------------------------------------------------------------
+# n_genes_per_cell / n_cells_per_gene
+# ---------------------------------------------------------------------------
+
+
+class TestGenesCellsCounts:
+    def test_n_genes_per_cell_matches_manual_count(self, data, ad):
+        counts = data.n_genes_per_cell()
+        expected = np.asarray((data.get_X_csr() != 0).sum(axis=1)).ravel()
+        assert counts.index.equals(ad.obs_names)
+        np.testing.assert_array_equal(counts.values, expected)
+
+    def test_n_cells_per_gene_matches_manual_count(self, data, ad):
+        counts = data.n_cells_per_gene()
+        expected = np.asarray((data.get_X_csr() != 0).sum(axis=0)).ravel()
+        assert counts.index.equals(ad.var.index)
+        np.testing.assert_array_equal(counts.values, expected)
+
+    def test_n_genes_per_cell_respects_cell_filter(self, data, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = data.set_filter(lambda d, m=keep.values: m)
+        counts = filtered.n_genes_per_cell()
+        expected = np.asarray((data.get_X_csr()[keep.values] != 0).sum(axis=1)).ravel()
+        assert counts.index.equals(ad.obs_names[keep.values])
+        np.testing.assert_array_equal(counts.values, expected)
+
+    def test_n_cells_per_gene_respects_cell_filter(self, data, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = data.set_filter(lambda d, m=keep.values: m)
+        counts = filtered.n_cells_per_gene()
+        expected = np.asarray((data.get_X_csr()[keep.values] != 0).sum(axis=0)).ravel()
+        assert counts.index.equals(ad.var.index)
+        np.testing.assert_array_equal(counts.values, expected)
+
+    def test_n_genes_per_cell_h5ad_facade(self, ad, tmp_path):
+        if not shutil.which("h5ad-inspect"):
+            pytest.skip("h5ad-inspect not on PATH")
+        pytest.importorskip("h5py")
+        from mbf_singlecell_plotter import H5adFacade
+
+        path = tmp_path / "primary.h5ad"
+        ad.write_h5ad(path)
+
+        real = EmbeddingData(ad, "umap").n_genes_per_cell()
+        facade = EmbeddingData(H5adFacade(path), "umap").n_genes_per_cell()
+        np.testing.assert_array_equal(facade.values, real.values)
+
+    def test_n_cells_per_gene_h5ad_facade(self, ad, tmp_path):
+        if not shutil.which("h5ad-inspect"):
+            pytest.skip("h5ad-inspect not on PATH")
+        pytest.importorskip("h5py")
+        from mbf_singlecell_plotter import H5adFacade
+
+        path = tmp_path / "primary.h5ad"
+        ad.write_h5ad(path)
+
+        real = EmbeddingData(ad, "umap").n_cells_per_gene()
+        facade = EmbeddingData(H5adFacade(path), "umap").n_cells_per_gene()
+        np.testing.assert_array_equal(facade.values, real.values)
+
+
+# ---------------------------------------------------------------------------
 # Alternative sources: naming + tuple routing
 # ---------------------------------------------------------------------------
 
