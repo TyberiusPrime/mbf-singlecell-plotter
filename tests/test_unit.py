@@ -1243,6 +1243,42 @@ class TestAlternativeSourcesEmbeddingData:
         with pytest.raises(KeyError):
             data2.get_column("__does_not_exist__")
 
+    def test_primary_var_without_x_raises_helpful_error(self, ad):
+        """Primary lists the gene in .var (e.g. a shared panel) but has no
+        readable expression matrix (.X is None) — get_column(gene) must not
+        crash with a raw TypeError from indexing None; it should raise a
+        ValueError explaining the situation and pointing at tuple routing.
+        Since the one registered alternative source is unnamed, the message
+        says so rather than suggesting a (name, column) route that can't work.
+        """
+        primary_no_x = ad.copy()
+        primary_no_x.X = None
+        data = EmbeddingData(primary_no_x, "umap")
+        alt = _make_alt_ad(ad, extra_gene="S100A8")  # gene also in primary's var
+        data2 = data.add_alternative_source(alt)  # unnamed
+        with pytest.raises(ValueError, match="none of the alternative sources had a name"):
+            data2.get_column("S100A8")
+
+    def test_primary_var_without_x_and_no_alternative_raises_helpful_error(self, ad):
+        primary_no_x = ad.copy()
+        primary_no_x.X = None
+        data = EmbeddingData(primary_no_x, "umap")
+        with pytest.raises(ValueError, match="you need to add an alternative source"):
+            data.get_column("S100A8")
+
+    def test_primary_var_without_x_lists_named_alternatives_with_x(self, ad):
+        primary_no_x = ad.copy()
+        primary_no_x.X = None
+        data = EmbeddingData(primary_no_x, "umap")
+        alt = _make_alt_ad(ad, extra_gene="S100A8")
+        data2 = data.add_alternative_source(alt, name="imputed")
+        with pytest.raises(ValueError, match=r"Alternative sources with X are: \['imputed'\]"):
+            data2.get_column("S100A8")
+        # explicit tuple routing (the suggested workaround) still works
+        series, name = data2.get_column(("imputed", "S100A8"))
+        assert name == "S100A8"
+        assert np.allclose(series.values, np.arange(ad.n_obs))
+
     def test_first_alternative_wins(self, ad):
         data = EmbeddingData(ad, "umap")
         alt_a = _make_alt_ad(ad, extra_gene="EXTRA_GENE")
@@ -1372,6 +1408,31 @@ class TestAlternativeSourceH5adFacade:
         assert isinstance(data.alternative_sources[0].ad, H5adFacade)
         series, _ = data.get_column("EXTRA_GENE")
         assert np.allclose(series.values, np.arange(ad.n_obs))
+
+    def test_primary_h5ad_facade_without_x_raises_helpful_error(self, ad, tmp_path):
+        """Same edge case as test_primary_var_without_x_raises_helpful_error,
+        but the primary is an H5adFacade backed by a real .h5ad file that has
+        .var but no .X. h5ad-inspect fails the underlying subprocess call
+        (RuntimeError) rather than returning None (TypeError) — has_x() must
+        recognise both failure shapes as "no X" and produce the same kind of
+        message.
+        """
+        if not shutil.which("h5ad-inspect"):
+            pytest.skip("h5ad-inspect not on PATH")
+        from mbf_singlecell_plotter import H5adFacade
+
+        primary_no_x = ad.copy()
+        primary_no_x.X = None
+        primary_path = tmp_path / "primary_no_x.h5ad"
+        primary_no_x.write_h5ad(primary_path)
+
+        alt = _make_alt_ad(ad, extra_gene="S100A8")  # gene also in primary's var
+
+        data = EmbeddingData(H5adFacade(primary_path), "umap").add_alternative_source(
+            alt
+        )
+        with pytest.raises(ValueError, match="none of the alternative sources had a name"):
+            data.get_column("S100A8")
 
 
 # ---------------------------------------------------------------------------

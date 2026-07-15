@@ -30,6 +30,29 @@ def _source_matrix(ad, layer: str):
     return ad.layers[layer]
 
 
+def has_x(ad, layer: str = "X") -> bool:
+    """Return whether *ad* has a readable matrix for *layer*.
+
+    Cheap when *ad* keeps its matrix in memory (a real ``AnnData``): a
+    missing ``.X``/layer is simply ``None``, no I/O involved. For a lazy
+    source like :class:`~mbf_singlecell_plotter.h5ad_source.H5adFacade`
+    (whose proxies are always non-``None``) this reads one probe column via
+    ``h5ad-inspect``, so only call it reactively — to confirm the cause of an
+    extraction failure that already happened — not before every column
+    lookup.
+    """
+    matrix = _source_matrix(ad, layer)
+    if matrix is None:
+        return False
+    try:
+        matrix[:, 0]
+        return True
+    except RuntimeError as exc:
+        if "no X matrix" in str(exc):
+            return False
+        raise
+
+
 def _parse_grid_label(
     label: str, gs: int, letters_on_vertical: bool
 ) -> tuple[int, int]:
@@ -822,6 +845,14 @@ class EmbeddingData:
             if "Duplicate" in str(exc):
                 raise
             pass
+        except (TypeError, RuntimeError) as exc:
+            # name is a var (gene) in the primary source, but its matrix isn't
+            # readable (ad.X is None, or an H5adFacade backing file has no X
+            # dataset). has_x() re-checks so an unrelated bug doesn't get
+            # misreported as this — deliberately reactive, only on failure.
+            if has_x(self.ad, self._layer):
+                raise
+            raise ValueError(self._no_x_message(name)) from exc
 
         for d in self._derived_sources:
             if name in d.columns:
@@ -854,6 +885,23 @@ class EmbeddingData:
             + "Columns considered: var_index"
             + ", {self._alternative_id_column} if self.alternative_id_column is not None else A"
         )
+
+    def _no_x_message(self, name: str) -> str:
+        """Diagnostic for a gene present in the primary ``var`` but whose
+        matrix isn't readable — points the user at tuple routing / a named
+        alternative source instead of the raw crash from the matrix layer.
+        """
+        msg = (
+            f"No X (matrix) on the data source, but a var that listed {name!r}. "
+            "You might want to use the (data_source, 'column') syntax, "
+        )
+        if not self._alternative_sources:
+            return msg + "but you need to add an alternative source."
+        named = [alt for alt in self._alternative_sources if alt.name is not None]
+        if not named:
+            return msg + "but none of the alternative sources had a name."
+        with_x = [alt.name for alt in named if has_x(alt.ad, alt.layer)]
+        return msg + f"Alternative sources with X are: {with_x!r}."
 
     def _compute_derived(self, col, derived) -> pd.Series:
         """Run the callable for *col* of *derived*, returning its pandas Series.
