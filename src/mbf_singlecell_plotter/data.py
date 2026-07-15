@@ -970,8 +970,12 @@ class EmbeddingData:
                 if self._alternative_sources
                 else ""
             )
-            + "Columns considered: var_index"
-            + ", {self._alternative_id_column} if self.alternative_id_column is not None else A"
+            + ". Gene id columns considered: var_index"
+            + (
+                f", {self._alternative_id_column}"
+                if self._alternative_id_column is not None
+                else ""
+            )
         )
 
     def _no_x_message(self, name: str) -> str:
