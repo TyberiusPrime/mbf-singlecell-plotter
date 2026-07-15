@@ -721,10 +721,22 @@ class EmbeddingData:
         A *soft* cell filter (:meth:`set_filter`) is ignored so the embedding
         frame stays stable.  A *hard* filter (:meth:`hard_filter`) is honoured:
         the bounds shrink to the kept subset so a fresh grid is spanned over it.
+
+        Cells lacking an embedding coordinate (see :meth:`_finite_coordinates`)
+        are excluded so a source-routed embedding with dropped cells doesn't
+        turn the range into ``NaN``.
         """
         if self._focus is not None:
             return self._focus
-        coords = self.coordinates() if self._filter_hard else self._full_coordinates()
+        coords = (
+            self._finite_coordinates()
+            if self._filter_hard
+            else self._finite_full_coordinates()
+        )
+        if coords.empty:
+            raise ValueError(
+                "No cells have a finite embedding coordinate; cannot compute bounds."
+            )
         return (
             float(coords["x"].min()),
             float(coords["x"].max()),
@@ -1015,12 +1027,40 @@ class EmbeddingData:
         are returned (the filter is evaluated lazily on first use and cached
         until the next :meth:`set_filter` call).  Use
         :meth:`_full_coordinates` to ignore the filter.
+
+        For a source-routed embedding whose source drops some primary cells,
+        those cells appear here as ``NaN`` coordinates (the reindex keeps them
+        so the index stays aligned with :meth:`get_column` results).  Consumers
+        that place cells in space (grid labels, histograms, Moran's I, …)
+        should use :meth:`_finite_coordinates` to drop them.
         """
         coords = self._full_coordinates()
         mask = self._filter_mask()
         if mask is not None:
             coords = coords[mask]
         return coords
+
+    def _finite_coordinates(self) -> pd.DataFrame:
+        """Return :meth:`coordinates` with cells lacking an embedding dropped.
+
+        A source-routed embedding reindexes onto the primary ``obs_names``, so
+        cells absent from the embedding source become ``NaN`` coordinates.
+        Spatial consumers (grid labels, histograms, Moran's I, boundaries) cannot
+        place ``NaN`` cells and must drop them — this helper centralises that.
+        The index is the subset of ``obs_names`` that has a finite embedding.
+        No-op when the embedding is fully aligned with the primary source.
+        """
+        coords = self.coordinates()
+        return coords.dropna(subset=["x", "y"])
+
+    def _finite_full_coordinates(self) -> pd.DataFrame:
+        """Return :meth:`_full_coordinates` with cells lacking an embedding dropped.
+
+        Same rationale as :meth:`_finite_coordinates`, but ignoring the active
+        cell filter — used by :meth:`bounds`/:meth:`full_bounds` so the frame
+        is spanned only over cells that actually have a position.
+        """
+        return self._full_coordinates().dropna(subset=["x", "y"])
 
     def _full_coordinates(self) -> pd.DataFrame:
         """Return x, y DataFrame for *every* cell, ignoring the active filter.
@@ -1122,8 +1162,13 @@ class EmbeddingData:
         return f"{parts[0]}{parts[1]}"
 
     def grid_coordinates(self) -> pd.Series:
-        """Return a Series of grid labels for all cells (vectorised)."""
-        coords = self.coordinates()
+        """Return a Series of grid labels for all cells (vectorised).
+
+        Cells lacking an embedding coordinate (see :meth:`_finite_coordinates`)
+        are omitted — the returned index is a subset of ``obs_names`` rather
+        than raising on the ``NaN`` → int cast.
+        """
+        coords = self._finite_coordinates()
         x_min, x_max, y_min, y_max = self.bounds()
         x_step = (x_max - x_min) / self._grid_size
         y_step = (y_max - y_min) / self._grid_size
@@ -1155,8 +1200,20 @@ class EmbeddingData:
         The focus window and any *soft* cell filter are ignored.  A *hard* filter
         (:meth:`hard_filter`) is honoured, so the bounds reflect the kept subset
         (the grid is spanned over just the restricted cells).
+
+        Cells lacking an embedding coordinate (see :meth:`_finite_coordinates`)
+        are excluded so a source-routed embedding with dropped cells doesn't
+        turn the range into ``NaN``.
         """
-        coords = self.coordinates() if self._filter_hard else self._full_coordinates()
+        coords = (
+            self._finite_coordinates()
+            if self._filter_hard
+            else self._finite_full_coordinates()
+        )
+        if coords.empty:
+            raise ValueError(
+                "No cells have a finite embedding coordinate; cannot compute bounds."
+            )
         return (
             float(coords["x"].min()),
             float(coords["x"].max()),
@@ -1194,7 +1251,13 @@ class EmbeddingData:
         return x_positions, y_positions, x_labels, y_labels
 
     def cluster_centers(self, cluster_column: str) -> pd.DataFrame:
-        """Return DataFrame with x, y, grid for each category in cluster_column."""
+        """Return DataFrame with x, y, grid for each category in cluster_column.
+
+        Cells lacking an embedding coordinate (see :meth:`_finite_coordinates`)
+        are excluded before computing per-category medians, so a category
+        with no positioned cells is dropped rather than producing a ``NaN``
+        center that :meth:`grid_coordinate` cannot place.
+        """
         col_data, col_name = self.get_column(cluster_column)
         if pd.api.types.is_numeric_dtype(col_data) and not isinstance(
             col_data.dtype, pd.CategoricalDtype
@@ -1203,7 +1266,7 @@ class EmbeddingData:
                 f"Column '{cluster_column}' contains numeric data. "
                 "This function only works with categorical data."
             )
-        coords = self.coordinates()
+        coords = self._finite_coordinates()
         if self._focus is not None:
             x_min, x_max, y_min, y_max = self._focus
             mask = (
@@ -1277,7 +1340,10 @@ class EmbeddingData:
             pass
         elif pd.api.types.is_numeric_dtype(expr):
             raise ValueError("category types only")
-        coords = self.coordinates()
+        # Drop cells lacking an embedding coordinate (see
+        # :meth:`_finite_coordinates`) — a NaN coordinate can't be digitized
+        # into a bin and would otherwise trip the `assert all(valid)` below.
+        coords = self._finite_coordinates()
         x_min, x_max, y_min, y_max = self.bounds()
 
         x_grid = np.linspace(x_min, x_max + 0.1, self._grid_size + 1)

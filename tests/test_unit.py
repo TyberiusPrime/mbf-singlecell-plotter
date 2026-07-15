@@ -1950,6 +1950,68 @@ class TestSourceRoutedEmbeddingNanCoords:
         b = _grid_binning(data)
         assert len(b["xi_all"]) == ad.n_obs
 
+    def test_bounds_ignore_nan_cells(self, ad):
+        data, drop = self._routed_with_drops(ad)
+        x_min, x_max, y_min, y_max = data.bounds()
+        valid = data.coordinates().dropna(subset=["x", "y"])
+        assert x_min == pytest.approx(float(valid["x"].min()))
+        assert x_max == pytest.approx(float(valid["x"].max()))
+        assert y_min == pytest.approx(float(valid["y"].min()))
+        assert y_max == pytest.approx(float(valid["y"].max()))
+
+    def test_full_bounds_ignore_nan_cells(self, ad):
+        data, drop = self._routed_with_drops(ad)
+        x_min, x_max, y_min, y_max = data.full_bounds()
+        valid = data.coordinates().dropna(subset=["x", "y"])
+        assert x_min == pytest.approx(float(valid["x"].min()))
+        assert x_max == pytest.approx(float(valid["x"].max()))
+
+    def test_grid_coordinates_drops_nan_cells(self, ad):
+        data, drop = self._routed_with_drops(ad)
+        labels = data.grid_coordinates()
+        assert len(labels) == ad.n_obs - drop
+        assert all(isinstance(v, str) for v in labels)
+
+    def test_cluster_centers_ignore_nan_cells(self, ad):
+        data, drop = self._routed_with_drops(ad)
+        centers = data.cluster_centers(CAT_COL)
+        valid = data.coordinates().dropna(subset=["x", "y"])
+        assert centers["x"].between(valid["x"].min(), valid["x"].max()).all()
+        assert centers["y"].between(valid["y"].min(), valid["y"].max()).all()
+
+    def test_grid_local_histogram_ignores_nan_cells(self, ad):
+        data, drop = self._routed_with_drops(ad)
+        df = data.grid_local_histogram(CAT_COL, min_cells=5)
+        assert not df.empty
+        # no single bin's cell count exceeds the finite (non-NaN) subset
+        assert df.groupby(["x", "y"])["total"].first().max() <= ad.n_obs - drop
+
+    def test_compute_boundaries_ignores_nan_cells(self, ad):
+        pytest.importorskip(
+            "skimage", reason="scikit-image required for boundary computation"
+        )
+        from mbf_singlecell_plotter.transforms import compute_boundaries
+
+        data, drop = self._routed_with_drops(ad)
+        bdf = compute_boundaries(data, CAT_COL)
+        assert not bdf.empty
+
+    def test_prepare_embedding_color_df_handles_nan_reference(self, ad):
+        from mbf_singlecell_plotter.transforms import prepare_embedding_color_df
+
+        ref_data, drop = self._routed_with_drops(ad)
+        current_data = EmbeddingData(ad, "umap")
+        outside = "#C0C0C0"
+        df = prepare_embedding_color_df(
+            current_data, ref_data, outside_color=outside
+        )
+        assert len(df) == ad.n_obs
+        # cells the reference embedding has no position for fall back to
+        # outside_color instead of crashing on NaN -> int(...) formatting.
+        ref_missing = ref_data.coordinates()[["x", "y"]].isna().any(axis=1)
+        assert (df.loc[ref_missing.values, "color"] == outside).all()
+        assert df["color"].map(lambda c: len(c) == 7 and c.startswith("#")).all()
+
 
 def _parse_cells_html(html):
     """Extract the ``const CELLS = [...]`` JSON array from an interactive HTML."""

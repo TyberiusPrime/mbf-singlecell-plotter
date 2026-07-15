@@ -25,7 +25,9 @@ def prepare_density_df(
     of histograms with ``facet_row`` / ``facet_col`` Categorical columns, ready
     for ``plotnine.facet_grid(rows="facet_row", cols="facet_col")``.
     """
-    coords = data.coordinates()
+    # Cells lacking an embedding coordinate (source-routed embedding missing
+    # some primary cells → NaN after reindex) can't be histogrammed.
+    coords = data._finite_coordinates()
     # Shared global edges so every facet panel uses the same coordinate frame.
     x_edges = np.linspace(float(coords["x"].min()), float(coords["x"].max()), bins + 1)
     y_edges = np.linspace(float(coords["y"].min()), float(coords["y"].max()), bins + 1)
@@ -157,7 +159,10 @@ def compute_boundaries(
         colors = DEFAULT_COLORS_BORDERS
 
     cmap = matplotlib.colors.ListedColormap(colors)
-    coords = data.coordinates()
+    # Drop cells lacking an embedding coordinate (source-routed embedding
+    # whose source is missing some primary cells → NaN after reindex);
+    # map_to_integers()'s astype(int) would otherwise raise on the NaN rows.
+    coords = data._finite_coordinates()
     cell_types, _ = data.get_column(cell_type_column)
 
     if cell_types.dtype == "category":
@@ -290,12 +295,11 @@ def compute_grid_moran(
     """
     from scipy import sparse as sp
 
-    coords = data.coordinates()
     # Drop cells lacking an embedding coordinate. These arise from a
     # source-routed embedding whose source is missing some primary cells
     # (reindex → NaN); binning NaN via searchsorted piles every such cell into
     # the last bin and corrupts the per-bin means, so exclude them entirely.
-    coords = coords.dropna(subset=["x", "y"])
+    coords = data._finite_coordinates()
     x = coords["x"].values
     y = coords["y"].values
 
@@ -777,6 +781,13 @@ def prepare_embedding_color_df(
     ref_coords = reference_data.coordinates().loc[current_coords.index]
 
     rx, ry = ref_coords["x"], ref_coords["y"]
+    # Cells absent from the reference embedding (source-routed embedding
+    # missing some primary cells → NaN after reindex) can't be positioned in
+    # the gradient; they get outside_color below regardless of gradient_region
+    # /cell_filter. The NaNs are left in rx/ry for now — min/max and the
+    # bilinear solve below tolerate them (skipna / NaN-propagating arithmetic)
+    # — and only neutralised right before the int(...) hex formatting.
+    ref_missing = (rx.isna() | ry.isna()).to_numpy()
 
     if gradient_region is not None:
         if len(gradient_region) == 2:
@@ -829,6 +840,10 @@ def prepare_embedding_color_df(
         + (1 - t_arr) * (1 - s_arr) * bl_c
         + t_arr * (1 - s_arr) * br_c
     )
+    # Cells with no reference position produced NaN t/s above and thus NaN
+    # rgb; neutralise before int(...) formatting — they're forced to
+    # outside_color right below regardless of this placeholder value.
+    rgb = np.nan_to_num(rgb, nan=0.0)
     rgb = np.clip(rgb, 0, 1)
 
     hex_colors = [
@@ -842,6 +857,7 @@ def prepare_embedding_color_df(
         ]
 
     hex_colors = np.array(hex_colors)
+    hex_colors[ref_missing] = outside_color
 
     if cell_filter is not None:
         # Resolve regions/callables in the reference embedding, then align the
