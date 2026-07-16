@@ -246,7 +246,7 @@ class TestPointToGrid:
         letter, number = r
         assert letter == "A"
         assert (
-            number == '12'
+            number == "12"
         )  # bottom row is highest number when letters_on_vertical=False
 
     def test_out_of_x_range_raises(self, data):
@@ -973,9 +973,7 @@ class TestReplace:
         assert data.grid_size != 16
 
     def test_replace_multiple_fields(self, data):
-        new = data._replace(
-            grid_size=8, grid_letters_on_vertical=True, layer="raw"
-        )
+        new = data._replace(grid_size=8, grid_letters_on_vertical=True, layer="raw")
         assert new.grid_size == 8
         assert new._grid_letters_on_vertical is True
         assert new.layer == "raw"
@@ -1283,7 +1281,9 @@ class TestAlternativeSourcesEmbeddingData:
         data = EmbeddingData(primary_no_x, "umap")
         alt = _make_alt_ad(ad, extra_gene="S100A8")  # gene also in primary's var
         data2 = data.add_alternative_source(alt)  # unnamed
-        with pytest.raises(ValueError, match="none of the alternative sources had a name"):
+        with pytest.raises(
+            ValueError, match="none of the alternative sources had a name"
+        ):
             data2.get_column("S100A8")
 
     def test_primary_var_without_x_and_no_alternative_raises_helpful_error(self, ad):
@@ -1299,7 +1299,9 @@ class TestAlternativeSourcesEmbeddingData:
         data = EmbeddingData(primary_no_x, "umap")
         alt = _make_alt_ad(ad, extra_gene="S100A8")
         data2 = data.add_alternative_source(alt, name="imputed")
-        with pytest.raises(ValueError, match=r"Alternative sources with X are: \['imputed'\]"):
+        with pytest.raises(
+            ValueError, match=r"Alternative sources with X are: \['imputed'\]"
+        ):
             data2.get_column("S100A8")
         # explicit tuple routing (the suggested workaround) still works
         series, name = data2.get_column(("imputed", "S100A8"))
@@ -1458,7 +1460,9 @@ class TestAlternativeSourceH5adFacade:
         data = EmbeddingData(H5adFacade(primary_path), "umap").add_alternative_source(
             alt
         )
-        with pytest.raises(ValueError, match="none of the alternative sources had a name"):
+        with pytest.raises(
+            ValueError, match="none of the alternative sources had a name"
+        ):
             data.get_column("S100A8")
 
 
@@ -1566,7 +1570,7 @@ class TestLayerAndTransform:
         np.testing.assert_allclose(series.values, np.arange(ad.n_obs) * 2.0 + 7.0)
 
     def test_alternative_source_records_layer_and_transform(self, ad):
-        fn = lambda x: x # noqa: E731
+        fn = lambda x: x  # noqa: E731
         data = EmbeddingData(ad, "umap").add_alternative_source(
             _make_alt_ad(ad), name="a", layer="scaled", transform=fn
         )
@@ -1621,57 +1625,79 @@ class TestLayerAndTransformH5adFacade:
 
 
 class TestGenesCellsCounts:
-    def test_n_genes_per_cell_matches_manual_count(self, data, ad):
-        counts = data.n_genes_per_cell()
-        expected = np.asarray((data.get_X_csr() != 0).sum(axis=1)).ravel()
-        assert counts.index.equals(ad.obs_names)
+    def test_n_genes_per_cell_matches_manual_count(self, data_with_zeros_and_missing):
+        counts = data_with_zeros_and_missing.n_genes_per_cell()
+        expected = np.asarray((data_with_zeros_and_missing.get_X_csr() != 0).sum(axis=1)).ravel()
+        assert counts.index.equals(data_with_zeros_and_missing.ad.obs_names)
         np.testing.assert_array_equal(counts.values, expected)
 
-    def test_n_cells_per_gene_matches_manual_count(self, data, ad):
-        counts = data.n_cells_per_gene()
-        expected = np.asarray((data.get_X_csr() != 0).sum(axis=0)).ravel()
+    def test_per_cell_sum(self, data_with_zeros_and_missing, ad):
+        counts = data_with_zeros_and_missing.per_cell_sum()
+        expected = np.asarray((data_with_zeros_and_missing.get_X_csr()).sum(axis=1)).ravel()
+        assert counts.index.equals(data_with_zeros_and_missing.ad.obs_names)
+        np.testing.assert_array_equal(counts.values, expected)
+
+    def test_per_cell_missing_count(self, data_with_zeros_and_missing, ad_with_zeros_and_missing):
+        counts = data_with_zeros_and_missing.per_cell_missing_count()
+        X = data_with_zeros_and_missing.get_X_csr() 
+        expected = X.shape[1] - np.diff(X.indptr)
+        assert expected.sum() > 0
+        assert counts.index.equals(data_with_zeros_and_missing.ad.obs_names)
+        np.testing.assert_array_equal(counts.values, expected)
+
+    def test_n_cells_per_gene_matches_manual_count(self, data_with_zeros_and_missing, ad):
+        counts = data_with_zeros_and_missing.n_cells_per_gene()
+        expected = np.asarray((data_with_zeros_and_missing.get_X_csr() != 0).sum(axis=0)).ravel()
         assert counts.index.equals(ad.var.index)
         np.testing.assert_array_equal(counts.values, expected)
 
-    def test_n_genes_per_cell_respects_cell_filter(self, data, ad):
+    def test_n_genes_per_cell_respects_cell_filter(self, data_with_zeros_and_missing, ad):
         keep = ad.obs["leiden"] == "0"
-        filtered = data.set_filter(lambda d, m=keep.values: m)
+        filtered = data_with_zeros_and_missing.set_filter(lambda d, m=keep.values: m)
         counts = filtered.n_genes_per_cell()
-        expected = np.asarray((data.get_X_csr()[keep.values] != 0).sum(axis=1)).ravel()
+        expected = np.asarray((data_with_zeros_and_missing.get_X_csr()[keep.values] != 0).sum(axis=1)).ravel()
         assert counts.index.equals(ad.obs_names[keep.values])
         np.testing.assert_array_equal(counts.values, expected)
 
-    def test_n_cells_per_gene_respects_cell_filter(self, data, ad):
+    def test_per_cell_sum_filtered(self, data_with_zeros_and_missing, ad):
         keep = ad.obs["leiden"] == "0"
-        filtered = data.set_filter(lambda d, m=keep.values: m)
+        filtered = data_with_zeros_and_missing.set_filter(lambda d, m=keep.values: m)
+        counts = filtered.per_cell_sum()
+        expected = np.asarray((data_with_zeros_and_missing.get_X_csr()[keep.values]).sum(axis=1)).ravel()
+        assert counts.index.equals(ad.obs_names[keep.values])
+        np.testing.assert_array_equal(counts.values, expected)
+
+    def test_n_cells_per_gene_respects_cell_filter(self, data_with_zeros_and_missing, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = data_with_zeros_and_missing.set_filter(lambda d, m=keep.values: m)
         counts = filtered.n_cells_per_gene()
-        expected = np.asarray((data.get_X_csr()[keep.values] != 0).sum(axis=0)).ravel()
+        expected = np.asarray((data_with_zeros_and_missing.get_X_csr()[keep.values] != 0).sum(axis=0)).ravel()
         assert counts.index.equals(ad.var.index)
         np.testing.assert_array_equal(counts.values, expected)
 
-    def test_n_genes_per_cell_h5ad_facade(self, ad, tmp_path):
+    def test_n_genes_per_cell_h5ad_facade(self, ad_with_zeros_and_missing, tmp_path):
         if not shutil.which("h5ad-inspect"):
             pytest.skip("h5ad-inspect not on PATH")
         pytest.importorskip("h5py")
         from mbf_singlecell_plotter import H5adFacade
 
         path = tmp_path / "primary.h5ad"
-        ad.write_h5ad(path)
+        ad_with_zeros_and_missing.write_h5ad(path)
 
-        real = EmbeddingData(ad, "umap").n_genes_per_cell()
+        real = EmbeddingData(ad_with_zeros_and_missing, "umap").n_genes_per_cell()
         facade = EmbeddingData(H5adFacade(path), "umap").n_genes_per_cell()
         np.testing.assert_array_equal(facade.values, real.values)
 
-    def test_n_cells_per_gene_h5ad_facade(self, ad, tmp_path):
+    def test_n_cells_per_gene_h5ad_facade(self, ad_with_zeros_and_missing, tmp_path):
         if not shutil.which("h5ad-inspect"):
             pytest.skip("h5ad-inspect not on PATH")
         pytest.importorskip("h5py")
         from mbf_singlecell_plotter import H5adFacade
 
         path = tmp_path / "primary.h5ad"
-        ad.write_h5ad(path)
+        ad_with_zeros_and_missing.write_h5ad(path)
 
-        real = EmbeddingData(ad, "umap").n_cells_per_gene()
+        real = EmbeddingData(ad_with_zeros_and_missing, "umap").n_cells_per_gene()
         facade = EmbeddingData(H5adFacade(path), "umap").n_cells_per_gene()
         np.testing.assert_array_equal(facade.values, real.values)
 
@@ -1820,9 +1846,8 @@ class TestSourceRoutedEmbedding:
 
     def test_coordinates_come_from_alternative_not_primary(self, ad):
         alt = _embedding_ad(ad, factor=1000.0)
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         coords = data.coordinates()
         primary_x = ad.obsm["X_umap"][:, 0]
@@ -1834,17 +1859,15 @@ class TestSourceRoutedEmbedding:
     def test_bare_key_resolves_to_X_prefix(self, ad):
         # "umap" (bare) resolves to "X_umap" inside the alternative source
         alt = _embedding_ad(ad)
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         assert data.embedding == "X_umap"
 
     def test_pca_tuple_inside_source_spec(self, ad):
         alt = _embedding_ad(ad, key="pca", factor=500.0)
-        data = (
-            EmbeddingData(ad, ("alt", ("pca", 0, 1)))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", ("pca", 0, 1))).add_alternative_source(
+            alt, name="alt"
         )
         coords = data.coordinates()
         pca = ad.obsm["X_pca"]
@@ -1853,9 +1876,8 @@ class TestSourceRoutedEmbedding:
 
     def test_embedding_source_property(self, ad):
         alt = _embedding_ad(ad)
-        routed = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        routed = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         assert routed.embedding_source == "alt"
         # primary embedding has no source routing
@@ -1872,9 +1894,8 @@ class TestSourceRoutedEmbedding:
         """Alternative stores the embedding in reversed obs order — coordinates
         must reindex back onto the primary obs_names."""
         alt = _embedding_ad(ad, factor=0.0, shuffle=True)  # same values, new order
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         coords = data.coordinates()
         # after reindex, primary cell i keeps its own embedding value
@@ -1883,9 +1904,8 @@ class TestSourceRoutedEmbedding:
 
     def test_missing_cells_in_alternative_become_nan(self, ad):
         alt = _embedding_ad(ad, factor=0.0, drop=5)
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         coords = data.coordinates()
         assert len(coords) == ad.n_obs
@@ -1898,9 +1918,8 @@ class TestSourceRoutedEmbedding:
         genes/obs still come from the primary source."""
         alt = _embedding_ad(ad)
         # alt has no EXTRA_GENE column, so a plain lookup must hit the primary
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         primary_series, _ = EmbeddingData(ad, "umap").get_column("S100A8")
         series, name = data.get_column("S100A8")
@@ -1910,9 +1929,8 @@ class TestSourceRoutedEmbedding:
 
     def test_bounds_reflect_alternative_embedding(self, ad):
         alt = _embedding_ad(ad, factor=1000.0)
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         x_min, x_max, y_min, y_max = data.bounds()
         # bounds are offset by +1000 relative to the primary's range
@@ -1929,9 +1947,8 @@ class TestSourceRoutedEmbedding:
 
     def test_raises_when_embedding_key_missing_in_source(self, ad):
         alt = _embedding_ad(ad)  # has X_umap but not X_tsne
-        data = (
-            EmbeddingData(ad, ("alt", "tsne"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "tsne")).add_alternative_source(
+            alt, name="alt"
         )
         with pytest.raises(KeyError, match="not found in source obsm"):
             data.coordinates()
@@ -1949,22 +1966,17 @@ class TestSourceRoutedEmbedding:
         alt = _embedding_ad(ad)
         data = EmbeddingData(ad, ("alt", "umap"), alternative_sources=[("alt", alt)])
         coords = data.coordinates()
-        np.testing.assert_allclose(
-            coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0
-        )
+        np.testing.assert_allclose(coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0)
 
     def test_alternative_already_an_embedding_data(self, ad):
         # add_alternative_source unwraps EmbeddingData → uses its .ad
         alt_ad = _embedding_ad(ad)
         alt_data = EmbeddingData(alt_ad, "umap")
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt_data, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt_data, name="alt"
         )
         coords = data.coordinates()
-        np.testing.assert_allclose(
-            coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0
-        )
+        np.testing.assert_allclose(coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0)
 
 
 class TestSourceRoutedEmbeddingPlotter:
@@ -1995,9 +2007,7 @@ class TestSourceRoutedEmbeddingPlotter:
         )
         assert sp._data.embedding_source == "alt"
         coords = sp._data.coordinates()
-        np.testing.assert_allclose(
-            coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0
-        )
+        np.testing.assert_allclose(coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0)
 
 
 class TestSourceRoutedEmbeddingH5adFacade:
@@ -2009,15 +2019,12 @@ class TestSourceRoutedEmbeddingH5adFacade:
         path = tmp_path / "alt_emb.h5ad"
         alt.write_h5ad(path)
 
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(H5adFacade(path), name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            H5adFacade(path), name="alt"
         )
         coords = data.coordinates()
         assert coords.index.equals(ad.obs_names)
-        np.testing.assert_allclose(
-            coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0
-        )
+        np.testing.assert_allclose(coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0)
 
 
 class TestSourceRoutedEmbeddingNanCoords:
@@ -2029,9 +2036,8 @@ class TestSourceRoutedEmbeddingNanCoords:
         """Source-routed embedding whose alternative is missing the last *drop*
         primary cells → that many NaN coordinates."""
         alt = ad[:-drop].copy()
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         return data, drop
 
@@ -2092,9 +2098,8 @@ class TestSourceRoutedEmbeddingNanCoords:
         from mbf_singlecell_plotter.interactive import _grid_binning
 
         alt = _embedding_ad(ad)  # same obs_names, no drops
-        data = (
-            EmbeddingData(ad, ("alt", "umap"))
-            .add_alternative_source(alt, name="alt")
+        data = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
         )
         b = _grid_binning(data)
         assert len(b["xi_all"]) == ad.n_obs
@@ -2151,9 +2156,7 @@ class TestSourceRoutedEmbeddingNanCoords:
         ref_data, drop = self._routed_with_drops(ad)
         current_data = EmbeddingData(ad, "umap")
         outside = "#C0C0C0"
-        df = prepare_embedding_color_df(
-            current_data, ref_data, outside_color=outside
-        )
+        df = prepare_embedding_color_df(current_data, ref_data, outside_color=outside)
         assert len(df) == ad.n_obs
         # cells the reference embedding has no position for fall back to
         # outside_color instead of crashing on NaN -> int(...) formatting.
@@ -2566,8 +2569,12 @@ class TestRegionFilterSpec:
         filtered = data.set_filter(region)
         assert filtered.has_filter is True
         expected = int(
-            ((c["x"] <= x_mid) & (c["y"] <= y_mid)
-             & (c["x"] >= c["x"].min()) & (c["y"] >= c["y"].min())).sum()
+            (
+                (c["x"] <= x_mid)
+                & (c["y"] <= y_mid)
+                & (c["x"] >= c["x"].min())
+                & (c["y"] >= c["y"].min())
+            ).sum()
         )
         assert len(filtered.coordinates()) == expected
         # soft: bounds still reflect the full frame
@@ -2590,7 +2597,12 @@ class TestRegionFilterSpec:
 class TestHardFilter:
     def test_has_hard_filter_default_false(self, data):
         assert data.has_hard_filter is False
-        assert data.set_filter(lambda d: d.get_column("leiden").series == "0").has_hard_filter is False
+        assert (
+            data.set_filter(
+                lambda d: d.get_column("leiden").series == "0"
+            ).has_hard_filter
+            is False
+        )
 
     def test_hard_filter_sets_flag(self, data):
         hf = data.hard_filter(lambda d: d.get_column("leiden").series == "0")
@@ -2730,9 +2742,9 @@ class TestFilterPlotter:
     def test_border_respects_filter_when_enabled(self, plotter, ad):
         keep = ad.obs["leiden"] == "0"
         full_bdf = plotter._get_boundary_df()
-        filtered_pt = plotter.set_filter(
-            lambda d, m=keep.values: m
-        ).with_borders(cell_type_column="leiden", respect_filter=True)
+        filtered_pt = plotter.set_filter(lambda d, m=keep.values: m).with_borders(
+            cell_type_column="leiden", respect_filter=True
+        )
         filtered_bdf = filtered_pt._get_boundary_df()
         assert len(filtered_bdf) != len(full_bdf)
 
@@ -3025,7 +3037,7 @@ class TestInteractiveMarkers:
         )
         html = out.read_text()
         # grid view keeps the Moran's I score label
-        assert "SCORE_LABEL = \"I\"" in html
+        assert 'SCORE_LABEL = "I"' in html
         assert self._cells(html)
 
     def test_requires_source(self):

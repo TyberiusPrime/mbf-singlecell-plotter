@@ -363,9 +363,7 @@ class EmbeddingData:
         for alt in self._alternative_sources:
             if alt.name == self._embedding_source:
                 return alt.ad
-        registered = [
-            s.name for s in self._alternative_sources if s.name is not None
-        ]
+        registered = [s.name for s in self._alternative_sources if s.name is not None]
         raise KeyError(
             f"Embedding source {self._embedding_source!r} is not a registered "
             f"alternative source. Registered names: {registered!r}"
@@ -1169,6 +1167,25 @@ class EmbeddingData:
             return X.tocsr()
         return sp.csr_matrix(np.asarray(X))
 
+    def _get_filtered_X_csr(self):
+        X = self.get_X_csr()
+        mask = self._filter_mask()
+        index = self.ad.obs_names
+        if mask is not None:
+            X = X[mask]
+            index = index[mask]
+        return X, index
+
+    def per_cell_sum(self) -> pd.Series:
+        X, index = self._get_filtered_X_csr()
+        sums = X.sum(axis=1).A1
+        return pd.Series(sums, index=index, name="per_cell_sum")
+
+    def per_cell_missing_count(self) -> pd.Series:
+        X, index = self._get_filtered_X_csr()
+        missing_per_row = X.shape[1] - X.getnnz(axis=1)
+        return pd.Series(missing_per_row, index)
+
     def n_genes_per_cell(self) -> pd.Series:
         """Return the number of genes with nonzero expression, per cell.
 
@@ -1176,13 +1193,16 @@ class EmbeddingData:
         the active cell filter (:meth:`set_filter` / :meth:`hard_filter`),
         matching :meth:`coordinates`.
         """
-        X = self.get_X_csr()
-        mask = self._filter_mask()
-        index = self.ad.obs_names
-        if mask is not None:
-            X = X[mask]
-            index = index[mask]
-        return pd.Series(np.diff(X.indptr), index=index, name="n_genes")
+        X, index = self._get_filtered_X_csr()
+        # that's only correct if 0 is missing
+        # return pd.Series(np.diff(X.indptr), index=index, name="n_genes")
+        mask = (X.data != 0) & np.isfinite(X.data)
+
+        # Count valid stored entries per row
+        counts = np.zeros(X.shape[0], dtype=np.int64)
+        np.add.at(counts, np.repeat(np.arange(X.shape[0]), np.diff(X.indptr)), mask)
+
+        return pd.Series(counts, index=index, name="n_genes")
 
     def n_cells_per_gene(self) -> pd.Series:
         """Return the number of cells with nonzero expression, per gene.
@@ -1191,11 +1211,15 @@ class EmbeddingData:
         Honors the active cell filter (:meth:`set_filter` / :meth:`hard_filter`),
         matching :meth:`coordinates`.
         """
-        X = self.get_X_csr()
-        mask = self._filter_mask()
-        if mask is not None:
-            X = X[mask]
-        counts = np.bincount(X.indices, minlength=X.shape[1])
+        X, _ = self._get_filtered_X_csr()
+        # counts = np.bincount(X.indices, minlength=X.shape[1])
+        # return pd.Series(counts, index=self.ad.var.index, name="n_cells")
+        mask = (X.data != 0) & np.isfinite(X.data)
+        counts = np.bincount(
+            X.indices[mask],
+            minlength=X.shape[1],
+        )
+
         return pd.Series(counts, index=self.ad.var.index, name="n_cells")
 
     # ── grid helpers ────────────────────────────────────────────────────────

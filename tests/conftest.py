@@ -95,6 +95,45 @@ def data(ad):
 
 
 @pytest.fixture(scope="session")
+def ad_with_zeros_and_missing():
+    """Load the example AnnData once per test session."""
+    import scipy
+
+    res = anndata.read_h5ad(EXAMPLE_DATA)
+    res.X = scipy.sparse.csr_matrix(res.X)
+    res.X[res.X < 0] = 0
+    res.X.eliminate_zeros()
+    mask = ((res.X.data > 0) & (res.X.data < 1))
+    assert np.count_nonzero(mask)
+    res.X.data[mask] = 0 # present zeros
+
+    half_and_half = pd.Series(True, index=res.obs.index)
+    half_and_half.iloc[: len(half_and_half) // 2] = False
+    res.obs["bool"] = half_and_half
+    # Coarse cluster grouping: low / mid / high leiden index → 3 categories.
+    coarse = pd.Series("M", index=res.obs.index, dtype=object)
+    leiden_int = res.obs["leiden"].astype(int)
+    coarse[leiden_int < 3] = "L"
+    coarse[leiden_int >= 6] = "H"
+    res.obs[COARSE_COLUMN] = coarse.astype("category")
+    res.obs[CELL_TYPE_LABEL_COLUMN] = (
+        res.obs["leiden"].astype(str).map(_CELL_TYPE_LABELS).astype("category")
+    )
+    n = res.n_obs
+    labels = (_MULTI_DIGIT_LABELS * (n // len(_MULTI_DIGIT_LABELS) + 1))[:n]
+    res.obs[MULTI_DIGIT_COLUMN] = pd.Series(labels, index=res.obs.index, dtype=object)
+    return res
+
+
+@pytest.fixture(scope="session")
+def data_with_zeros_and_missing(ad_with_zeros_and_missing):
+    """An EmbeddingData with UMAP embedding."""
+    from mbf_singlecell_plotter import EmbeddingData
+
+    return EmbeddingData(ad_with_zeros_and_missing, "umap")
+
+
+@pytest.fixture(scope="session")
 def plotter_no_boundary(data):
     """A ScatterPlotter without border overlay (faster for unit tests)."""
     from mbf_singlecell_plotter import ScatterPlotter
