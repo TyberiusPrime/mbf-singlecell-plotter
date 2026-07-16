@@ -1703,6 +1703,132 @@ class TestGenesCellsCounts:
 
 
 # ---------------------------------------------------------------------------
+# @computed_column: tagged methods resolvable via get_column
+# ---------------------------------------------------------------------------
+
+
+class TestComputedColumns:
+    def test_registry_collects_tagged_methods(self):
+        names = set(EmbeddingData._computed_columns)
+        assert {
+            "n_genes_per_cell",
+            "per_cell_sum",
+            "per_cell_missing_count",
+            "n_cells_per_gene",
+        } <= names
+
+    def test_get_column_resolves_tagged_method(self, data_with_zeros_and_missing):
+        via_get, name = data_with_zeros_and_missing.get_column("n_genes_per_cell")
+        direct = data_with_zeros_and_missing.n_genes_per_cell()
+        assert via_get.index.equals(data_with_zeros_and_missing.ad.obs_names)
+        np.testing.assert_array_equal(via_get.values, direct.values)
+        assert name == "n_genes_per_cell"
+
+    def test_per_cell_sum_via_get_column(self, data_with_zeros_and_missing):
+        via_get, _ = data_with_zeros_and_missing.get_column("per_cell_sum")
+        direct = data_with_zeros_and_missing.per_cell_sum()
+        np.testing.assert_array_equal(via_get.values, direct.values)
+
+    def test_obs_column_shadows_computed_column(self):
+        # An obs column named like a computed column must win over the tag.
+        import scipy.sparse as sp
+        X = sp.csr_matrix(np.arange(12, dtype=float).reshape(4, 3))
+        ad = anndata.AnnData(X=X)
+        ad.obs_names = [f"c{i}" for i in range(4)]
+        ad.var_names = [f"g{j}" for j in range(3)]
+        ad.obsm["X_umap"] = np.arange(8, dtype=float).reshape(4, 2)
+        ad.obs["per_cell_sum"] = np.array([10.0, 20.0, 30.0, 40.0])
+        d = EmbeddingData(ad, "umap")
+        via_get, _ = d.get_column("per_cell_sum")
+        np.testing.assert_array_equal(via_get.values, [10.0, 20.0, 30.0, 40.0])
+
+    def test_gene_shadows_computed_column(self):
+        # A var gene named like a computed column must win over the tag.
+        import scipy.sparse as sp
+        expr = np.array([0.0, 2.0, 0.0, 7.0])
+        X = sp.csr_matrix(np.column_stack([expr, np.zeros(4), np.ones(4)]))
+        ad = anndata.AnnData(X=X)
+        ad.obs_names = [f"c{i}" for i in range(4)]
+        ad.var_names = ["per_cell_sum", "g1", "g2"]
+        ad.obsm["X_umap"] = np.arange(8, dtype=float).reshape(4, 2)
+        d = EmbeddingData(ad, "umap")
+        via_get, _ = d.get_column("per_cell_sum")
+        np.testing.assert_array_equal(via_get.values, expr)
+
+    def test_filter_applied_exactly_once(self, data_with_zeros_and_missing, ad):
+        keep = ad.obs["leiden"] == "0"
+        filtered = data_with_zeros_and_missing.set_filter(lambda dd, m=keep.values: m)
+        via_get, _ = filtered.get_column("n_genes_per_cell")
+        # Same cells + same values as the direct call on the filtered object.
+        direct = filtered.n_genes_per_cell()
+        assert via_get.index.equals(direct.index)
+        np.testing.assert_array_equal(via_get.values, direct.values)
+        assert len(via_get) == keep.sum()
+
+    def test_unknown_name_still_raises(self, data):
+        with pytest.raises(KeyError):
+            data.get_column("definitely_not_a_column")
+
+    def test_custom_tagged_method_resolves(self, ad):
+        from mbf_singlecell_plotter import computed_column
+
+        class MyData(EmbeddingData):
+            @computed_column()
+            def my_metric(self) -> pd.Series:
+                return pd.Series(
+                    np.ones(self.ad.n_obs), index=self.ad.obs_names, name="my_metric"
+                )
+
+        d = MyData(ad, "umap")
+        assert "my_metric" in MyData._computed_columns
+        via_get, name = d.get_column("my_metric")
+        assert name == "my_metric"
+        np.testing.assert_array_equal(via_get.values, np.ones(ad.n_obs))
+
+    def test_decorator_name_override(self, ad):
+        from mbf_singlecell_plotter import computed_column
+
+        class MyData(EmbeddingData):
+            @computed_column("alias")
+            def some_method(self) -> pd.Series:
+                return pd.Series(np.full(self.ad.n_obs, 7.0), index=self.ad.obs_names)
+
+        d = MyData(ad, "umap")
+        assert "alias" in MyData._computed_columns
+        via_get, _ = d.get_column("alias")
+        np.testing.assert_array_equal(via_get.values, np.full(ad.n_obs, 7.0))
+        with pytest.raises(KeyError):
+            d.get_column("some_method")
+
+    def test_tagged_sits_before_derived_source(self, ad):
+        # A derived source with a name clashing with a tagged method loses,
+        # because the primary obs/gene + tagged tier comes first.
+        from mbf_singlecell_plotter import computed_column
+
+        class MyData(EmbeddingData):
+            @computed_column()
+            def n_genes_per_cell(self) -> pd.Series:  # noqa: F811 - override
+                return pd.Series(np.full(self.ad.n_obs, -1), index=self.ad.obs_names)
+
+        d = MyData(ad, "umap").add_derived_source(
+            {"n_genes_per_cell": lambda dd: dd.get_column("n_genes").series * 100}
+        )
+        via_get, _ = d.get_column("n_genes_per_cell")
+        np.testing.assert_array_equal(via_get.values, np.full(ad.n_obs, -1))
+
+    def test_non_series_return_raises(self, ad):
+        from mbf_singlecell_plotter import computed_column
+
+        class BadData(EmbeddingData):
+            @computed_column()
+            def bad(self):
+                return [1, 2, 3]
+
+        with pytest.raises(TypeError, match="pandas Series"):
+            BadData(ad, "umap").get_column("bad")
+
+
+# ---------------------------------------------------------------------------
 # Alternative sources: naming + tuple routing
 # ---------------------------------------------------------------------------
 

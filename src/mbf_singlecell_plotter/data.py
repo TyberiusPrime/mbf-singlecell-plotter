@@ -148,6 +148,55 @@ class DerivedSource(NamedTuple):
     columns: Dict[str, Callable[["EmbeddingData"], "pd.Series"]]
 
 
+def computed_column(name: Optional[str] = None):
+    """Decorator: register an :class:`EmbeddingData` method as a
+    :meth:`get_column` fallback.
+
+    A method decorated with this becomes resolvable *by name* through
+    :meth:`EmbeddingData.get_column`: when the requested name matches no
+    ``obs`` column or gene in the primary source, the tagged method is invoked
+    and its returned :class:`pandas.Series` is used.  The lookup name defaults
+    to the method's ``__name__``; pass *name* to override.
+
+    At lookup time the method is run on an *unfiltered* view of the data and
+    the active cell filter is applied once, at the public :meth:`get_column`
+    boundary — exactly like a derived-source callable — so the method should
+    compute over the full dataset, not a pre-filtered subset.  Its result is
+    reindexed onto the primary ``obs_names`` (extra indices dropped, missing
+    cells → ``NaN``).
+
+    Tagged columns sit *between* the primary obs/gene lookup and the
+    registered derived/alternative sources, so an explicit ``obs`` column or
+    gene of the same name always wins.
+    """
+
+    def decorator(fn):
+        fn._computed_column_name = name or fn.__name__
+        return fn
+
+    return decorator
+
+
+def _collect_computed_columns(cls):
+    """Class decorator: gather every ``@computed_column`` method into a registry.
+
+    Builds ``cls._computed_columns`` — ``{column_name: method_attr_name}`` — by
+    scanning the full MRO so subclasses inherit (and may override) tagged
+    methods.  Tagging is detected via the ``_computed_column_name`` attribute
+    set by :func:`computed_column`.  Applied to :class:`EmbeddingData` here,
+    and re-run from :meth:`EmbeddingData.__init_subclass__` for subclasses.
+    """
+    registry: Dict[str, str] = {}
+    for klass in reversed(cls.__mro__):
+        for attr, value in vars(klass).items():
+            col_name = getattr(value, "_computed_column_name", None)
+            if col_name is not None:
+                registry[col_name] = attr
+    cls._computed_columns = registry
+    return cls
+
+
+@_collect_computed_columns
 class EmbeddingData:
     """Wraps an AnnData + embedding choice. Pure data extraction, no plotting.
 
@@ -163,6 +212,11 @@ class EmbeddingData:
     routing used by :meth:`get_column`; the coordinates are reindexed onto the
     primary ``obs_names`` exactly like alternative-source columns.
     """
+
+    # Populated by :func:`_collect_computed_columns` (and re-populated for
+    # subclasses by :meth:`__init_subclass__`); declared here so type checkers
+    # and readers can see it. Maps ``@computed_column`` lookup name → method attr.
+    _computed_columns: Dict[str, str] = {}
 
     def __init__(
         self,
@@ -306,6 +360,16 @@ class EmbeddingData:
         # just the kept cells).  When False the filter is soft — it subsets the
         # cells shown but leaves the embedding frame at the full-data extent.
         self._filter_hard: bool = False
+
+    def __init_subclass__(cls, **kwargs):
+        """Rebuild the ``@computed_column`` registry for subclasses.
+
+        Subclasses may add or override ``@computed_column`` methods; this hooks
+        their creation so :attr:`_computed_columns` always reflects the full
+        MRO (the base class registry is built by :func:`_collect_computed_columns`).
+        """
+        super().__init_subclass__(**kwargs)
+        _collect_computed_columns(cls)
 
     def _replace(self, **changes) -> "EmbeddingData":
         """Return a shallow copy with the specified private attributes replaced.
@@ -779,7 +843,9 @@ class EmbeddingData:
           primary ``obs_names``.  ``KeyError`` is raised if no source is
           registered under that name or it does not contain *column*.
 
-        * Otherwise *name* is a string: the primary source is consulted first,
+        * Otherwise *name* is a string: the primary source is consulted first
+          (``obs`` columns, then genes), then any tagged ``@computed_column``
+          method on this object (e.g. ``n_genes_per_cell`` / ``per_cell_sum``),
           then each registered *derived* source (columns computed on demand),
           then each alternative source in registration order.  The first hit
           is reindexed to the primary ``obs_names`` (extra cells dropped,
@@ -852,6 +918,25 @@ class EmbeddingData:
                 raise
             raise ValueError(self._no_x_message(name)) from exc
 
+        # Tagged @computed_column methods on this data object (built-in QC
+        # metrics like n_genes_per_cell / per_cell_sum): consulted after the
+        # primary obs/gene lookup fails, before derived/alternative sources.
+        # Run on an unfiltered view so the cell filter is applied exactly once,
+        # at the public get_column boundary — same contract as derived sources.
+        if name in self._computed_columns:
+            attr = self._computed_columns[name]
+            unfiltered = copy.copy(self)
+            unfiltered._filter = None
+            unfiltered._filter_hard = False
+            unfiltered._filter_cache = None
+            series = getattr(unfiltered, attr)()
+            if not isinstance(series, pd.Series):
+                raise TypeError(
+                    f"@computed_column method {attr!r} must return a pandas "
+                    f"Series, got {type(series).__name__}"
+                )
+            return ColumnData(series.reindex(self.ad.obs_names), name)
+
         for d in self._derived_sources:
             if name in d.columns:
                 return ColumnData(
@@ -870,6 +955,11 @@ class EmbeddingData:
 
         raise KeyError(
             f"Column or gene {name!r} not found in primary source"
+            + (
+                f" or any of {len(self._computed_columns)} computed column(s)"
+                if self._computed_columns
+                else ""
+            )
             + (
                 f" or any of {len(self._derived_sources)} derived source(s)"
                 if self._derived_sources
@@ -1176,16 +1266,19 @@ class EmbeddingData:
             index = index[mask]
         return X, index
 
+    @computed_column()
     def per_cell_sum(self) -> pd.Series:
         X, index = self._get_filtered_X_csr()
         sums = X.sum(axis=1).A1
         return pd.Series(sums, index=index, name="per_cell_sum")
 
+    @computed_column()
     def per_cell_missing_count(self) -> pd.Series:
         X, index = self._get_filtered_X_csr()
         missing_per_row = X.shape[1] - X.getnnz(axis=1)
         return pd.Series(missing_per_row, index)
 
+    @computed_column()
     def n_genes_per_cell(self) -> pd.Series:
         """Return the number of genes with nonzero expression, per cell.
 
