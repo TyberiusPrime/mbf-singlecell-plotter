@@ -189,8 +189,10 @@ class PlotBuilder:
 
     def __init__(
         self,
-        base_h5ad: Union[str, Path],
-        additional_h5ads: Optional[Dict[str, Union[str, Path]]] = None,
+        base_h5ad: Union[str, Path | Tuple[Path, ppg.Job]],
+        additional_h5ads: Optional[
+            Dict[str, Union[str, Path, Tuple[Path, ppg.Job]]]
+        ] = None,
         column_sources: Optional[
             Dict[str, Callable[[EmbeddingData], "pandas.Series"]]
         ] = None,
@@ -207,10 +209,11 @@ class PlotBuilder:
         base_size: float = 15,
         panel_size: Tuple[float, float] = (4, 4),
     ):
-        self.base_h5ad = Path(base_h5ad)
+        self.base_h5ad, self.base_h5ad_deps = ppg.util.job_or_filename(base_h5ad)
         # Named .h5ad fallback sources (e.g. {"genes": Path(...)}).
         self.additional_h5ads = {
-            name: Path(p) for name, p in (additional_h5ads or {}).items()
+            name: ppg.util.job_or_filename(p)
+            for name, p in (additional_h5ads or {}).items()
         }
         # Derived columns computed from a callable(EmbeddingData) -> Series.
         self.column_sources = dict(column_sources or {})
@@ -264,7 +267,7 @@ class PlotBuilder:
             transform=self._resolve(plot, "transform"),
             layer=self._resolve(plot, "layer"),
         )
-        for name, path in self.additional_h5ads.items():
+        for name, (path, _deps) in self.additional_h5ads.items():
             p = p.add_alternative_source(path, name=name)
         for column in plot.derived_columns_needed():
             if column in self.column_sources:
@@ -355,10 +358,15 @@ class PlotBuilder:
         if not outputs:
             raise ValueError(f"Plot {stem!r} would produce no output files")
 
-        def generate(output_filenames, plot=plot):
+        def generate(
+            output_filenames,
+            plot=plot,
+            column_colors=self.column_colors,
+            build_plotter=self.build_plotter,
+        ):
             for path in output_filenames.values():
                 path.parent.mkdir(exist_ok=True, parents=True)
-            p = self.build_plotter(plot)
+            p = build_plotter(plot)
             if "scatter" in output_filenames:
                 p.plot(plot.column).save(output_filenames["scatter"], dpi=plot.dpi)
             if "histo" in output_filenames:
@@ -372,14 +380,14 @@ class PlotBuilder:
                     plot.column, normalize_to=plot.do_global_relative_histogram
                 ).save(output_filenames["global_histo_relative"])
             for violin_x in _as_list(plot.do_violin):
-                colors = self.column_colors.get(violin_x)
+                colors = column_colors.get(violin_x)
                 # colors=None restores the default palette for this column
                 pv = p.colormap_discrete(cmap_or_list_or_dict=colors, title=violin_x)
                 po = pv.plot_violin(plot.column, violin_x)
                 po += p9.theme(axis_text_x=p9.element_text(rotation=90))
                 po.save(output_filenames[f"violin_{violin_x}"])
             for violin_x, facet_column in plot.do_facet_violin or []:
-                colors = self.column_colors.get(violin_x)
+                colors = column_colors.get(violin_x)
                 pv = p.colormap_discrete(cmap_or_list_or_dict=colors, title=violin_x)
                 po = pv.plot_violin(plot.column, violin_x, [facet_column])
                 po += p9.facet_wrap(facet_column, scales="free_x")
@@ -430,9 +438,9 @@ class PlotBuilder:
         self, plot: _PlotBase, outputs: Dict[str, Path], generate, id_suffix=""
     ):
         job = ppg.MultiFileGeneratingJob(outputs, generate, depend_on_function=True)
-        job.depends_on_file(self.base_h5ad)
-        for path in self.additional_h5ads.values():
-            job.depends_on_file(path)
+        job.depends_on(self.base_h5ad_deps)
+        for _path, deps in self.additional_h5ads.values():
+            job.depends_on(deps)
         plot_id = str(sorted(outputs.values())[0]) + id_suffix
         job.depends_on(self._deps(plot, plot_id))
         return job
