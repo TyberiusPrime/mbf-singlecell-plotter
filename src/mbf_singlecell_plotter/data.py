@@ -1233,7 +1233,7 @@ class EmbeddingData:
             df = df.reindex(self.ad.obs_names)
         return df
 
-    def get_X_csr(self):
+    def get_X_csr(self, layer=None):
         """Return the primary source's ``X`` as a scipy CSR sparse matrix.
 
         This is the bulk-access entry point used by analyses that touch many
@@ -1250,7 +1250,10 @@ class EmbeddingData:
         as Moran's I operate on the raw matrix).
         """
         ad = self.ad
-        layer = self._layer
+        if layer is None:
+            layer = self._layer
+        else:
+            pass
         getter = getattr(ad, "get_X_csr", None)
         if getter is not None:
             return getter() if layer == "X" else getter(layer)
