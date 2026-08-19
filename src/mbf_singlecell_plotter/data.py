@@ -1304,6 +1304,7 @@ class EmbeddingData:
 
         return pd.Series(counts, index=index, name="n_genes")
 
+    @computed_column()
     def n_cells_per_gene(self) -> pd.Series:
         """Return the number of cells with nonzero expression, per gene.
 
