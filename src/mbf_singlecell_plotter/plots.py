@@ -1429,7 +1429,7 @@ class ScatterPlotter:
 
     # changing apperance via plotnine theming
 
-    def theme(self, **theme_args):
+    def theme(self, **theme_args) -> "ScatterPlotter":
         """Change plotnine theming args.
 
         See https://plotnine.org/reference/#themeables

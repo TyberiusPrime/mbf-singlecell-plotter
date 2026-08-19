@@ -27,6 +27,7 @@ dev = [
     "scikit-image>=0.24",
     "scipy>=1.14",
     "ty>=0.0.1a9",
+    "pypipegraph2",
 ]
 
 [tool.ty.rules]

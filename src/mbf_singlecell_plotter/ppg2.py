@@ -1,498 +1,751 @@
 """Declarative, pipegraph-driven plotting.
 
-Describe the plots you want as :class:`Plot` / :class:`PlotDensity` dataclasses,
-collect them on a :class:`PlotBuilder` (which carries the shared data sources and
-styling defaults), then turn the whole batch into pypipegraph2 jobs in one call::
+:class:`PlotBuilder` and :class:`Plot` are *call recorders* for
+:class:`~mbf_singlecell_plotter.plots.ScatterPlotter`.  They expose exactly the
+methods ScatterPlotter exposes -- discovered by introspection, so nothing has to
+be re-declared here -- but instead of executing a call they remember it.  At
+:meth:`PlotBuilder.register_all` time the remembered calls are replayed inside a
+pypipegraph2 job, and the same recording is serialised into the job's
+invariants.  Configuration and change-detection therefore cannot drift apart.
 
-    builder = PlotBuilder(
-        base_h5ad="analysis.h5ad",
-        additional_h5ads={"genes": "genes.h5ad"},
-        column_sources={"my_score": compute_my_score},
-        column_colors={"leiden": ["#1f77b4", "#ff7f0e", ...]},
-    )
-    builder.add_plot(Plot(column="S100A8"))
-    builder.add_plot(Plot(column="leiden", do_grid_histogram=False))
-    builder.add_plot(PlotDensity())
-    jobs = builder.register_all(result_dir)
+::
 
-The builder resolves data sources, faceting, filters and colouring; each plot may
-override any of the builder-level source defaults (``embedding``, ``transform``,
-``layer``, ``alternative_id_column``, ``base_size``, ``panel_size``).
+    builder = PlotBuilder(base_size=15)
+    builder.set_source(Path("analysis.h5ad"), embedding="umap", transform=log2)
+    builder.add_alternative_source(Path("genes.h5ad"), name="genes")
+    builder.style(dot_size=1)
+    builder.panel_size(4, 4)
+
+    p = builder.add(Plot("S100A8"))
+    p.facet("condition")
+    p.scatter()                      # -> S100A8_scatter.png
+    p.violin("leiden")               # -> S100A8_violin_leiden.png
+    p.ridgeline("leiden").unfacet()  # -> S100A8_ridgeline_leiden.png
+
+    jobs = builder.register_all("results/plots")
+
+Semantics
+---------
+Replay order is ``builder calls -> plot calls -> output calls``, exactly as if
+you had made those calls in sequence on one ScatterPlotter.  Overriding is
+therefore just calling again (``panel_size``, ``style``, ...); undoing uses the
+``un*``/``without_*`` methods.  Within a plot the *whole* plot script is applied
+before any output script, regardless of where ``.scatter()`` was called.
+
+Anything a recorded call receives ends up in the job's invariants:  ``Path``\\ s
+(and ``(Path, job)`` pairs) become file dependencies, callables become
+:class:`FunctionInvariant`\\ s, everything else is JSON-encoded into a single
+:class:`ParameterInvariant`.  Arguments that cannot be encoded deterministically
+are rejected at record time rather than silently hashed by object identity.
 """
 
-import copy
-import dataclasses
+import functools
+import inspect
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import pandas
-import plotnine as p9
-import pypipegraph2 as ppg
 
-from .data import EmbeddingData
 from .plots import ScatterPlotter
 
-# A qualified type alias for the "colour by this" argument.  Either an obs/gene
-# column name, or a ``(source_name, column)`` tuple selecting an alternative
-# source.  When a tuple is used the ``filename`` must be given explicitly.
-Column = Union[str, Tuple[str, str]]
-
-# Default palette for :class:`PlotDensity` heatmaps (light grey → warm red).
-DEFAULT_DENSITY_COLORS = [
-    "#eFeFeF",
-    "#ECDA9A",
-    "#EFC47E",
-    "#F3AD6A",
-    "#F7945D",
-    "#F97B57",
-    "#F66356",
-    "#EE4D5A",
-]
+__all__ = ["PlotBuilder", "Plot", "Output", "UnencodableArgument"]
 
 
-def _default_transform(x):
-    """Convert natural-log expression to log2 (the historical default)."""
-    return x / np.log(2)
+class UnencodableArgument(TypeError):
+    """A recorded argument cannot be turned into a deterministic invariant."""
 
 
-def _as_list(value) -> list:
-    """Normalise ``str | list | None`` into a (possibly empty) list."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    return list(value)
+def _require_ppg():
+    try:
+        import pypipegraph2 as ppg
+    except ImportError as e:  # pragma: no cover - depends on the environment
+        raise ImportError(
+            "pypipegraph2 is required to register plot jobs. Install it, or use "
+            "ScatterPlotter directly for interactive plotting."
+        ) from e
+    return ppg
 
 
-# ── plot descriptions ────────────────────────────────────────────────────────
+# ── introspection of ScatterPlotter ──────────────────────────────────────────
+
+# Methods are classified purely by return annotation: '-> "ScatterPlotter"' is a
+# configuration step we can record and replay, '-> p9.ggplot' is a terminal that
+# produces one output file.  Adding either to plots.py needs no change here.
 
 
-@dataclass(kw_only=True)
-class _PlotBase:
-    """Fields and helpers shared by every plot description.
+def _classify(cls) -> Tuple[dict, dict]:
+    config, terminal = {}, {}
+    for name, fn in inspect.getmembers(cls, inspect.isfunction):
+        if name.startswith("_"):
+            continue
+        annotation = str(inspect.signature(fn).return_annotation)
+        if cls.__name__ in annotation:
+            config[name] = fn
+        elif "ggplot" in annotation:
+            terminal[name] = fn
+    return config, terminal
 
-    Declared keyword-only so subclasses can keep their own required/positional
-    fields (e.g. ``Plot.column``) first in the constructor signature.
 
-    Any of the source-override fields left as ``None`` fall back to the
-    corresponding default on the :class:`PlotBuilder`.
+CONFIG_METHODS, TERMINAL_METHODS = _classify(ScatterPlotter)
+
+# Output-level keywords that shadow nothing in any terminal signature; see
+# test_ppg2_core.py::test_reserved_output_kwargs_do_not_shadow_terminals.
+RESERVED_OUTPUT_KWARGS = ("name", "filename", "dpi")
+
+# The two methods that take a data source.  A source has to be a Path (or a
+# ``(Path, job)`` pair, or a job) so it can become a file dependency -- a plain
+# string would look like any other argument and silently lose its invariant.
+SOURCE_PARAMS = {"set_source": "ad_or_data", "add_alternative_source": "source"}
+
+
+def _output_name_for(terminal: str) -> str:
+    """``plot`` -> ``scatter``, ``plot_violin`` -> ``violin``."""
+    return "scatter" if terminal == "plot" else terminal[len("plot_") :]
+
+
+def _first_param_is_column(fn) -> bool:
+    params = list(inspect.signature(fn).parameters)
+    return len(params) > 1 and params[1] == "column"
+
+
+_SELF = object()  # placeholder for the bound `self` during signature checks
+
+
+# ── recorded calls ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _Call:
+    method: str
+    args: tuple = ()
+    kwargs: dict = field(default_factory=dict)
+
+
+def _replay(calls: Sequence[_Call], init_kwargs: dict) -> ScatterPlotter:
+    """Apply a recorded script to a fresh ScatterPlotter."""
+    plotter = ScatterPlotter(**init_kwargs)
+    for call in calls:
+        plotter = getattr(plotter, call.method)(*call.args, **call.kwargs)
+    return plotter
+
+
+# ── argument encoding ────────────────────────────────────────────────────────
+
+
+def _is_job(value) -> bool:
+    return hasattr(value, "job_id") and hasattr(value, "depends_on")
+
+
+def _is_path_spec(value) -> bool:
+    """A Path, a job, or a ``(path, job)`` pair as accepted by job_or_filename."""
+    if isinstance(value, Path) or _is_job(value):
+        return True
+    return (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and isinstance(value[0], (str, Path))
+        and _is_job(value[1])
+    )
+
+
+def _qualname(obj) -> str:
+    module = getattr(obj, "__module__", None)
+    name = getattr(obj, "__qualname__", None) or getattr(obj, "__name__", None)
+    if name is None:
+        return repr(obj)
+    return f"{module}.{name}" if module else name
+
+
+def _default_resolve_path(value):
+    """ppg-free fallback: keep the path, contribute no dependency."""
+    if _is_path_spec(value) and isinstance(value, tuple):
+        return Path(value[0]), None
+    if _is_job(value):
+        return value, None
+    return Path(value), None
+
+
+class _Walker:
+    """Turn recorded calls into (JSON-safe encoding, replayable calls, deps).
+
+    The encoding is what the job's ParameterInvariant hashes; the replayable
+    calls are the same calls with path specs resolved to plain paths; deps are
+    the jobs/invariants the walk discovered along the way.
     """
 
-    # what to plot on (subset of the data)
-    filter: Optional[Callable[["EmbeddingData"], "np.ndarray"]] = None
-    hard_filter: Optional[Callable[["EmbeddingData"], "np.ndarray"]] = None
+    MAX_DEPTH = 20
 
-    # where to store the outputs
-    filename: Optional[str] = None  # override the output filename (stem)
-    subfolder: Optional[str] = None  # extra sub-directory, e.g. 'genes'
+    def __init__(self, prefix: str, resolve_path=_default_resolve_path, ppg=None):
+        self.prefix = prefix
+        self.resolve_path = resolve_path
+        self.ppg = ppg
+        self.deps: List[Any] = []
+        self._functions: List[Tuple[str, Any]] = []
 
-    # layout / style
-    facet: Optional[Column] = None  # split into panels; names the sub-directory
-    facet_args: Optional[dict] = None  # extra args to facet()/facet_2d()
-    style: Optional[dict] = None  # extra style, composed on top of dot_size=1
-    grey_border: Optional[bool] = None  # force the grey cell border on/off
-    title: Optional[Union[str, Callable[[str], str]]] = None
-    dpi: int = 150
+    # -- public ------------------------------------------------------------
 
-    # source overrides (None → inherit from the PlotBuilder)
-    embedding: Optional[str] = None
-    transform: Optional[Callable[["np.ndarray"], "np.ndarray"]] = None
-    layer: Optional[str] = None
-    alternative_id_column: Optional[str] = None
-    base_size: Optional[float] = None
-    panel_size: Optional[Tuple[float, float]] = None
+    def walk_calls(self, calls: Sequence[_Call]) -> Tuple[list, List[_Call]]:
+        encoded, resolved = [], []
+        for index, call in enumerate(calls):
+            where = f"{self.prefix}[{index}].{call.method}"
+            args_enc, args_res = [], []
+            for position, value in enumerate(call.args):
+                enc, res = self.walk(value, f"{where}() argument {position}")
+                args_enc.append(enc)
+                args_res.append(res)
+            kwargs_enc, kwargs_res = {}, {}
+            for key in sorted(call.kwargs):
+                enc, res = self.walk(call.kwargs[key], f"{where}({key}=...)")
+                kwargs_enc[key] = enc
+                kwargs_res[key] = res
+            encoded.append(
+                {"method": call.method, "args": args_enc, "kwargs": kwargs_enc}
+            )
+            resolved.append(_Call(call.method, tuple(args_res), kwargs_res))
+        return encoded, resolved
 
-    def facet_name(self) -> str:
-        assert self.facet is not None
-        if isinstance(self.facet, str):
-            return self.facet
-        return f"{self.facet[0]}_vs_{self.facet[1]}"
+    def walk(self, value, where: str, depth: int = 0):
+        """Return ``(encoded, resolved)`` for one argument."""
+        if depth > self.MAX_DEPTH:
+            raise UnencodableArgument(
+                f"{where}: nested too deeply ({self.MAX_DEPTH} levels) - "
+                "is the value self-referential?"
+            )
 
-    def get_facet_args(self) -> dict:
-        return self.facet_args or {}
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value, value
 
-    def do_border(self) -> bool:
-        if self.grey_border is not None:
-            return self.grey_border
-        return self.facet is not None
+        if _is_path_spec(value):
+            path, deps = self.resolve_path(value)
+            if isinstance(deps, (list, tuple)):
+                self.deps.extend(deps)
+            elif deps is not None:
+                self.deps.append(deps)
+            return {"__path__": str(path)}, path
 
-    def derived_columns_needed(self) -> List[str]:
-        """Columns that must be resolvable for this plot (facet + border)."""
-        res: List[str] = []
-        if self.facet is not None:
-            if isinstance(self.facet, str):
-                res.append(self.facet)
-            else:
-                res.extend(self.facet)
-        if self.do_border():
-            res.append("constant")
-        return res
+        if isinstance(value, np.generic):
+            return value.item(), value
+        if isinstance(value, np.ndarray):
+            return {"__array__": value.tolist()}, value
+
+        if isinstance(value, tuple):
+            pairs = [
+                self.walk(v, f"{where}[{i}]", depth + 1) for i, v in enumerate(value)
+            ]
+            return {"__tuple__": [e for e, _ in pairs]}, tuple(r for _, r in pairs)
+        if isinstance(value, list):
+            pairs = [
+                self.walk(v, f"{where}[{i}]", depth + 1) for i, v in enumerate(value)
+            ]
+            return [e for e, _ in pairs], [r for _, r in pairs]
+        if isinstance(value, (set, frozenset)):
+            encoded = sorted(
+                json.dumps(
+                    self.walk(v, f"{where}{{...}}", depth + 1)[0], sort_keys=True
+                )
+                for v in value
+            )
+            return {"__set__": encoded}, value
+        if isinstance(value, dict):
+            items = []
+            resolved = {}
+            for key in sorted(value, key=repr):
+                enc, res = self.walk(value[key], f"{where}[{key!r}]", depth + 1)
+                key_enc, _ = self.walk(key, f"{where} key {key!r}", depth + 1)
+                items.append([key_enc, enc])
+                resolved[key] = res
+            return {"__dict__": items}, resolved
+
+        if isinstance(value, functools.partial):
+            enc, _ = self.walk(
+                {"args": list(value.args), "kwargs": value.keywords or {}},
+                f"{where} (partial)",
+                depth + 1,
+            )
+            self._register_function(value.func, where)
+            return {"__partial__": _qualname(value.func), "__bound__": enc}, value
+
+        if isinstance(value, type):
+            return {"__class__": _qualname(value)}, value
+
+        if callable(value):
+            self._register_function(value, where)
+            return {"__function__": _qualname(value)}, value
+
+        # Last resort: an object is its type plus its (encodable) state.  This
+        # covers plotnine's element_* objects without ever hashing an id().
+        # An object exposing no state at all is *not* accepted -- it may be
+        # keeping it somewhere we cannot see, and encoding it as its bare type
+        # would silently make two different values look identical.
+        state = getattr(value, "__dict__", None)
+        if state is None:
+            slots = {
+                s: getattr(value, s)
+                for s in getattr(type(value), "__slots__", ())
+                if hasattr(value, s)
+            }
+            state = slots or None
+        if state is not None:
+            enc, _ = self.walk(
+                dict(state), f"{where} (state of {type(value).__name__})", depth + 1
+            )
+            return {"__object__": _qualname(type(value)), "__state__": enc}, value
+
+        raise UnencodableArgument(
+            f"{where}: cannot encode {type(value).__name__} deterministically. "
+            "Pass a value built from primitives, paths or functions, or move the "
+            "logic into a function argument (which is tracked by its source)."
+        )
+
+    def function_invariants(self) -> list:
+        """FunctionInvariants for every callable seen, in encounter order."""
+        if not self.ppg:
+            return []
+        out = []
+        for name, fn in self._functions:
+            out.append(self.ppg.FunctionInvariant(name, fn))
+            extra = getattr(fn, "deps", None)
+            if extra is not None:
+                # a computed_column may carry its own upstream dependencies
+                out.extend(extra if isinstance(extra, (list, tuple)) else [extra])
+        return out
+
+    # -- internal ----------------------------------------------------------
+
+    def _register_function(self, fn, where: str):
+        index = len(self._functions)
+        self._functions.append((f"{self.prefix}::fn{index}::{_qualname(fn)}", fn))
 
 
-@dataclass
-class Plot(_PlotBase):
-    """A scatter plot coloured by ``column`` (plus optional companion plots)."""
-
-    column: Column = None  # what to colour by / plot; names the output file
-
-    # which companion plots to also emit
-    do_scatter: bool = True
-    do_grid_histogram: bool = False  # per-grid-cell histogram
-    do_global_histogram: bool = False  # one overall histogram
-    do_global_relative_histogram: Optional[str] = None  # normalise_to column
-    do_violin: Optional[Union[List[str], str]] = None  # violin per x-column
-    do_facet_violin: Optional[List[Tuple[str, str]]] = None  # (x, facet) violins
-    do_ridges: Optional[List[str]] = None  # ridgeline per split column
-
-    # colouring / overplotting
-    colors: Optional[Union[List[str], Dict[str, str]]] = None
-    ascending: Optional[bool] = None
-    anti_overplot_seed: Optional[int] = None
-
-    def __post_init__(self):
-        if self.column is None:
-            raise ValueError("Plot.column is required")
-
-    def derived_columns_needed(self) -> List[str]:
-        res: List[str] = []
-        res.append(self.column if isinstance(self.column, str) else self.column[1])
-        res.extend(super().derived_columns_needed())
-        res.extend(_as_list(self.do_violin))
-        for x_column, facet_column in self.do_facet_violin or []:
-            res.append(x_column)
-            res.append(facet_column)
-        return res
+# ── recorder base ────────────────────────────────────────────────────────────
 
 
-@dataclass
-class PlotDensity(_PlotBase):
-    """A 2D cell-density heatmap of the embedding (no colour-by column)."""
+class _Recorder:
+    """Records ScatterPlotter configuration calls instead of performing them."""
 
-    bins: int = 12
-    quantile: float = 0.95
-    cmap_colors: List[str] = field(default_factory=lambda: list(DEFAULT_DENSITY_COLORS))
-    include_counts: bool = True
-    count_text_size: float = 7
+    def __init__(self):
+        self._calls: List[_Call] = []
+
+    def _record(self, method: str, args: tuple, kwargs: dict):
+        signature = inspect.signature(CONFIG_METHODS[method])
+        try:
+            signature.bind(_SELF, *args, **kwargs)
+        except TypeError as e:
+            raise TypeError(f"{type(self).__name__}.{method}(): {e}") from None
+        if method in SOURCE_PARAMS:
+            self._check_source(method, signature, args, kwargs)
+        self._calls.append(_Call(method, tuple(args), dict(kwargs)))
+        return self
+
+    def _check_source(self, method: str, signature, args: tuple, kwargs: dict):
+        bound = signature.bind(_SELF, *args, **kwargs)
+        source = bound.arguments.get(SOURCE_PARAMS[method])
+        if source is not None and not _is_path_spec(source):
+            raise TypeError(
+                f"{type(self).__name__}.{method}(): the data source must be a "
+                "pathlib.Path, a job, or a (path, job) pair so it can be tracked "
+                f"as a file dependency - got {type(source).__name__}. In-memory "
+                "AnnData objects and plain strings cannot be hashed."
+            )
+
+    def _init_kwargs_from(self, kwargs: dict) -> dict:
+        signature = inspect.signature(ScatterPlotter.__init__)
+        try:
+            signature.bind(_SELF, **kwargs)
+        except TypeError as e:
+            raise TypeError(f"{type(self).__name__}(): {e}") from None
+        return dict(kwargs)
+
+
+def _make_config_method(name: str, fn):
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        return self._record(name, args, kwargs)
+
+    wrapper.__doc__ = (fn.__doc__ or "").rstrip() + (
+        "\n\n        Recorded, not executed; replayed inside the pipegraph job."
+    )
+    return wrapper
+
+
+def _install_config_methods(cls):
+    for name, fn in CONFIG_METHODS.items():
+        method = _make_config_method(name, fn)
+        method.__qualname__ = f"{cls.__name__}.{name}"
+        setattr(cls, name, method)
+    return cls
+
+
+# ── outputs ──────────────────────────────────────────────────────────────────
+
+
+@_install_config_methods
+class Output(_Recorder):
+    """One output file: a terminal ScatterPlotter call plus its own tweaks.
+
+    Configuration recorded here applies on top of the owning plot's script and
+    affects this file only -- that is how ``p.ridgeline("leiden").unfacet()``
+    drops a facet for the ridgeline without touching the sibling scatter.
+    """
+
+    def __init__(
+        self,
+        terminal: str,
+        args: tuple,
+        kwargs: dict,
+        *,
+        name: str,
+        filename: Optional[str] = None,
+        dpi: Optional[int] = None,
+    ):
+        super().__init__()
+        self.terminal = terminal
+        self.terminal_args = args
+        self.terminal_kwargs = kwargs
+        self.name = name
+        self.filename = filename
+        self._dpi = dpi
+
+    def dpi(self, value: int) -> "Output":
+        """Override the owning plot's dpi for this file."""
+        self._dpi = value
+        return self
+
+    def file_name(self, stem: str) -> str:
+        if self.filename:
+            return self.filename
+        return f"{stem}_{self.name}.png"
+
+    def __repr__(self):
+        return f"<Output {self.name} ({self.terminal})>"
+
+
+def _make_output_method(terminal: str, fn):
+    default_name = _output_name_for(terminal)
+    takes_column = _first_param_is_column(fn)
+    signature = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, name=None, filename=None, dpi=None, **kwargs):
+        if takes_column and "column" not in kwargs:
+            if self.column is None:
+                raise TypeError(
+                    f"{type(self).__name__}.{default_name}(): this plot has no "
+                    "column; pass column=... explicitly."
+                )
+            args = (self.column,) + tuple(args)
+        try:
+            signature.bind(_SELF, *args, **kwargs)
+        except TypeError as e:
+            raise TypeError(f"{type(self).__name__}.{default_name}(): {e}") from None
+        if name is None:
+            name = "_".join(
+                [default_name]
+                + [
+                    str(a)
+                    for a in args[1 if takes_column else 0 :]
+                    if isinstance(a, str)
+                ]
+            )
+        return self._add_output(
+            Output(
+                terminal,
+                tuple(args),
+                dict(kwargs),
+                name=name,
+                filename=filename,
+                dpi=dpi,
+            )
+        )
+
+    wrapper.__doc__ = (fn.__doc__ or "").rstrip() + (
+        "\n\n        Records an output file instead of building the plot. The plot's "
+        "\n        column is supplied automatically. Returns the Output, which accepts "
+        "\n        further ScatterPlotter calls scoped to this file alone."
+    )
+    return wrapper
+
+
+def _install_output_methods(cls):
+    for terminal, fn in TERMINAL_METHODS.items():
+        method = _make_output_method(terminal, fn)
+        name = _output_name_for(terminal)
+        method.__qualname__ = f"{cls.__name__}.{name}"
+        setattr(cls, name, method)
+    return cls
+
+
+# ── plot ─────────────────────────────────────────────────────────────────────
+
+
+@_install_output_methods
+@_install_config_methods
+class Plot(_Recorder):
+    """A subject (usually one column) and the output files derived from it.
+
+    All outputs of one Plot share a single pipegraph job.
+    """
+
+    def __init__(
+        self,
+        column: Optional[Union[str, Tuple[str, str]]] = None,
+        *,
+        name: Optional[str] = None,
+        into: Optional[Union[str, Path]] = None,
+        dpi: Optional[int] = None,
+        **plotter_kwargs,
+    ):
+        super().__init__()
+        self.column = column
+        self._name = name
+        self._into: List[str] = []
+        self._dpi = dpi
+        self._outputs: List[Output] = []
+        self.init_kwargs = self._init_kwargs_from(plotter_kwargs)
+        if into is not None:
+            self.into(into)
+
+    # -- naming / layout ---------------------------------------------------
+
+    @property
+    def stem(self) -> str:
+        """Filename stem: the explicit name, else the column."""
+        if self._name is not None:
+            return self._name
+        if isinstance(self.column, str):
+            return self.column
+        if isinstance(self.column, tuple):
+            return self.column[1]
+        raise ValueError(
+            "Plot needs a name: it has no column to derive one from "
+            "(pass Plot(name='...'))."
+        )
+
+    def into(self, sub_directory: Union[str, Path]) -> "Plot":
+        """Append a sub-directory below the builder's output directory."""
+        self._into.extend(Path(sub_directory).parts)
+        return self
+
+    def dpi(self, value: int) -> "Plot":
+        """Set the default dpi for this plot's outputs."""
+        self._dpi = value
+        return self
+
+    # -- outputs -----------------------------------------------------------
+
+    def output(
+        self,
+        terminal: str,
+        *args,
+        name: Optional[str] = None,
+        filename: Optional[str] = None,
+        dpi: Optional[int] = None,
+        **kwargs,
+    ) -> Output:
+        """Record an arbitrary terminal ScatterPlotter method as an output.
+
+        The generated shorthands (``scatter``, ``violin``, ...) are thin
+        wrappers around this; use it directly for anything without one.  Unlike
+        the shorthands this does *not* inject the plot's column.
+        """
+        if terminal not in TERMINAL_METHODS:
+            known = ", ".join(sorted(TERMINAL_METHODS))
+            raise ValueError(f"{terminal!r} is not a ScatterPlotter terminal ({known})")
+        signature = inspect.signature(TERMINAL_METHODS[terminal])
+        try:
+            signature.bind(_SELF, *args, **kwargs)
+        except TypeError as e:
+            raise TypeError(f"Plot.output({terminal!r}): {e}") from None
+        if name is None:
+            name = _output_name_for(terminal)
+        return self._add_output(
+            Output(
+                terminal,
+                tuple(args),
+                dict(kwargs),
+                name=name,
+                filename=filename,
+                dpi=dpi,
+            )
+        )
+
+    def _add_output(self, output: Output) -> Output:
+        existing = {o.name for o in self._outputs}
+        if output.name in existing:
+            raise ValueError(
+                f"Plot {self._name or self.column!r} already has an output named "
+                f"{output.name!r}; pass name=... to disambiguate."
+            )
+        self._outputs.append(output)
+        return output
+
+    @property
+    def outputs(self) -> List[Output]:
+        return list(self._outputs)
+
+    def __repr__(self):
+        subject = self._name or self.column
+        return f"<Plot {subject!r} ({len(self._outputs)} outputs)>"
 
 
 # ── builder ──────────────────────────────────────────────────────────────────
 
 
-class PlotBuilder:
-    """Collects plot descriptions and turns them into pypipegraph2 jobs.
-
-    Call :meth:`add_plot` as many times as needed, then :meth:`register_all`
-    once to emit every job into the active pipegraph.
-    """
+@_install_config_methods
+class PlotBuilder(_Recorder):
+    """Shared configuration plus the plots that build on it."""
 
     def __init__(
         self,
-        base_h5ad: Union[str, Path | Tuple[Path, ppg.Job]],
-        additional_h5ads: Optional[
-            Dict[str, Union[str, Path, Tuple[Path, ppg.Job]]]
-        ] = None,
-        column_sources: Optional[
-            Dict[str, Callable[[EmbeddingData], "pandas.Series"]]
-        ] = None,
-        column_colors: Optional[
-            Dict[str | Tuple[str, str], Union[Dict[str, str], Sequence[str]]]
-        ] = None,
         *,
-        embedding: str = "umap",
-        transform: Optional[
-            Callable[["np.ndarray"], "np.ndarray"]
-        ] = _default_transform,
-        layer: str = "X",
-        alternative_id_column: Optional[str] = "gene_name",
-        base_size: float = 15,
-        panel_size: Tuple[float, float] = (4, 4),
+        into: Optional[Union[str, Path]] = None,
+        dpi: int = 150,
+        **plotter_kwargs,
     ):
-        self.base_h5ad, self.base_h5ad_deps = ppg.util.job_or_filename(base_h5ad)
-        # Named .h5ad fallback sources (e.g. {"genes": Path(...)}).
-        self.additional_h5ads = {
-            name: ppg.util.job_or_filename(p)
-            for name, p in (additional_h5ads or {}).items()
-        }
-        # Derived columns computed from a callable(EmbeddingData) -> Series.
-        self.column_sources = dict(column_sources or {})
-        # Discrete colour palettes keyed by column name.
-        self.column_colors = dict(column_colors or {})
+        super().__init__()
+        self._into: List[str] = []
+        self._dpi = dpi
+        self._plots: List[Plot] = []
+        self.init_kwargs = self._init_kwargs_from(plotter_kwargs)
+        if into is not None:
+            self.into(into)
 
-        # source / style defaults, individually overridable per Plot
-        self.embedding = embedding
-        self.transform = transform
-        self.layer = layer
-        self.alternative_id_column = alternative_id_column
-        self.base_size = base_size
-        self.panel_size = panel_size
+    # -- collection --------------------------------------------------------
 
-        self.plots: List[_PlotBase] = []
+    def into(self, sub_directory: Union[str, Path]) -> "PlotBuilder":
+        """Append a sub-directory below the ``register_all`` result directory."""
+        self._into.extend(Path(sub_directory).parts)
+        return self
 
-        # dependency-job caches so shared sources/colours yield one invariant each
-        self._build_invariant = None
-        self._source_dep_cache: Dict[str, list] = {}
-        self._color_dep_cache: dict = {}
-
-    # -- public API -----------------------------------------------------------
-
-    def add_plot(self, plot: _PlotBase) -> _PlotBase:
-        """Queue a :class:`Plot` / :class:`PlotDensity` for later registration."""
-        self.plots.append(plot)
+    def add(self, plot: Plot) -> Plot:
+        """Queue a :class:`Plot`; returns it so you can keep configuring."""
+        if not isinstance(plot, Plot):
+            raise TypeError(f"expected a Plot, got {type(plot).__name__}")
+        self._plots.append(plot)
         return plot
 
+    @property
+    def plots(self) -> List[Plot]:
+        return list(self._plots)
+
+    # -- registration ------------------------------------------------------
+
     def register_all(self, result_dir: Union[str, Path]) -> list:
-        """Create every queued plot's job(s) under ``result_dir``. Returns them."""
-        rd = Path(result_dir)
-        jobs: list = []
-        for plot in self.plots:
-            jobs.extend(self._register(plot, rd))
-        return jobs
+        """Create one job per queued plot below ``result_dir``. Returns them."""
+        ppg = _require_ppg()
+        result_dir = Path(result_dir)
+        self._builder_walk(ppg)  # once; shared by every plot
+        return [self._register(plot, result_dir, ppg) for plot in self._plots]
 
-    # -- plotter construction -------------------------------------------------
+    def _builder_walk(self, ppg):
+        cached = getattr(self, "_builder_cache", None)
+        if cached is not None and cached[0] == len(self._calls):
+            return cached[1]
+        walker = _Walker("builder", _resolver(ppg), ppg)
+        encoded, resolved = walker.walk_calls(self._calls)
+        deps = list(walker.deps) + walker.function_invariants()
+        self._builder_cache = (len(self._calls), (encoded, resolved, deps))
+        return self._builder_cache[1]
 
-    def _resolve(self, plot: _PlotBase, name: str):
-        """Per-plot override if set, else the builder-level default."""
-        value = getattr(plot, name)
-        return value if value is not None else getattr(self, name)
+    def _out_dir(self, plot: Plot, result_dir: Path) -> Path:
+        return result_dir.joinpath(*self._into, *plot._into)
 
-    def build_plotter(self, plot: _PlotBase) -> ScatterPlotter:
-        """Assemble the configured :class:`ScatterPlotter` for ``plot``."""
-        p = ScatterPlotter(base_size=self._resolve(plot, "base_size"))
-        p = p.set_source(
-            self.base_h5ad,
-            self._resolve(plot, "embedding"),
-            alternative_id_column=self._resolve(plot, "alternative_id_column"),
-            transform=self._resolve(plot, "transform"),
-            layer=self._resolve(plot, "layer"),
-        )
-        for name, (path, _deps) in self.additional_h5ads.items():
-            p = p.add_alternative_source(path, name=name)
-        for column in plot.derived_columns_needed():
-            if column in self.column_sources:
-                p = p.add_derived_source({column: self.column_sources[column]})
-        if plot.filter:
-            p = p.set_filter(plot.filter)
-        if plot.hard_filter:
-            p = p.hard_filter(plot.hard_filter)
-        p = p.style(dot_size=1)
-        if plot.style:
-            p = p.style(**plot.style)
+    def _register(self, plot: Plot, result_dir: Path, ppg):
+        if not plot._outputs:
+            raise ValueError(f"{plot!r} declares no outputs")
 
-        if isinstance(plot, Plot):
-            column = plot.column
-            if isinstance(column, str) and "_" not in column:
-                p = p.colormap(title="log2 expression")
-            colors = plot.colors
-            if colors is None:
-                colors = self.column_colors.get(column)
-            if colors is not None:
-                p = p.colormap_discrete(colors, title=str(column))
+        out_dir = self._out_dir(plot, result_dir)
+        stem = plot.stem
+        files = {o.name: out_dir / o.file_name(stem) for o in plot._outputs}
+        job_id = str(sorted(files.values())[0])
 
-        if plot.facet:
-            if isinstance(plot.facet, str):
-                p = p.facet(plot.facet, **plot.get_facet_args())
-            else:
-                p = p.facet_2d(*plot.facet, **plot.get_facet_args())
-        if plot.do_border():
-            # so we can turn it off or force it on, but by default it's on.
-            p = p.with_borders(
-                cell_type_column="constant", colors=["#707070"], legend=False, size=10
-            )
-        if isinstance(plot, Plot):
-            if plot.anti_overplot_seed:
-                p = p.anti_overplot(seed=plot.anti_overplot_seed)
-            if plot.ascending is not None:
-                p = p.anti_overplot(ascending=plot.ascending)
-        if plot.title is not None:
-            p = p.title(plot.title)
+        builder_encoded, builder_calls, builder_deps = self._builder_walk(ppg)
+        walker = _Walker(job_id, _resolver(ppg), ppg)
+        plot_encoded, plot_calls = walker.walk_calls(plot._calls)
 
-        p = p.panel_size(*self._resolve(plot, "panel_size"))
-        return p
+        init_kwargs = {**self.init_kwargs, **plot.init_kwargs}
+        init_encoded, _ = walker.walk(init_kwargs, f"{job_id} ScatterPlotter()")
 
-    # -- output layout --------------------------------------------------------
-
-    def _out_dir(self, plot: _PlotBase, rd: Path) -> Path:
-        base = rd / plot.facet_name() if plot.facet else rd
-        return base / plot.subfolder if plot.subfolder else base
-
-    def _filename_stem(self, plot: _PlotBase) -> str:
-        if plot.filename:
-            return plot.filename
-        column = getattr(plot, "column", None)
-        if isinstance(column, str):
-            return column
-        if isinstance(column, tuple):
-            return column[1]
-        return "density"
-
-    # -- registration ---------------------------------------------------------
-
-    def _register(self, plot: _PlotBase, rd: Path) -> list:
-        if isinstance(plot, PlotDensity):
-            return [self._register_density(plot, rd)]
-        return self._register_plot(plot, rd)
-
-    def _register_plot(self, plot: Plot, rd: Path) -> list:
-        out_dir = self._out_dir(plot, rd)
-        stem = self._filename_stem(plot)
-
-        outputs: Dict[str, Path] = {}
-        if plot.do_scatter:
-            outputs["scatter"] = out_dir / f"{stem}.png"
-        if plot.do_grid_histogram:
-            outputs["histo"] = out_dir / f"{stem}_histogram.png"
-        if plot.do_global_histogram:
-            outputs["global_histo"] = out_dir / f"{stem}_overall_histogram.png"
-        if plot.do_global_relative_histogram:
-            outputs["global_histo_relative"] = (
-                out_dir / f"{stem}_overall_histogram_relative.png"
-            )
-        for col in _as_list(plot.do_violin):
-            outputs[f"violin_{col}"] = out_dir / f"{stem}_violin_{col}.png"
-        for x, facet in plot.do_facet_violin or []:
-            outputs[f"violin_{x}_facet_{facet}"] = (
-                out_dir / f"{stem}_violin_{x}_facet_{facet}.png"
-            )
-        if not outputs:
-            raise ValueError(f"Plot {stem!r} would produce no output files")
-
-        def generate(
-            output_filenames,
-            plot=plot,
-            column_colors=self.column_colors,
-            build_plotter=self.build_plotter,
-        ):
-            for path in output_filenames.values():
-                path.parent.mkdir(exist_ok=True, parents=True)
-            p = build_plotter(plot)
-            if "scatter" in output_filenames:
-                p.plot(plot.column).save(output_filenames["scatter"], dpi=plot.dpi)
-            if "histo" in output_filenames:
-                p.plot_grid_histogram(plot.column, scale_by_count=True).save(
-                    output_filenames["histo"]
+        recipes = {}
+        outputs_encoded = {}
+        for output in plot._outputs:
+            output_calls_encoded, output_calls = walker.walk_calls(output._calls)
+            terminal_args, resolved_args = [], []
+            for position, value in enumerate(output.terminal_args):
+                enc, res = walker.walk(
+                    value, f"{job_id} {output.name}: argument {position}"
                 )
-            if "global_histo" in output_filenames:
-                p.plot_histogram(plot.column).save(output_filenames["global_histo"])
-            if "global_histo_relative" in output_filenames:
-                p.plot_histogram(
-                    plot.column, normalize_to=plot.do_global_relative_histogram
-                ).save(output_filenames["global_histo_relative"])
-            for violin_x in _as_list(plot.do_violin):
-                colors = column_colors.get(violin_x)
-                # colors=None restores the default palette for this column
-                pv = p.colormap_discrete(cmap_or_list_or_dict=colors, title=violin_x)
-                po = pv.plot_violin(plot.column, violin_x)
-                po += p9.theme(axis_text_x=p9.element_text(rotation=90))
-                po.save(output_filenames[f"violin_{violin_x}"])
-            for violin_x, facet_column in plot.do_facet_violin or []:
-                colors = column_colors.get(violin_x)
-                pv = p.colormap_discrete(cmap_or_list_or_dict=colors, title=violin_x)
-                po = pv.plot_violin(plot.column, violin_x, [facet_column])
-                po += p9.facet_wrap(facet_column, scales="free_x")
-                po += p9.theme(axis_text_x=p9.element_text(rotation=90))
-                po.save(output_filenames[f"violin_{violin_x}_facet_{facet_column}"])
-
-        job = self._make_job(plot, outputs, generate)
-        jobs = [job]
-
-        if plot.do_ridges:
-            jobs.append(self._register_ridges(plot, out_dir, stem))
-        return jobs
-
-    def _register_ridges(self, plot: Plot, out_dir: Path, stem: str):
-        outputs = {
-            split: out_dir / f"{stem}_{split}_ridge.png" for split in plot.do_ridges
-        }
-        # ridgelines split the data themselves, so drop any facet.
-        ridge_plot = dataclasses.replace(plot, facet=None)
-
-        def generate(output_filenames, plot=ridge_plot):
-            p = self.build_plotter(plot)
-            for split, out in output_filenames.items():
-                out.parent.mkdir(exist_ok=True, parents=True)
-                p.plot_ridgeline(plot.column, split, scales="fixed").save(out)
-
-        return self._make_job(ridge_plot, outputs, generate, id_suffix="_ridges")
-
-    def _register_density(self, plot: PlotDensity, rd: Path):
-        out_dir = self._out_dir(plot, rd)
-        stem = self._filename_stem(plot)
-        outputs = {"scatter": out_dir / f"{stem}.png"}
-
-        def generate(output_filenames, plot=plot):
-            output_filenames["scatter"].parent.mkdir(exist_ok=True, parents=True)
-            po = self.build_plotter(plot).plot_density(
-                plot.bins,
-                quantile=plot.quantile,
-                cmap_colors=plot.cmap_colors,
-                include_counts=plot.include_counts,
-                count_text_size=plot.count_text_size,
+                terminal_args.append(enc)
+                resolved_args.append(res)
+            terminal_kwargs, resolved_kwargs = {}, {}
+            for key in sorted(output.terminal_kwargs):
+                enc, res = walker.walk(
+                    output.terminal_kwargs[key], f"{job_id} {output.name}: {key}=..."
+                )
+                terminal_kwargs[key] = enc
+                resolved_kwargs[key] = res
+            dpi = (
+                output._dpi
+                if output._dpi is not None
+                else (plot._dpi if plot._dpi is not None else self._dpi)
             )
-            po.save(output_filenames["scatter"], dpi=plot.dpi)
+            outputs_encoded[output.name] = {
+                "terminal": output.terminal,
+                "args": terminal_args,
+                "kwargs": terminal_kwargs,
+                "calls": output_calls_encoded,
+                "dpi": dpi,
+                "file": files[output.name].name,
+            }
+            recipes[output.name] = (
+                tuple(builder_calls) + tuple(plot_calls) + tuple(output_calls),
+                output.terminal,
+                tuple(resolved_args),
+                resolved_kwargs,
+                dpi,
+            )
 
-        return self._make_job(plot, outputs, generate)
+        parameters = json.dumps(
+            {
+                "builder": builder_encoded,
+                "init": init_encoded,
+                "plot": plot_encoded,
+                "outputs": outputs_encoded,
+            },
+            sort_keys=True,
+        )
 
-    def _make_job(
-        self, plot: _PlotBase, outputs: Dict[str, Path], generate, id_suffix=""
-    ):
-        job = ppg.MultiFileGeneratingJob(outputs, generate, depend_on_function=True)
-        job.depends_on(self.base_h5ad_deps)
-        for _path, deps in self.additional_h5ads.values():
-            job.depends_on(deps)
-        plot_id = str(sorted(outputs.values())[0]) + id_suffix
-        job.depends_on(self._deps(plot, plot_id))
+        def generate(output_filenames, recipes=recipes, init_kwargs=init_kwargs):
+            for name, (calls, terminal, args, kwargs, dpi) in recipes.items():
+                target = output_filenames[name]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                plotter = _replay(calls, init_kwargs)
+                figure = getattr(plotter, terminal)(*args, **kwargs)
+                figure.save(target, dpi=dpi)
+
+        job = ppg.MultiFileGeneratingJob(files, generate, depend_on_function=True)
+        job.depends_on(builder_deps)
+        job.depends_on(list(walker.deps) + walker.function_invariants())
+        job.depends_on(ppg.ParameterInvariant(job_id + "_config", parameters))
+        job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
         return job
 
-    # -- dependency invariants ------------------------------------------------
 
-    def _deps(self, plot: _PlotBase, plot_id: str) -> list:
-        if self._build_invariant is None:
-            self._build_invariant = ppg.FunctionInvariant(
-                "mbf_scp_build_plotter", PlotBuilder.build_plotter
-            )
-        res: list = [self._build_invariant]
+def _resolver(ppg):
+    """Path resolution that also yields the matching file dependency.
 
-        for column in plot.derived_columns_needed():
-            if column in self.column_sources:
-                res.extend(self._source_invariants(column))
-            if column in self.column_colors:
-                res.append(self._color_invariant(column))
+    ``job_or_filename`` understands a filename or a job (whose first output is
+    the file), but not a ``(path, job)`` pair -- which is the only way to name
+    one particular file of a job that produces several, so it is resolved here.
+    """
 
-        # everything on the plot that isn't a callable / handled above
-        res.append(ppg.ParameterInvariant(plot_id + "_config", _param_config(plot)))
-        for fld in ("filter", "hard_filter", "transform", "title"):
-            value = getattr(plot, fld)
-            if callable(value):
-                res.append(ppg.FunctionInvariant(f"{plot_id}_{fld}", value))
-        return res
+    def resolve(value):
+        if isinstance(value, tuple):
+            path, job = value
+            return Path(path), [job]
+        path, deps = ppg.util.job_or_filename(value)
+        return Path(path), deps
 
-    def _source_invariants(self, column: str) -> list:
-        if column not in self._source_dep_cache:
-            fn = self.column_sources[column]
-            deps = [ppg.FunctionInvariant(f"mbf_scp_column_{column}", fn)]
-            if hasattr(fn, "deps"):
-                # a computed_column may carry its own upstream dependencies
-                extra = fn.deps
-                deps.extend(extra if isinstance(extra, (list, tuple)) else [extra])
-            self._source_dep_cache[column] = deps
-        return self._source_dep_cache[column]
-
-    def _color_invariant(self, column: str):
-        if column not in self._color_dep_cache:
-            self._color_dep_cache[column] = ppg.ParameterInvariant(
-                f"mbf_scp_color_{column}", self.column_colors[column]
-            )
-        return self._color_dep_cache[column]
-
-
-def _param_config(plot: _PlotBase) -> dict:
-    """Serialisable snapshot of a plot's non-callable fields for invariants."""
-    out = {"__type__": type(plot).__name__}
-    for fld in dataclasses.fields(plot):
-        value = getattr(plot, fld.name)
-        if callable(value):
-            continue  # captured via a FunctionInvariant instead
-        out[fld.name] = value
-    return out
+    return resolve
