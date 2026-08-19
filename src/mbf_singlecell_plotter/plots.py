@@ -1512,6 +1512,7 @@ class ScatterPlotter:
                     self._layer_borders
                     and self._border_config is not None
                     and self._border_config.legend
+                    and self._cell_type_column is not None
                 )
                 # Two legends on the right need more width
                 fig_size = (8 if has_border_legend else 6, 5)
@@ -1644,11 +1645,7 @@ class ScatterPlotter:
             p = p + p9.guides(fill="none")
 
         # Boundary overlay
-        if (
-            self._layer_borders
-            and self._border_config is not None
-            and self._cell_type_column is not None
-        ):
+        if self._layer_borders and self._border_config is not None:
             bdf = self._get_boundary_df()
             border_pt = self._border_config.size / 10
             for color in bdf["color"].unique():
@@ -2935,11 +2932,7 @@ class ScatterPlotter:
             p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
-        if (
-            self._layer_borders
-            and self._border_config is not None
-            and self._cell_type_column is not None
-        ):
+        if self._layer_borders and self._border_config is not None:
             p = self._add_border_layers(p)
 
         # Main scatter — identity scale reads hex color strings directly
@@ -3202,7 +3195,7 @@ class ScatterPlotter:
                 inherit_aes=False,
             )
 
-        if bc.legend:
+        if bc.legend and self._cell_type_column is not None:
             cat_to_color = self._border_cat_to_color()
 
             # One invisible phantom point per category — carries the fill aesthetic
@@ -3283,11 +3276,7 @@ class ScatterPlotter:
             p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
-        if (
-            self._layer_borders
-            and self._border_config is not None
-            and self._cell_type_column is not None
-        ):
+        if self._layer_borders and self._border_config is not None:
             p = self._add_border_layers(p)
 
         # Background layer (all cells, fixed colour, behind data)
@@ -3430,11 +3419,7 @@ class ScatterPlotter:
             p = self._add_grid_layers(p)
 
         # Boundary layer (behind scatter)
-        if (
-            self._layer_borders
-            and self._border_config is not None
-            and self._cell_type_column is not None
-        ):
+        if self._layer_borders and self._border_config is not None:
             p = self._add_border_layers(p)
 
         # Background layer (all cells, fixed colour, behind data)

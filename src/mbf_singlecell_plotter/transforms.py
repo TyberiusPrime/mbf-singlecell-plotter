@@ -138,13 +138,17 @@ def _facet_categories(series: pd.Series) -> list:
 
 def compute_boundaries(
     data,
-    cell_type_column: str,
+    cell_type_column: str | None,
     colors: list | None = None,
     resolution: int = 200,
     blur: float = 1.1,
     threshold: float = 0.95,
 ) -> pd.DataFrame:
     """Compute boundary scatter points for cell-type regions.
+
+    ``cell_type_column`` may be ``None``, in which case all cells are treated
+    as a single region and the boundary is drawn in ``colors[0]`` — a plain
+    outline around the whole embedding rather than per-category borders.
 
     Returns DataFrame with x, y, color (hex string) columns.
     Requires scikit-image.
@@ -163,12 +167,16 @@ def compute_boundaries(
     # whose source is missing some primary cells → NaN after reindex);
     # map_to_integers()'s astype(int) would otherwise raise on the NaN rows.
     coords = data._finite_coordinates()
-    cell_types, _ = data.get_column(cell_type_column)
 
-    if cell_types.dtype == "category":
-        cats = list(cell_types.cat.categories)
+    if cell_type_column is None:
+        cell_types = pd.Series("__all__", index=coords.index)
+        cats = ["__all__"]
     else:
-        cats = natsorted(cell_types.unique())
+        cell_types, _ = data.get_column(cell_type_column)
+        if cell_types.dtype == "category":
+            cats = list(cell_types.cat.categories)
+        else:
+            cats = natsorted(cell_types.unique())
 
     img = np.zeros((resolution, resolution), dtype=np.uint8)
     color_img = np.zeros((resolution, resolution), dtype=object)

@@ -494,6 +494,18 @@ class TestBoundaryRendering:
         p = plotter.plot_density()
         assert_image(p)
 
+    def test_borders_without_cell_type_column(self, plotter_no_boundary, assert_image):
+        """No cell_type_column → a single grey outline, no legend."""
+        pytest.importorskip(
+            "skimage", reason="scikit-image required for boundary computation"
+        )
+        p = (
+            plotter_no_boundary.with_borders()
+            .style(dot_size=DOT_SIZE)
+            .plot("S100A8")
+        )
+        assert_image(p)
+
     def test_border_size_small(self, plotter, assert_image):
         p = plotter.with_borders(size=5).style(dot_size=DOT_SIZE).plot("S100A8")
         assert_image(p)

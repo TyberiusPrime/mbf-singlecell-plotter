@@ -725,7 +725,9 @@ class PlotBuilder(_Recorder):
                 figure = getattr(plotter, terminal)(*args, **kwargs)
                 figure.save(target, dpi=dpi)
 
-        job = ppg.MultiFileGeneratingJob(files, generate, depend_on_function=True)
+        job = ppg.MultiFileGeneratingJob(
+            files, generate, depend_on_function=True, resources=ppg.Resources.RunsHere
+        )
         job.depends_on(builder_deps)
         job.depends_on(list(walker.deps) + walker.function_invariants())
         job.depends_on(ppg.ParameterInvariant(job_id + "_config", parameters))
