@@ -162,6 +162,7 @@ class _ColProxy:
         self._index = row_index
         self._available: Optional[set[str]] = None
         self._cache: dict[str, pd.Series] = {}
+        self._shape: Optional[tuple[int, int]] = None
 
     def _available_columns(self) -> set[str]:
         if self._available is None:
@@ -171,6 +172,27 @@ class _ColProxy:
     @property
     def columns(self) -> pd.Index:
         return pd.Index(sorted(self._available_columns()))
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        if self._shape is None:
+            s = _run_lines(self._path, f"{self._h5_group}_shape")
+            n_rows = None
+            n_columns = None
+            for line in s:
+                line = line.strip()
+                if line:
+                    parts = line.split("\t")
+                    if parts[0] == f"n_{self._h5_group}":
+                        n_rows = int(parts[1])
+                    elif parts[0] == "n_columns":
+                        n_columns = int(parts[1])
+                    else:
+                        raise ValueError(f"Unexpected result in {self._h5_group}_shape call: {s}")
+            if n_rows is None or n_columns is None:
+                raise ValueError(f"{self._h5_group}_shape call did not contain expected keys: {s}")
+            self._shape = (n_rows, n_columns)
+        return self._shape
 
     def __contains__(self, key: str) -> bool:
         return key in self._available_columns()
