@@ -1402,6 +1402,23 @@ class ScatterPlotter:
             return {"strip_text_y": p9.element_text(angle=-90)}
         return {}
 
+    def _theme_kwargs(self, **defaults) -> dict:
+        """Merge a plot's own theme defaults with faceting and user overwrites.
+
+        Splatting ``**self._theme_overwrites`` alongside explicit keywords in
+        the same ``p9.theme(...)`` call raises ``TypeError: got multiple values
+        for keyword argument`` as soon as the user themes something the plot
+        already sets itself (``figure_size``, ``axis_text``, ...).  Merging
+        first makes that an override instead of an error: later wins, so the
+        user's ``theme()`` beats the faceting implication, which beats the
+        plot's default.
+
+        Faceting theming sits in the middle because it is derived state: it
+        reflects the facet layout the plot just built, but the user asked for
+        their overwrites by name.
+        """
+        return {**defaults, **self._facet_theme_overwrites(), **self._theme_overwrites}
+
     # ── title ────────────────────────────────────────────────────────────────
 
     def title(self, t: str | Callable[[str], str]) -> "ScatterPlotter":
@@ -1531,9 +1548,10 @@ class ScatterPlotter:
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = self._apply_embedding_theme(p)
         p = p + p9.theme(
-            figure_size=fig_size,
-            legend_box="horizontal",
-            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
+            **self._theme_kwargs(
+                figure_size=fig_size,
+                legend_box="horizontal",
+            )
         )
 
         # Grid axis tick labels (applied after theme so they survive theme_void)
@@ -1679,10 +1697,7 @@ class ScatterPlotter:
             fig_size = self.fig_size
 
         p = self._apply_embedding_theme(p)
-        p = p + p9.theme(
-            figure_size=fig_size,
-            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
-        )
+        p = p + p9.theme(**self._theme_kwargs(figure_size=fig_size))
 
         # Grid overlay + axis ticks — parity with .plot() / .plot_moran_markers()
         p = self._apply_axis_ticks(p, grid_layers=True)
@@ -1799,7 +1814,7 @@ class ScatterPlotter:
             )
 
         p = self._apply_embedding_theme(p)
-        p = p + p9.theme(figure_size=(7, 6))
+        p = p + p9.theme(**self._theme_kwargs(figure_size=(7, 6)))
 
         p = self._apply_axis_ticks(p, grid_layers=True)
 
@@ -2284,12 +2299,13 @@ class ScatterPlotter:
             )
             + p9.scale_fill_manual(colors)
             + p9.theme(
-                axis_title_x=p9.element_blank(),
-                axis_title_y=p9.element_blank(),
-                panel_grid=p9.element_blank(),
-                axis_ticks_length=3,
-                axis_title=p9.element_blank(),
-                **self._facet_theme_overwrites(),
+                **self._theme_kwargs(
+                    axis_title_x=p9.element_blank(),
+                    axis_title_y=p9.element_blank(),
+                    panel_grid=p9.element_blank(),
+                    axis_ticks_length=3,
+                    axis_title=p9.element_blank(),
+                )
             )
         )
 
@@ -2460,15 +2476,18 @@ class ScatterPlotter:
 
         p = p + p9.theme_minimal(base_size=self.base_size)
         p = p + p9.theme(
-            figure_size=fig_size,
-            panel_background=p9.element_rect(fill=self._bg_color, color=None),
-            panel_border=p9.element_rect(color=self._spine_color, size=0.5, fill=None),
-            panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
-            panel_grid_minor=p9.element_blank(),
-            axis_text=p9.element_text(color=self._tick_color),
-            axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
-            axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
-            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
+            **self._theme_kwargs(
+                figure_size=fig_size,
+                panel_background=p9.element_rect(fill=self._bg_color, color=None),
+                panel_border=p9.element_rect(
+                    color=self._spine_color, size=0.5, fill=None
+                ),
+                panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
+                panel_grid_minor=p9.element_blank(),
+                axis_text=p9.element_text(color=self._tick_color),
+                axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
+                axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
+            )
         )
 
         p = self._register_fixed_panel(p)
@@ -2520,15 +2539,18 @@ class ScatterPlotter:
 
         p = p + p9.theme_minimal(base_size=self.base_size)
         p = p + p9.theme(
-            figure_size=fig_size,
-            panel_background=p9.element_rect(fill=self._bg_color, color=None),
-            panel_border=p9.element_rect(color=self._spine_color, size=0.5, fill=None),
-            panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
-            panel_grid_minor=p9.element_blank(),
-            axis_text=p9.element_text(color=self._tick_color),
-            axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
-            axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
-            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
+            **self._theme_kwargs(
+                figure_size=fig_size,
+                panel_background=p9.element_rect(fill=self._bg_color, color=None),
+                panel_border=p9.element_rect(
+                    color=self._spine_color, size=0.5, fill=None
+                ),
+                panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
+                panel_grid_minor=p9.element_blank(),
+                axis_text=p9.element_text(color=self._tick_color),
+                axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
+                axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
+            )
         )
 
         p = self._register_fixed_panel(p)
@@ -2653,16 +2675,19 @@ class ScatterPlotter:
 
         p = p + p9.theme_minimal(base_size=self.base_size)
         p = p + p9.theme(
-            figure_size=fig_size,
-            panel_background=p9.element_rect(fill=self._bg_color, color=None),
-            panel_border=p9.element_rect(color=self._spine_color, size=0.5, fill=None),
-            panel_grid_major_x=p9.element_blank(),
-            panel_grid_minor=p9.element_blank(),
-            panel_grid_major_y=p9.element_line(color="#E0E0E0", size=0.3),
-            axis_text=p9.element_text(color=self._tick_color),
-            axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
-            axis_ticks_major_x=p9.element_blank(),
-            **{**self._facet_theme_overwrites(), **self._theme_overwrites},
+            **self._theme_kwargs(
+                figure_size=fig_size,
+                panel_background=p9.element_rect(fill=self._bg_color, color=None),
+                panel_border=p9.element_rect(
+                    color=self._spine_color, size=0.5, fill=None
+                ),
+                panel_grid_major_x=p9.element_blank(),
+                panel_grid_minor=p9.element_blank(),
+                panel_grid_major_y=p9.element_line(color="#E0E0E0", size=0.3),
+                axis_text=p9.element_text(color=self._tick_color),
+                axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
+                axis_ticks_major_x=p9.element_blank(),
+            )
         )
 
         p = self._register_fixed_panel(p)
@@ -2795,25 +2820,31 @@ class ScatterPlotter:
 
         p = p + p9.theme_minimal(base_size=self.base_size)
         p = p + p9.theme(
-            figure_size=fig_size,
-            panel_background=p9.element_rect(fill=self._bg_color, color=None),
-            panel_border=p9.element_blank(),
-            axis_line_x=p9.element_line(color=self._spine_color, size=0.5),
-            axis_line_y=p9.element_line(color=self._spine_color, size=0.5),
-            panel_spacing_y=0.006,
-            panel_grid_major_x=p9.element_line(
-                color="#D8D8D8", size=0.3, linetype="dotted"
-            ),
-            panel_grid_major_y=p9.element_blank(),
-            panel_grid_minor=p9.element_blank(),
-            strip_background=p9.element_blank(),
-            strip_text_y=p9.element_text(angle=0, ha="left", color=self._tick_color),
-            axis_text_y=p9.element_blank(),
-            axis_ticks_major_y=p9.element_blank(),
-            axis_text_x=p9.element_text(color=self._tick_color),
-            axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
-            plot_margin_right=0.06,
-            **self._theme_overwrites,
+            # The row labels are deliberately horizontal here.  Nothing rotates
+            # them back: this plot builds its own facet_grid and rejects
+            # .facet_2d(), so _facet_theme_overwrites() is always empty.
+            **self._theme_kwargs(
+                figure_size=fig_size,
+                panel_background=p9.element_rect(fill=self._bg_color, color=None),
+                panel_border=p9.element_blank(),
+                axis_line_x=p9.element_line(color=self._spine_color, size=0.5),
+                axis_line_y=p9.element_line(color=self._spine_color, size=0.5),
+                panel_spacing_y=0.006,
+                panel_grid_major_x=p9.element_line(
+                    color="#D8D8D8", size=0.3, linetype="dotted"
+                ),
+                panel_grid_major_y=p9.element_blank(),
+                panel_grid_minor=p9.element_blank(),
+                strip_background=p9.element_blank(),
+                strip_text_y=p9.element_text(
+                    angle=0, ha="left", color=self._tick_color
+                ),
+                axis_text_y=p9.element_blank(),
+                axis_ticks_major_y=p9.element_blank(),
+                axis_text_x=p9.element_text(color=self._tick_color),
+                axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
+                plot_margin_right=0.06,
+            )
         )
 
         p = self._register_fixed_panel(p)
@@ -2982,7 +3013,7 @@ class ScatterPlotter:
 
         # Theme
         p = self._apply_embedding_theme(p)
-        p = p + p9.theme(figure_size=(6, 5))
+        p = p + p9.theme(**self._theme_kwargs(figure_size=(6, 5)))
 
         # Grid axis ticks
         p = self._apply_axis_ticks(p, grid_layers=False)

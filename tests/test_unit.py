@@ -2931,6 +2931,116 @@ class TestThemeIndependence:
         assert sp._theme_overwrites is not sp2._theme_overwrites
 
 
+class TestThemeOverwritesReachEveryPlot:
+    """``theme()`` overrides a plot's own theme defaults instead of colliding.
+
+    Every terminal builds a single ``p9.theme(...)`` from its own defaults plus
+    whatever the user asked for.  Passing those as two separate keyword sources
+    raised ``TypeError: got multiple values for keyword argument`` the moment
+    both named the same themeable — and nearly every plot sets ``figure_size``
+    itself.  Two terminals dropped the user's overwrites instead, which was
+    quieter but no better.
+    """
+
+    # One invocation per terminal.  ``plot_histogram`` appears twice: it
+    # dispatches on column dtype to two implementations, each with its own
+    # theme call site.
+    CALLS = [
+        ("plot", ("S100A8",)),
+        ("plot_density", ()),
+        ("plot_embedding_color", ("pca",)),
+        ("plot_grid_histogram", (CAT_COL,)),
+        ("plot_histogram", (CAT_COL,)),
+        ("plot_histogram", (NUMERIC_COL,)),
+        ("plot_moran_markers", ()),
+        ("plot_ridgeline", ("S100A8", CAT_COL)),
+        ("plot_violin", ("S100A8",)),
+    ]
+    IDS = [f"{m}({', '.join(a)})" for m, a in CALLS]
+
+    @staticmethod
+    def _value(p, themeable):
+        """The value plotnine ended up with for *themeable*."""
+        return p.theme.themeables[themeable].properties["value"]
+
+    @pytest.mark.parametrize("method,args", CALLS, ids=IDS)
+    def test_figure_size_override_wins(self, plotter_no_boundary, method, args):
+        sp = plotter_no_boundary.theme(figure_size=(3.5, 2.5))
+        p = getattr(sp, method)(*args)
+        assert self._value(p, "figure_size") == (3.5, 2.5)
+
+    def test_every_terminal_is_covered(self):
+        """A newly added plot method must not escape this coverage."""
+        import inspect
+
+        terminals = {
+            name
+            for name, fn in inspect.getmembers(ScatterPlotter, inspect.isfunction)
+            if not name.startswith("_")
+            and "ggplot" in str(inspect.signature(fn).return_annotation)
+        }
+        assert terminals == {method for method, _ in self.CALLS}
+
+    def test_grid_histogram_override_wins(self, plotter_no_boundary):
+        """The one terminal that sets no figure_size of its own."""
+        sp = plotter_no_boundary.theme(axis_ticks_length=7)
+        p = sp.plot_grid_histogram(CAT_COL)
+        assert self._value(p, "axis_ticks_length") == 7
+
+    @pytest.mark.parametrize(
+        "method,args",
+        [
+            ("plot_histogram", (CAT_COL,)),
+            ("plot_histogram", (NUMERIC_COL,)),
+            ("plot_ridgeline", ("S100A8", CAT_COL)),
+            ("plot_violin", ("S100A8",)),
+        ],
+        ids=["histogram-categorical", "histogram-numeric", "ridgeline", "violin"],
+    )
+    def test_element_override_wins(self, plotter_no_boundary, method, args):
+        """These four also set ``panel_background`` themselves."""
+        sp = plotter_no_boundary.theme(
+            panel_background=p9.element_rect(fill="#123456", color=None)
+        )
+        p = getattr(sp, method)(*args)
+        assert p.theme.themeables["panel_background"].theme_element.properties[
+            "facecolor"
+        ] == "#123456"
+
+    def test_untouched_defaults_survive_an_override(self, plotter_no_boundary):
+        """Overriding one themeable must not discard the plot's other defaults."""
+        p = plotter_no_boundary.theme(figure_size=(3.5, 2.5)).plot_violin("S100A8")
+        assert self._value(p, "figure_size") == (3.5, 2.5)
+        # ...while panel_background stays the plotter's own background colour.
+        assert p.theme.themeables["panel_background"].theme_element.properties[
+            "facecolor"
+        ] == plotter_no_boundary._bg_color
+
+    def test_facet_theming_loses_to_an_explicit_override(self, plotter_no_boundary):
+        """User intent beats the strip rotation ``facet_2d`` implies."""
+        sp = plotter_no_boundary.facet_2d("bool", CAT_COL)
+        implied = sp.plot("S100A8")
+        assert implied.theme.themeables["strip_text_y"].theme_element.properties[
+            "rotation"
+        ] == -90
+
+        overridden = sp.theme(strip_text_y=p9.element_text(angle=0)).plot("S100A8")
+        assert overridden.theme.themeables["strip_text_y"].theme_element.properties[
+            "rotation"
+        ] == 0
+
+    def test_ridgeline_row_labels_stay_horizontal(self, plotter_no_boundary):
+        """Ridgeline builds its own facet_grid and wants unrotated row labels.
+
+        It rejects ``facet_2d``, so the generic strip rotation can never be
+        merged in on top of it.
+        """
+        p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL)
+        assert p.theme.themeables["strip_text_y"].theme_element.properties[
+            "rotation"
+        ] == 0
+
+
 # ---------------------------------------------------------------------------
 # compute_cluster_markers / marker_genes_by_category (pseudobulk markers)
 # ---------------------------------------------------------------------------
