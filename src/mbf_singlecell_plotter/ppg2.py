@@ -813,23 +813,31 @@ class Plot(_Recorder):
         calls = recipe.calls
         init_kwargs = recipe.init_kwargs
         terminal = recipe.terminal
-        args = recipe.args
-        kwargs = recipe.kwargs
+        args_resolved = recipe.args
+        kwargs_resolved = recipe.kwargs
         dpi = recipe.dpi
 
-        def generate(output_filename):
+        # every value the job needs is bound as a default argument: pypipegraph2
+        # rejects job functions that reach into the enclosing scope.
+        def generate(
+            output_filename,
+            args_resolved=args_resolved,
+            calls=calls,
+            dpi=dpi,
+            init_kwargs=init_kwargs,
+            kwargs_resolved=kwargs_resolved,
+            terminal=terminal,
+        ):
             output_filename.parent.mkdir(parents=True, exist_ok=True)
             plotter = _replay(calls, init_kwargs)
-            figure = getattr(plotter, terminal)(*args, **kwargs)
+            figure = getattr(plotter, terminal)(*args_resolved, **kwargs_resolved)
             figure.save(output_filename, dpi=dpi)
 
-        job = ppg.FileGeneratingJob(target, generate, depend_on_function=True)
+        job = ppg.FileGeneratingJob(target, generate, depend_on_function=False)
         job.depends_on(recipe.builder_deps)
-        job.depends_on(
-            list(recipe.walker.deps) + recipe.walker.function_invariants()
-        )
+        job.depends_on(list(recipe.walker.deps) + recipe.walker.function_invariants())
         job.depends_on(ppg.ParameterInvariant(job_id + "_config", recipe.parameters))
-        job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
+        # job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
         return job
 
     # -- misc --------------------------------------------------------------
