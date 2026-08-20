@@ -188,9 +188,13 @@ class _ColProxy:
                     elif parts[0] == "n_columns":
                         n_columns = int(parts[1])
                     else:
-                        raise ValueError(f"Unexpected result in {self._h5_group}_shape call: {s}")
+                        raise ValueError(
+                            f"Unexpected result in {self._h5_group}_shape call: {s}"
+                        )
             if n_rows is None or n_columns is None:
-                raise ValueError(f"{self._h5_group}_shape call did not contain expected keys: {s}")
+                raise ValueError(
+                    f"{self._h5_group}_shape call did not contain expected keys: {s}"
+                )
             self._shape = (n_rows, n_columns)
         return self._shape
 

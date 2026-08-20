@@ -253,7 +253,9 @@ class TestAntiOverplotAscending:
         # Default draw order is ascending (anti_overplot on, ascending=True).
         assert self._diff_frac(self._panel(default), self._panel(asc)) < 0.001
         # Flipping the direction must change which category paints on top.
-        assert self._diff_frac(self._panel(asc), self._panel(desc)) > self.MIN_DIFF_FRAC, (
+        assert (
+            self._diff_frac(self._panel(asc), self._panel(desc)) > self.MIN_DIFF_FRAC
+        ), (
             "ascending=True vs ascending=False produced nearly identical "
             "categorical output — `ascending` is not respected."
         )
@@ -264,7 +266,9 @@ class TestAntiOverplotAscending:
         base = plotter_no_boundary.style(dot_size=DOT_SIZE)
         asc = _plotnine_to_array(base.anti_overplot(ascending=True).plot("CST3"))
         desc = _plotnine_to_array(base.anti_overplot(ascending=False).plot("CST3"))
-        assert self._diff_frac(self._panel(asc), self._panel(desc)) > self.MIN_DIFF_FRAC, (
+        assert (
+            self._diff_frac(self._panel(asc), self._panel(desc)) > self.MIN_DIFF_FRAC
+        ), (
             "ascending=True vs ascending=False produced nearly identical "
             "numerical output — `ascending` is not respected."
         )
@@ -499,11 +503,7 @@ class TestBoundaryRendering:
         pytest.importorskip(
             "skimage", reason="scikit-image required for boundary computation"
         )
-        p = (
-            plotter_no_boundary.with_borders()
-            .style(dot_size=DOT_SIZE)
-            .plot("S100A8")
-        )
+        p = plotter_no_boundary.with_borders().style(dot_size=DOT_SIZE).plot("S100A8")
         assert_image(p)
 
     def test_border_size_small(self, plotter, assert_image):

@@ -1627,35 +1627,49 @@ class TestLayerAndTransformH5adFacade:
 class TestGenesCellsCounts:
     def test_n_genes_per_cell_matches_manual_count(self, data_with_zeros_and_missing):
         counts = data_with_zeros_and_missing.n_genes_per_cell()
-        expected = np.asarray((data_with_zeros_and_missing.get_X_csr() != 0).sum(axis=1)).ravel()
+        expected = np.asarray(
+            (data_with_zeros_and_missing.get_X_csr() != 0).sum(axis=1)
+        ).ravel()
         assert counts.index.equals(data_with_zeros_and_missing.ad.obs_names)
         np.testing.assert_array_equal(counts.values, expected)
 
     def test_per_cell_sum(self, data_with_zeros_and_missing, ad):
         counts = data_with_zeros_and_missing.per_cell_sum()
-        expected = np.asarray((data_with_zeros_and_missing.get_X_csr()).sum(axis=1)).ravel()
+        expected = np.asarray(
+            (data_with_zeros_and_missing.get_X_csr()).sum(axis=1)
+        ).ravel()
         assert counts.index.equals(data_with_zeros_and_missing.ad.obs_names)
         np.testing.assert_array_equal(counts.values, expected)
 
-    def test_per_cell_missing_count(self, data_with_zeros_and_missing, ad_with_zeros_and_missing):
+    def test_per_cell_missing_count(
+        self, data_with_zeros_and_missing, ad_with_zeros_and_missing
+    ):
         counts = data_with_zeros_and_missing.per_cell_missing_count()
-        X = data_with_zeros_and_missing.get_X_csr() 
+        X = data_with_zeros_and_missing.get_X_csr()
         expected = X.shape[1] - np.diff(X.indptr)
         assert expected.sum() > 0
         assert counts.index.equals(data_with_zeros_and_missing.ad.obs_names)
         np.testing.assert_array_equal(counts.values, expected)
 
-    def test_n_cells_per_gene_matches_manual_count(self, data_with_zeros_and_missing, ad):
+    def test_n_cells_per_gene_matches_manual_count(
+        self, data_with_zeros_and_missing, ad
+    ):
         counts = data_with_zeros_and_missing.n_cells_per_gene()
-        expected = np.asarray((data_with_zeros_and_missing.get_X_csr() != 0).sum(axis=0)).ravel()
+        expected = np.asarray(
+            (data_with_zeros_and_missing.get_X_csr() != 0).sum(axis=0)
+        ).ravel()
         assert counts.index.equals(ad.var.index)
         np.testing.assert_array_equal(counts.values, expected)
 
-    def test_n_genes_per_cell_respects_cell_filter(self, data_with_zeros_and_missing, ad):
+    def test_n_genes_per_cell_respects_cell_filter(
+        self, data_with_zeros_and_missing, ad
+    ):
         keep = ad.obs["leiden"] == "0"
         filtered = data_with_zeros_and_missing.set_filter(lambda d, m=keep.values: m)
         counts = filtered.n_genes_per_cell()
-        expected = np.asarray((data_with_zeros_and_missing.get_X_csr()[keep.values] != 0).sum(axis=1)).ravel()
+        expected = np.asarray(
+            (data_with_zeros_and_missing.get_X_csr()[keep.values] != 0).sum(axis=1)
+        ).ravel()
         assert counts.index.equals(ad.obs_names[keep.values])
         np.testing.assert_array_equal(counts.values, expected)
 
@@ -1663,15 +1677,21 @@ class TestGenesCellsCounts:
         keep = ad.obs["leiden"] == "0"
         filtered = data_with_zeros_and_missing.set_filter(lambda d, m=keep.values: m)
         counts = filtered.per_cell_sum()
-        expected = np.asarray((data_with_zeros_and_missing.get_X_csr()[keep.values]).sum(axis=1)).ravel()
+        expected = np.asarray(
+            (data_with_zeros_and_missing.get_X_csr()[keep.values]).sum(axis=1)
+        ).ravel()
         assert counts.index.equals(ad.obs_names[keep.values])
         np.testing.assert_array_equal(counts.values, expected)
 
-    def test_n_cells_per_gene_respects_cell_filter(self, data_with_zeros_and_missing, ad):
+    def test_n_cells_per_gene_respects_cell_filter(
+        self, data_with_zeros_and_missing, ad
+    ):
         keep = ad.obs["leiden"] == "0"
         filtered = data_with_zeros_and_missing.set_filter(lambda d, m=keep.values: m)
         counts = filtered.n_cells_per_gene()
-        expected = np.asarray((data_with_zeros_and_missing.get_X_csr()[keep.values] != 0).sum(axis=0)).ravel()
+        expected = np.asarray(
+            (data_with_zeros_and_missing.get_X_csr()[keep.values] != 0).sum(axis=0)
+        ).ravel()
         assert counts.index.equals(ad.var.index)
         np.testing.assert_array_equal(counts.values, expected)
 
@@ -1732,6 +1752,7 @@ class TestComputedColumns:
     def test_obs_column_shadows_computed_column(self):
         # An obs column named like a computed column must win over the tag.
         import scipy.sparse as sp
+
         X = sp.csr_matrix(np.arange(12, dtype=float).reshape(4, 3))
         ad = anndata.AnnData(X=X)
         ad.obs_names = [f"c{i}" for i in range(4)]
@@ -1745,6 +1766,7 @@ class TestComputedColumns:
     def test_gene_shadows_computed_column(self):
         # A var gene named like a computed column must win over the tag.
         import scipy.sparse as sp
+
         expr = np.array([0.0, 2.0, 0.0, 7.0])
         X = sp.csr_matrix(np.column_stack([expr, np.zeros(4), np.ones(4)]))
         ad = anndata.AnnData(X=X)
@@ -3003,31 +3025,39 @@ class TestThemeOverwritesReachEveryPlot:
             panel_background=p9.element_rect(fill="#123456", color=None)
         )
         p = getattr(sp, method)(*args)
-        assert p.theme.themeables["panel_background"].theme_element.properties[
-            "facecolor"
-        ] == "#123456"
+        assert (
+            p.theme.themeables["panel_background"].theme_element.properties["facecolor"]
+            == "#123456"
+        )
 
     def test_untouched_defaults_survive_an_override(self, plotter_no_boundary):
         """Overriding one themeable must not discard the plot's other defaults."""
         p = plotter_no_boundary.theme(figure_size=(3.5, 2.5)).plot_violin("S100A8")
         assert self._value(p, "figure_size") == (3.5, 2.5)
         # ...while panel_background stays the plotter's own background colour.
-        assert p.theme.themeables["panel_background"].theme_element.properties[
-            "facecolor"
-        ] == plotter_no_boundary._bg_color
+        assert (
+            p.theme.themeables["panel_background"].theme_element.properties["facecolor"]
+            == plotter_no_boundary._bg_color
+        )
 
     def test_facet_theming_loses_to_an_explicit_override(self, plotter_no_boundary):
         """User intent beats the strip rotation ``facet_2d`` implies."""
         sp = plotter_no_boundary.facet_2d("bool", CAT_COL)
         implied = sp.plot("S100A8")
-        assert implied.theme.themeables["strip_text_y"].theme_element.properties[
-            "rotation"
-        ] == -90
+        assert (
+            implied.theme.themeables["strip_text_y"].theme_element.properties[
+                "rotation"
+            ]
+            == -90
+        )
 
         overridden = sp.theme(strip_text_y=p9.element_text(angle=0)).plot("S100A8")
-        assert overridden.theme.themeables["strip_text_y"].theme_element.properties[
-            "rotation"
-        ] == 0
+        assert (
+            overridden.theme.themeables["strip_text_y"].theme_element.properties[
+                "rotation"
+            ]
+            == 0
+        )
 
     def test_ridgeline_row_labels_stay_horizontal(self, plotter_no_boundary):
         """Ridgeline builds its own facet_grid and wants unrotated row labels.
@@ -3036,9 +3066,9 @@ class TestThemeOverwritesReachEveryPlot:
         merged in on top of it.
         """
         p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL)
-        assert p.theme.themeables["strip_text_y"].theme_element.properties[
-            "rotation"
-        ] == 0
+        assert (
+            p.theme.themeables["strip_text_y"].theme_element.properties["rotation"] == 0
+        )
 
 
 # ---------------------------------------------------------------------------

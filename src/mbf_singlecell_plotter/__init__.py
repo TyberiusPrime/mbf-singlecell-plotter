@@ -2,7 +2,13 @@
 
 from .util import map_to_integers, unmap
 from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_theme
-from .data import EmbeddingData, ColumnData, AlternativeSource, DerivedSource, computed_column
+from .data import (
+    EmbeddingData,
+    ColumnData,
+    AlternativeSource,
+    DerivedSource,
+    computed_column,
+)
 from .transforms import (
     prepare_density_df,
     compute_boundaries,

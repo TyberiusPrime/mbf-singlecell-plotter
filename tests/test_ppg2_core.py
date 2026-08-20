@@ -294,7 +294,9 @@ class TestReplay:
 
     def test_later_calls_win(self):
         """Overriding is just calling again -- ordinary ScatterPlotter semantics."""
-        plotter = _replay([_Call("panel_size", (1, 1)), _Call("panel_size", (5, 5))], {})
+        plotter = _replay(
+            [_Call("panel_size", (1, 1)), _Call("panel_size", (5, 5))], {}
+        )
         assert plotter._fixed_panel_size == (5, 5)
 
     def test_style_merges_per_keyword(self):

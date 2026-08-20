@@ -195,7 +195,7 @@ def find_failures(failures_dir: Path, pattern: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 
-def _accept(f: dict[Any,Any]) -> None:
+def _accept(f: dict[Any, Any]) -> None:
     """Copy actual → canonical reference and clean up failures dir."""
     dest = DEFAULT_REFERENCE / f"{f['name']}.png"
     shutil.copy2(f["actual"], dest)

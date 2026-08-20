@@ -103,9 +103,9 @@ def ad_with_zeros_and_missing():
     res.X = scipy.sparse.csr_matrix(res.X)
     res.X[res.X < 0] = 0
     res.X.eliminate_zeros()
-    mask = ((res.X.data > 0) & (res.X.data < 1))
+    mask = (res.X.data > 0) & (res.X.data < 1)
     assert np.count_nonzero(mask)
-    res.X.data[mask] = 0 # present zeros
+    res.X.data[mask] = 0  # present zeros
 
     half_and_half = pd.Series(True, index=res.obs.index)
     half_and_half.iloc[: len(half_and_half) // 2] = False

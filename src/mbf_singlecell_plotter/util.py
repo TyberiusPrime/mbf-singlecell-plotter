@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 def map_to_integers(series, upper, min=None, max=None):
     """Map values into 0...upper-1."""
     min = series.min() if min is None else min

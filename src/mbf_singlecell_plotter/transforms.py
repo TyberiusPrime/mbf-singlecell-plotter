@@ -620,7 +620,12 @@ def _region_to_bbox(region, reference_data):
 def _bbox_membership(rx, ry, bbox):
     """Boolean membership mask for points ``(rx, ry)`` in axis-aligned ``bbox``."""
     xlo, xhi, ylo, yhi = bbox
-    return (xlo <= rx.values) & (rx.values <= xhi) & (ylo <= ry.values) & (ry.values <= yhi)
+    return (
+        (xlo <= rx.values)
+        & (rx.values <= xhi)
+        & (ylo <= ry.values)
+        & (ry.values <= yhi)
+    )
 
 
 def _is_region_corner(c):

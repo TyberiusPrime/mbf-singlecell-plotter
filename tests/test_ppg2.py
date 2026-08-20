@@ -164,40 +164,33 @@ class TestOutputPaths:
         assert (workdir / RESULTS / f"{CELL_TYPE_COLUMN}_histogram.png").exists()
 
     def test_several_outputs_land_side_by_side(self, h5ad, workdir):
-        run(
-            lambda: source(h5ad)
-            .plot(CELL_TYPE_COLUMN)
-            .histogram()
-            .grid_histogram()
-        )
+        run(lambda: source(h5ad).plot(CELL_TYPE_COLUMN).histogram().grid_histogram())
         out = workdir / RESULTS
         assert (out / f"{CELL_TYPE_COLUMN}_histogram.png").exists()
         assert (out / f"{CELL_TYPE_COLUMN}_grid_histogram.png").exists()
 
     def test_into_nests_builder_then_plot(self, h5ad, workdir):
         run(
-            lambda: source(h5ad, into="genes")
-            .plot(CELL_TYPE_COLUMN, into="clusters")
-            .histogram()
+            lambda: (
+                source(h5ad, into="genes")
+                .plot(CELL_TYPE_COLUMN, into="clusters")
+                .histogram()
+            )
         )
         target = workdir / RESULTS / "genes" / "clusters"
         assert (target / f"{CELL_TYPE_COLUMN}_histogram.png").exists()
 
     def test_explicit_filename_is_honoured(self, h5ad, workdir):
         run(
-            lambda: source(h5ad)
-            .plot(CELL_TYPE_COLUMN)
-            .histogram(filename="clusters.png")
+            lambda: (
+                source(h5ad).plot(CELL_TYPE_COLUMN).histogram(filename="clusters.png")
+            )
         )
         assert (workdir / RESULTS / "clusters.png").exists()
 
     def test_the_column_reaches_the_terminal(self, h5ad, workdir):
         """A violin needs (column, group_by); injection puts them in that order."""
-        run(
-            lambda: source(h5ad)
-            .plot("S100A8")
-            .violin(CELL_TYPE_COLUMN)
-        )
+        run(lambda: source(h5ad).plot("S100A8").violin(CELL_TYPE_COLUMN))
         assert (workdir / RESULTS / "S100A8_violin_leiden.png").exists()
 
 
@@ -219,8 +212,10 @@ class TestCollisions:
     def test_a_filename_disambiguates(self, h5ad, graph):
         builder = source(h5ad)
         builder.plot(CELL_TYPE_COLUMN).histogram()
-        plot = builder.style(dot_size=3).plot(CELL_TYPE_COLUMN).histogram(
-            filename="other.png"
+        plot = (
+            builder.style(dot_size=3)
+            .plot(CELL_TYPE_COLUMN)
+            .histogram(filename="other.png")
         )
         assert names(plot) == ["other.png"]
 
@@ -335,8 +330,17 @@ class TestRedeclaration:
 class TestInvariants:
     """Everything recorded must be covered; nothing else may cause churn."""
 
-    def graph(self, h5ad, *, builder_size=(4, 4), plot_size=None, dot_size=1,
-              filter_fn=None, extra_plot=False, sibling_vertical=None):
+    def graph(
+        self,
+        h5ad,
+        *,
+        builder_size=(4, 4),
+        plot_size=None,
+        dot_size=1,
+        filter_fn=None,
+        extra_plot=False,
+        sibling_vertical=None,
+    ):
         def build():
             builder = source(h5ad).panel_size(*builder_size).style(dot_size=dot_size)
             if filter_fn is not None:

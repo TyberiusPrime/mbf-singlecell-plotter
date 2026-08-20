@@ -796,9 +796,7 @@ class ScatterPlotter:
         )
         return new
 
-    def add_derived_source(
-        self, derived, name=None
-    ) -> "ScatterPlotter":
+    def add_derived_source(self, derived, name=None) -> "ScatterPlotter":
         """Register a computed (derived) source for column / gene lookup.
 
         *derived* is a ``{column_name: callable}`` mapping where each callable
@@ -819,9 +817,7 @@ class ScatterPlotter:
         if self._data is None:
             raise RuntimeError("call .set_source() before .add_derived_source()")
         new = copy.copy(self)
-        new._data = self._data.add_derived_source(
-            derived, name=name
-        )
+        new._data = self._data.add_derived_source(derived, name=name)
         return new
 
     # ── dot appearance ───────────────────────────────────────────────────────

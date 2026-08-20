@@ -116,11 +116,15 @@ debug_path = "debug_interactive_debug.html"
 plain_path = "debug_interactive_plain.html"
 
 print("Generating debug HTML …")
-sp_plotter.save_interactive_moran_grid("quadrant", debug_path, debug=True, **common_kwargs)
+sp_plotter.save_interactive_moran_grid(
+    "quadrant", debug_path, debug=True, **common_kwargs
+)
 print(f"  → {debug_path}")
 
 print("Generating plain HTML …")
-sp_plotter.save_interactive_moran_grid("quadrant", plain_path, debug=False, **common_kwargs)
+sp_plotter.save_interactive_moran_grid(
+    "quadrant", plain_path, debug=False, **common_kwargs
+)
 print(f"  → {plain_path}")
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────

@@ -51,7 +51,7 @@ class sc_guide_colorbar(guide_colorbar):
             self.theme.targets = saved_targets
 
         # Recreate elements so cached properties pick up the updated theme values.
-        self.elements = self._elements_cls(self.theme, self) # ty: ignore
+        self.elements = self._elements_cls(self.theme, self)  # ty: ignore
 
         # Drop boundary tick/label that would duplicate the extension box label.
         if self.zero_color is not None and len(self.key) > 1:
