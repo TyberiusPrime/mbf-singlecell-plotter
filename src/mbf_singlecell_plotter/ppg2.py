@@ -3,34 +3,49 @@
 :class:`PlotBuilder` and :class:`Plot` are *call recorders* for
 :class:`~mbf_singlecell_plotter.plots.ScatterPlotter`.  They expose exactly the
 methods ScatterPlotter exposes -- discovered by introspection, so nothing has to
-be re-declared here -- but instead of executing a call they remember it.  At
-:meth:`PlotBuilder.register_all` time the remembered calls are replayed inside a
-pypipegraph2 job, and the same recording is serialised into the job's
-invariants.  Configuration and change-detection therefore cannot drift apart.
+be re-declared here -- but instead of executing a call they remember it.  When a
+terminal (``scatter``, ``violin``, ...) is called the remembered script is
+turned into a pypipegraph2 job on the spot, and the same recording is serialised
+into that job's invariants.  Configuration and change-detection therefore cannot
+drift apart.
+
+Like ScatterPlotter itself, the recorders are immutable: every call returns an
+altered copy, so a configured builder can be shared without any risk of one plot
+leaking settings into the next.
 
 ::
 
-    builder = PlotBuilder(base_size=15)
-    builder.set_source(Path("analysis.h5ad"), embedding="umap", transform=log2)
-    builder.add_alternative_source(Path("genes.h5ad"), name="genes")
-    builder.style(dot_size=1)
-    builder.panel_size(4, 4)
+    builder = (
+        PlotBuilder(base_size=15, output_folder="results/plots")
+        .set_source(Path("analysis.h5ad"), embedding="umap")
+        .add_alternative_source(Path("genes.h5ad"), name="genes")
+        .style(dot_size=1)
+        .panel_size(4, 4)
+    )
 
-    p = builder.add(Plot("S100A8"))
-    p.facet("condition")
-    p.scatter()                      # -> S100A8_scatter.png
-    p.violin("leiden")               # -> S100A8_violin_leiden.png
-    p.ridgeline("leiden").unfacet()  # -> S100A8_ridgeline_leiden.png
+    p = builder.plot("S100A8").facet("condition")
+    p.scatter()                       # -> S100A8_scatter.png, job created now
+    p.violin("leiden")                # -> S100A8_violin_leiden.png
+    p.unfacet().ridgeline("leiden")   # -> S100A8_ridgeline_leiden.png, unfaceted
 
-    jobs = builder.register_all("results/plots")
+    jobs = builder.jobs_              # everything created from this builder
 
 Semantics
 ---------
-Replay order is ``builder calls -> plot calls -> output calls``, exactly as if
-you had made those calls in sequence on one ScatterPlotter.  Overriding is
-therefore just calling again (``panel_size``, ``style``, ...); undoing uses the
-``un*``/``without_*`` methods.  Within a plot the *whole* plot script is applied
-before any output script, regardless of where ``.scatter()`` was called.
+Replay order is ``builder calls -> plot calls``, exactly as if you had made
+those calls in sequence on one ScatterPlotter.  Overriding is therefore just
+calling again (``panel_size``, ``style``, ...); undoing uses the
+``un*``/``without_*`` methods.  Configuration must precede the terminal it
+should affect -- the terminal builds the job immediately, so nothing recorded
+afterwards can reach it.
+
+A terminal returns a copy of the plot carrying ``job_`` (the job just created)
+and ``jobs_`` (every job created along this object's lineage), so the jobs can
+be wired into further dependencies::
+
+    p1 = builder.plot("Major").scatter().grid_histogram()
+    p1.jobs_        # [scatter job, grid_histogram job]
+    p1.job_         # the grid_histogram job
 
 Anything a recorded call receives ends up in the job's invariants:  ``Path``\\ s
 (and ``(Path, job)`` pairs) become file dependencies, callables become
@@ -39,9 +54,12 @@ Anything a recorded call receives ends up in the job's invariants:  ``Path``\\ s
 are rejected at record time rather than silently hashed by object identity.
 """
 
+import copy
 import functools
+import hashlib
 import inspect
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple, Union
@@ -50,7 +68,7 @@ import numpy as np
 
 from .plots import ScatterPlotter
 
-__all__ = ["PlotBuilder", "Plot", "Output", "UnencodableArgument"]
+__all__ = ["PlotBuilder", "Plot", "UnencodableArgument"]
 
 
 class UnencodableArgument(TypeError):
@@ -62,10 +80,29 @@ def _require_ppg():
         import pypipegraph2 as ppg
     except ImportError as e:  # pragma: no cover - depends on the environment
         raise ImportError(
-            "pypipegraph2 is required to register plot jobs. Install it, or use "
+            "pypipegraph2 is required to create plot jobs. Install it, or use "
             "ScatterPlotter directly for interactive plotting."
         ) from e
     return ppg
+
+
+def _current_graph():
+    """The active pipegraph, or None -- without importing ppg if it is absent."""
+    ppg = sys.modules.get("pypipegraph2")
+    return getattr(ppg, "global_pipegraph", None) if ppg is not None else None
+
+
+def _active_graph(what: str):
+    """The live pipegraph as ``(module, graph)``, or a pointed error."""
+    ppg = _require_ppg()
+    graph = getattr(ppg, "global_pipegraph", None)
+    if graph is None:
+        raise RuntimeError(
+            f"{what} creates a pipegraph job immediately and needs an active "
+            "graph - call ppg.new() first, or use ScatterPlotter directly for "
+            "interactive work."
+        )
+    return ppg, graph
 
 
 # ── introspection of ScatterPlotter ──────────────────────────────────────────
@@ -90,7 +127,7 @@ def _classify(cls) -> Tuple[dict, dict]:
 
 CONFIG_METHODS, TERMINAL_METHODS = _classify(ScatterPlotter)
 
-# Output-level keywords that shadow nothing in any terminal signature; see
+# Terminal-level keywords that shadow nothing in any terminal signature; see
 # test_ppg2_core.py::test_reserved_output_kwargs_do_not_shadow_terminals.
 RESERVED_OUTPUT_KWARGS = ("name", "filename", "dpi")
 
@@ -182,7 +219,7 @@ class _Walker:
         self.resolve_path = resolve_path
         self.ppg = ppg
         self.deps: List[Any] = []
-        self._functions: List[Tuple[str, Any]] = []
+        self._functions: List[Any] = []
 
     # -- public ------------------------------------------------------------
 
@@ -264,14 +301,14 @@ class _Walker:
                 f"{where} (partial)",
                 depth + 1,
             )
-            self._register_function(value.func, where)
+            self._functions.append(value.func)
             return {"__partial__": _qualname(value.func), "__bound__": enc}, value
 
         if isinstance(value, type):
             return {"__class__": _qualname(value)}, value
 
         if callable(value):
-            self._register_function(value, where)
+            self._functions.append(value)
             return {"__function__": _qualname(value)}, value
 
         # Last resort: an object is its type plus its (encodable) state.  This
@@ -299,34 +336,114 @@ class _Walker:
             "logic into a function argument (which is tracked by its source)."
         )
 
-    def function_invariants(self) -> list:
-        """FunctionInvariants for every callable seen, in encounter order."""
+    def function_invariants(self, prefix: Optional[str] = None) -> list:
+        """FunctionInvariants for every callable seen, in encounter order.
+
+        Names are built here rather than during the walk so a caller can pick a
+        prefix derived from the finished encoding -- which is what keeps the
+        invariant ids stable across runs (see :meth:`PlotBuilder._walk`).
+        """
         if not self.ppg:
             return []
+        prefix = self.prefix if prefix is None else prefix
         out = []
-        for name, fn in self._functions:
-            out.append(self.ppg.FunctionInvariant(name, fn))
+        for index, fn in enumerate(self._functions):
+            out.append(
+                self.ppg.FunctionInvariant(f"{prefix}::fn{index}::{_qualname(fn)}", fn)
+            )
             extra = getattr(fn, "deps", None)
             if extra is not None:
                 # a computed_column may carry its own upstream dependencies
                 out.extend(extra if isinstance(extra, (list, tuple)) else [extra])
         return out
 
-    # -- internal ----------------------------------------------------------
 
-    def _register_function(self, fn, where: str):
-        index = len(self._functions)
-        self._functions.append((f"{self.prefix}::fn{index}::{_qualname(fn)}", fn))
+def _resolver(ppg):
+    """Path resolution that also yields the matching file dependency.
+
+    ``job_or_filename`` understands a filename or a job (whose first output is
+    the file), but not a ``(path, job)`` pair -- which is the only way to name
+    one particular file of a job that produces several, so it is resolved here.
+    """
+
+    def resolve(value):
+        if isinstance(value, tuple):
+            path, job = value
+            return Path(path), [job]
+        path, deps = ppg.util.job_or_filename(value)
+        return Path(path), deps
+
+    return resolve
+
+
+# ── bookkeeping ──────────────────────────────────────────────────────────────
+
+
+def _caller_location() -> str:
+    """``demo.py:31`` for the first frame outside this module."""
+    frame = sys._getframe(1)
+    while frame is not None and frame.f_globals.get("__name__") == __name__:
+        frame = frame.f_back
+    if frame is None:  # pragma: no cover - only reachable from a bare exec
+        return "<unknown>"
+    return f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}"
+
+
+def _claim_output(graph, target: Path, description: str) -> None:
+    """Reserve one output path, or explain who took it first.
+
+    pypipegraph2 catches most of these itself (a redefined ParameterInvariant
+    raises in strict mode), but only after the fact and with a diff of two JSON
+    blobs; and two byte-identical declarations dedup silently.  The registry
+    lives on the graph, so builders that share an output directory collide too.
+    """
+    registry = getattr(graph, "_mbf_singlecell_plotter_outputs", None)
+    if registry is None:
+        registry = {}
+        graph._mbf_singlecell_plotter_outputs = registry
+    key = str(target)
+    if key in registry:
+        raise ValueError(
+            f"{key} is already produced by {registry[key]}.\n"
+            "Pass filename=... or name=... to disambiguate."
+        )
+    registry[key] = description
+
+
+class _Session:
+    """The jobs created from one builder lineage, shared by every copy of it."""
+
+    def __init__(self):
+        self.graph = None
+        self.jobs: List[Any] = []
+
+    def record(self, graph, job) -> None:
+        if self.graph is not graph:  # ppg.new() -- the old jobs are history
+            self.graph = graph
+            self.jobs = []
+        self.jobs.append(job)
+
+    def current(self, graph) -> list:
+        return list(self.jobs) if self.graph is graph else []
 
 
 # ── recorder base ────────────────────────────────────────────────────────────
 
 
 class _Recorder:
-    """Records ScatterPlotter configuration calls instead of performing them."""
+    """Records ScatterPlotter configuration calls instead of performing them.
+
+    Immutable, like ScatterPlotter: every recorded call returns a copy.
+    """
 
     def __init__(self):
-        self._calls: List[_Call] = []
+        self._calls: Tuple[_Call, ...] = ()
+        self._walk_cache = None
+
+    def _copy(self):
+        new = copy.copy(self)
+        new._walk_cache = None
+        return new
 
     def _record(self, method: str, args: tuple, kwargs: dict):
         signature = inspect.signature(CONFIG_METHODS[method])
@@ -336,8 +453,9 @@ class _Recorder:
             raise TypeError(f"{type(self).__name__}.{method}(): {e}") from None
         if method in SOURCE_PARAMS:
             self._check_source(method, signature, args, kwargs)
-        self._calls.append(_Call(method, tuple(args), dict(kwargs)))
-        return self
+        new = self._copy()
+        new._calls = self._calls + (_Call(method, tuple(args), dict(kwargs)),)
+        return new
 
     def _check_source(self, method: str, signature, args: tuple, kwargs: dict):
         bound = signature.bind(_SELF, *args, **kwargs)
@@ -356,6 +474,12 @@ class _Recorder:
             signature.bind(_SELF, **kwargs)
         except TypeError as e:
             raise TypeError(f"{type(self).__name__}(): {e}") from None
+        if "ad_or_data" in kwargs:
+            raise TypeError(
+                f"{type(self).__name__}(): pass the data source to set_source() "
+                "rather than to the constructor, so it can be tracked as a file "
+                "dependency."
+            )
         return dict(kwargs)
 
 
@@ -366,11 +490,24 @@ def _make_config_method(name: str, fn):
 
     wrapper.__doc__ = (fn.__doc__ or "").rstrip() + (
         "\n\n        Recorded, not executed; replayed inside the pipegraph job."
+        "\n        Returns an altered copy -- the receiver is left untouched."
     )
     return wrapper
 
 
+def _check_no_shadowing(cls, names, kind: str):
+    """A generated method must never silently replace one written here."""
+    clashes = sorted(set(names) & set(vars(cls)))
+    if clashes:  # pragma: no cover - a guard against a future plots.py change
+        raise RuntimeError(
+            f"ScatterPlotter now exposes {', '.join(clashes)} as a {kind}, "
+            f"which would silently replace {cls.__name__}.{clashes[0]}. "
+            "Rename the attribute defined in ppg2.py."
+        )
+
+
 def _install_config_methods(cls):
+    _check_no_shadowing(cls, CONFIG_METHODS, "configuration method")
     for name, fn in CONFIG_METHODS.items():
         method = _make_config_method(name, fn)
         method.__qualname__ = f"{cls.__name__}.{name}"
@@ -378,51 +515,10 @@ def _install_config_methods(cls):
     return cls
 
 
-# ── outputs ──────────────────────────────────────────────────────────────────
+# ── plot ─────────────────────────────────────────────────────────────────────
 
 
-@_install_config_methods
-class Output(_Recorder):
-    """One output file: a terminal ScatterPlotter call plus its own tweaks.
-
-    Configuration recorded here applies on top of the owning plot's script and
-    affects this file only -- that is how ``p.ridgeline("leiden").unfacet()``
-    drops a facet for the ridgeline without touching the sibling scatter.
-    """
-
-    def __init__(
-        self,
-        terminal: str,
-        args: tuple,
-        kwargs: dict,
-        *,
-        name: str,
-        filename: Optional[str] = None,
-        dpi: Optional[int] = None,
-    ):
-        super().__init__()
-        self.terminal = terminal
-        self.terminal_args = args
-        self.terminal_kwargs = kwargs
-        self.name = name
-        self.filename = filename
-        self._dpi = dpi
-
-    def dpi(self, value: int) -> "Output":
-        """Override the owning plot's dpi for this file."""
-        self._dpi = value
-        return self
-
-    def file_name(self, stem: str) -> str:
-        if self.filename:
-            return self.filename
-        return f"{stem}_{self.name}.png"
-
-    def __repr__(self):
-        return f"<Output {self.name} ({self.terminal})>"
-
-
-def _make_output_method(terminal: str, fn):
+def _make_terminal_method(terminal: str, fn):
     default_name = _output_name_for(terminal)
     takes_column = _first_param_is_column(fn)
     signature = inspect.signature(fn)
@@ -449,47 +545,46 @@ def _make_output_method(terminal: str, fn):
                     if isinstance(a, str)
                 ]
             )
-        return self._add_output(
-            Output(
-                terminal,
-                tuple(args),
-                dict(kwargs),
-                name=name,
-                filename=filename,
-                dpi=dpi,
-            )
+        return self._build(
+            terminal,
+            tuple(args),
+            dict(kwargs),
+            name=name,
+            filename=filename,
+            dpi=dpi,
         )
 
     wrapper.__doc__ = (fn.__doc__ or "").rstrip() + (
-        "\n\n        Records an output file instead of building the plot. The plot's "
-        "\n        column is supplied automatically. Returns the Output, which accepts "
-        "\n        further ScatterPlotter calls scoped to this file alone."
+        "\n\n        Creates the pipegraph job for this file instead of building the"
+        "\n        plot; the plot's column is supplied automatically. Returns a copy"
+        "\n        of the plot with .job_ and .jobs_ set."
     )
     return wrapper
 
 
-def _install_output_methods(cls):
+def _install_terminal_methods(cls):
+    names = {_output_name_for(terminal): fn for terminal, fn in TERMINAL_METHODS.items()}
+    _check_no_shadowing(cls, names, "terminal")
     for terminal, fn in TERMINAL_METHODS.items():
-        method = _make_output_method(terminal, fn)
-        name = _output_name_for(terminal)
-        method.__qualname__ = f"{cls.__name__}.{name}"
-        setattr(cls, name, method)
+        method = _make_terminal_method(terminal, fn)
+        method.__qualname__ = f"{cls.__name__}.{_output_name_for(terminal)}"
+        setattr(cls, _output_name_for(terminal), method)
     return cls
 
 
-# ── plot ─────────────────────────────────────────────────────────────────────
-
-
-@_install_output_methods
+@_install_terminal_methods
 @_install_config_methods
 class Plot(_Recorder):
-    """A subject (usually one column) and the output files derived from it.
+    """A subject (usually one column) and the files derived from it.
 
-    All outputs of one Plot share a single pipegraph job.
+    Created by :meth:`PlotBuilder.plot`, never directly.  Every configuration
+    call returns an altered copy; every terminal call creates one job right
+    away and returns a copy carrying it.
     """
 
     def __init__(
         self,
+        builder: "PlotBuilder",
         column: Optional[Union[str, Tuple[str, str]]] = None,
         *,
         name: Optional[str] = None,
@@ -498,14 +593,13 @@ class Plot(_Recorder):
         **plotter_kwargs,
     ):
         super().__init__()
+        self._builder = builder
         self.column = column
         self._name = name
-        self._into: List[str] = []
+        self._into: Tuple[str, ...] = Path(into).parts if into is not None else ()
         self._dpi = dpi
-        self._outputs: List[Output] = []
+        self._jobs: Tuple[Any, ...] = ()
         self.init_kwargs = self._init_kwargs_from(plotter_kwargs)
-        if into is not None:
-            self.into(into)
 
     # -- naming / layout ---------------------------------------------------
 
@@ -520,20 +614,39 @@ class Plot(_Recorder):
             return self.column[1]
         raise ValueError(
             "Plot needs a name: it has no column to derive one from "
-            "(pass Plot(name='...'))."
+            "(pass builder.plot(name='...'))."
         )
 
     def into(self, sub_directory: Union[str, Path]) -> "Plot":
         """Append a sub-directory below the builder's output directory."""
-        self._into.extend(Path(sub_directory).parts)
-        return self
+        new = self._copy()
+        new._into = self._into + Path(sub_directory).parts
+        return new
 
     def dpi(self, value: int) -> "Plot":
-        """Set the default dpi for this plot's outputs."""
-        self._dpi = value
-        return self
+        """Set the default dpi for this plot's files."""
+        new = self._copy()
+        new._dpi = value
+        return new
 
-    # -- outputs -----------------------------------------------------------
+    # -- results -----------------------------------------------------------
+
+    @property
+    def jobs_(self) -> list:
+        """Every job created along this object's lineage, in creation order."""
+        return list(self._jobs)
+
+    @property
+    def job_(self):
+        """The job the most recent terminal created."""
+        if not self._jobs:
+            raise AttributeError(
+                "no terminal has been called on this Plot yet, so there is no "
+                "job - call .scatter(), .violin(), ... first."
+            )
+        return self._jobs[-1]
+
+    # -- job creation ------------------------------------------------------
 
     def output(
         self,
@@ -543,8 +656,8 @@ class Plot(_Recorder):
         filename: Optional[str] = None,
         dpi: Optional[int] = None,
         **kwargs,
-    ) -> Output:
-        """Record an arbitrary terminal ScatterPlotter method as an output.
+    ) -> "Plot":
+        """Create a job for an arbitrary terminal ScatterPlotter method.
 
         The generated shorthands (``scatter``, ``violin``, ...) are thin
         wrappers around this; use it directly for anything without one.  Unlike
@@ -560,34 +673,101 @@ class Plot(_Recorder):
             raise TypeError(f"Plot.output({terminal!r}): {e}") from None
         if name is None:
             name = _output_name_for(terminal)
-        return self._add_output(
-            Output(
-                terminal,
-                tuple(args),
-                dict(kwargs),
-                name=name,
-                filename=filename,
-                dpi=dpi,
-            )
+        return self._build(
+            terminal, tuple(args), dict(kwargs), name=name, filename=filename, dpi=dpi
         )
 
-    def _add_output(self, output: Output) -> Output:
-        existing = {o.name for o in self._outputs}
-        if output.name in existing:
-            raise ValueError(
-                f"Plot {self._name or self.column!r} already has an output named "
-                f"{output.name!r}; pass name=... to disambiguate."
-            )
-        self._outputs.append(output)
-        return output
+    def _build(self, terminal, args, kwargs, *, name, filename, dpi) -> "Plot":
+        label = _output_name_for(terminal)
+        ppg, graph = _active_graph(f"{type(self).__name__}.{label}()")
+        self._require_source(label)
+        target = self._target(name, filename)
+        _claim_output(
+            graph, target, f"{self._describe()}.{label}() at {_caller_location()}"
+        )
+        job = self._create_job(ppg, graph, terminal, args, kwargs, target, dpi)
+        self._builder._session.record(graph, job)
+        new = self._copy()
+        new._jobs = self._jobs + (job,)
+        return new
 
-    @property
-    def outputs(self) -> List[Output]:
-        return list(self._outputs)
+    def _target(self, name: str, filename: Optional[str]) -> Path:
+        builder = self._builder
+        directory = builder.output_folder.joinpath(*builder._into, *self._into)
+        return directory / (filename if filename else f"{self.stem}_{name}.png")
+
+    def _require_source(self, label: str) -> None:
+        if not any(
+            call.method == "set_source"
+            for call in self._builder._calls + self._calls
+        ):
+            raise ValueError(
+                f"{self._describe()}.{label}(): no data source - call "
+                "set_source() on the builder or on the plot first."
+            )
+
+    def _create_job(self, ppg, graph, terminal, args, kwargs, target: Path, dpi):
+        builder = self._builder
+        job_id = str(target)
+
+        builder_encoded, builder_calls, builder_deps = builder._walk(ppg, graph)
+        walker = _Walker(job_id, _resolver(ppg), ppg)
+        plot_encoded, plot_calls = walker.walk_calls(self._calls)
+
+        init_kwargs = {**builder.init_kwargs, **self.init_kwargs}
+        init_encoded, _ = walker.walk(init_kwargs, f"{job_id} ScatterPlotter()")
+
+        args_encoded, args_resolved = [], []
+        for position, value in enumerate(args):
+            enc, res = walker.walk(value, f"{job_id}: argument {position}")
+            args_encoded.append(enc)
+            args_resolved.append(res)
+        kwargs_encoded, kwargs_resolved = {}, {}
+        for key in sorted(kwargs):
+            enc, res = walker.walk(kwargs[key], f"{job_id}: {key}=...")
+            kwargs_encoded[key] = enc
+            kwargs_resolved[key] = res
+
+        if dpi is None:
+            dpi = self._dpi if self._dpi is not None else builder._dpi
+        calls = tuple(builder_calls) + tuple(plot_calls)
+        args_resolved = tuple(args_resolved)
+
+        parameters = json.dumps(
+            {
+                "builder": builder_encoded,
+                "init": init_encoded,
+                "plot": plot_encoded,
+                "terminal": terminal,
+                "args": args_encoded,
+                "kwargs": kwargs_encoded,
+                "dpi": dpi,
+            },
+            sort_keys=True,
+        )
+
+        def generate(output_filename):
+            output_filename.parent.mkdir(parents=True, exist_ok=True)
+            plotter = _replay(calls, init_kwargs)
+            figure = getattr(plotter, terminal)(*args_resolved, **kwargs_resolved)
+            figure.save(output_filename, dpi=dpi)
+
+        job = ppg.FileGeneratingJob(target, generate, depend_on_function=False)
+        job.depends_on(builder_deps)
+        job.depends_on(list(walker.deps) + walker.function_invariants())
+        job.depends_on(ppg.ParameterInvariant(job_id + "_config", parameters))
+        #job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
+        return job
+
+    # -- misc --------------------------------------------------------------
+
+    def _describe(self) -> str:
+        if self.column is not None:
+            return f"Plot({self.column!r})"
+        return f"Plot(name={self._name!r})"
 
     def __repr__(self):
-        subject = self._name or self.column
-        return f"<Plot {subject!r} ({len(self._outputs)} outputs)>"
+        return f"<{self._describe()}, {len(self._jobs)} jobs>"
 
 
 # ── builder ──────────────────────────────────────────────────────────────────
@@ -595,159 +775,91 @@ class Plot(_Recorder):
 
 @_install_config_methods
 class PlotBuilder(_Recorder):
-    """Shared configuration plus the plots that build on it."""
+    """Shared configuration plus the plots that build on it.
+
+    Immutable: every configuration call returns an altered copy, so one
+    configured builder can safely seed any number of divergent plots::
+
+        faceted = builder.facet("AgeGroup")   # builder itself is unchanged
+        faceted.plot("GeneXY").scatter()
+    """
 
     def __init__(
         self,
         *,
+        output_folder: Union[str, Path],
         into: Optional[Union[str, Path]] = None,
         dpi: int = 150,
         **plotter_kwargs,
     ):
         super().__init__()
-        self._into: List[str] = []
+        self.output_folder = Path(output_folder)
+        self._into: Tuple[str, ...] = Path(into).parts if into is not None else ()
         self._dpi = dpi
-        self._plots: List[Plot] = []
+        self._session = _Session()
         self.init_kwargs = self._init_kwargs_from(plotter_kwargs)
-        if into is not None:
-            self.into(into)
 
-    # -- collection --------------------------------------------------------
+    # -- layout ------------------------------------------------------------
 
     def into(self, sub_directory: Union[str, Path]) -> "PlotBuilder":
-        """Append a sub-directory below the ``register_all`` result directory."""
-        self._into.extend(Path(sub_directory).parts)
-        return self
+        """Append a sub-directory below the output folder."""
+        new = self._copy()
+        new._into = self._into + Path(sub_directory).parts
+        return new
 
-    def add(self, plot: Plot) -> Plot:
-        """Queue a :class:`Plot`; returns it so you can keep configuring."""
-        if not isinstance(plot, Plot):
-            raise TypeError(f"expected a Plot, got {type(plot).__name__}")
-        self._plots.append(plot)
-        return plot
+    def dpi(self, value: int) -> "PlotBuilder":
+        """Set the default dpi for every plot built from here."""
+        new = self._copy()
+        new._dpi = value
+        return new
+
+    # -- plots -------------------------------------------------------------
+
+    def plot(
+        self,
+        column: Optional[Union[str, Tuple[str, str]]] = None,
+        *,
+        name: Optional[str] = None,
+        into: Optional[Union[str, Path]] = None,
+        dpi: Optional[int] = None,
+        **plotter_kwargs,
+    ) -> Plot:
+        """A :class:`Plot` for one column, carrying this builder's script.
+
+        Nothing is created yet -- a job appears when a terminal (``scatter``,
+        ``violin``, ...) is called on the result.
+        """
+        return Plot(
+            self, column, name=name, into=into, dpi=dpi, **plotter_kwargs
+        )
 
     @property
-    def plots(self) -> List[Plot]:
-        return list(self._plots)
+    def jobs_(self) -> list:
+        """Every job created from this builder and its copies, in order."""
+        return self._session.current(_current_graph())
 
-    # -- registration ------------------------------------------------------
+    # -- invariants --------------------------------------------------------
 
-    def register_all(self, result_dir: Union[str, Path]) -> list:
-        """Create one job per queued plot below ``result_dir``. Returns them."""
-        ppg = _require_ppg()
-        result_dir = Path(result_dir)
-        self._builder_walk(ppg)  # once; shared by every plot
-        return [self._register(plot, result_dir, ppg) for plot in self._plots]
+    def _walk(self, ppg, graph):
+        """Encode this builder's script once per graph.
 
-    def _builder_walk(self, ppg):
-        cached = getattr(self, "_builder_cache", None)
-        if cached is not None and cached[0] == len(self._calls):
+        The FunctionInvariant names are prefixed with a digest of the finished
+        encoding: stable across runs (unlike a counter) and distinct per
+        builder configuration (unlike a fixed 'builder'), which matters now
+        that a script can hold any number of divergent builder copies.
+        """
+        cached = self._walk_cache
+        if cached is not None and cached[0] is graph:
             return cached[1]
         walker = _Walker("builder", _resolver(ppg), ppg)
         encoded, resolved = walker.walk_calls(self._calls)
-        deps = list(walker.deps) + walker.function_invariants()
-        self._builder_cache = (len(self._calls), (encoded, resolved, deps))
-        return self._builder_cache[1]
+        digest = hashlib.sha256(
+            json.dumps(encoded, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        deps = list(walker.deps) + walker.function_invariants(f"builder_{digest}")
+        result = (encoded, resolved, deps)
+        self._walk_cache = (graph, result)
+        return result
 
-    def _out_dir(self, plot: Plot, result_dir: Path) -> Path:
-        return result_dir.joinpath(*self._into, *plot._into)
-
-    def _register(self, plot: Plot, result_dir: Path, ppg):
-        if not plot._outputs:
-            raise ValueError(f"{plot!r} declares no outputs")
-
-        out_dir = self._out_dir(plot, result_dir)
-        stem = plot.stem
-        files = {o.name: out_dir / o.file_name(stem) for o in plot._outputs}
-        job_id = str(sorted(files.values())[0])
-
-        builder_encoded, builder_calls, builder_deps = self._builder_walk(ppg)
-        walker = _Walker(job_id, _resolver(ppg), ppg)
-        plot_encoded, plot_calls = walker.walk_calls(plot._calls)
-
-        init_kwargs = {**self.init_kwargs, **plot.init_kwargs}
-        init_encoded, _ = walker.walk(init_kwargs, f"{job_id} ScatterPlotter()")
-
-        recipes = {}
-        outputs_encoded = {}
-        for output in plot._outputs:
-            output_calls_encoded, output_calls = walker.walk_calls(output._calls)
-            terminal_args, resolved_args = [], []
-            for position, value in enumerate(output.terminal_args):
-                enc, res = walker.walk(
-                    value, f"{job_id} {output.name}: argument {position}"
-                )
-                terminal_args.append(enc)
-                resolved_args.append(res)
-            terminal_kwargs, resolved_kwargs = {}, {}
-            for key in sorted(output.terminal_kwargs):
-                enc, res = walker.walk(
-                    output.terminal_kwargs[key], f"{job_id} {output.name}: {key}=..."
-                )
-                terminal_kwargs[key] = enc
-                resolved_kwargs[key] = res
-            dpi = (
-                output._dpi
-                if output._dpi is not None
-                else (plot._dpi if plot._dpi is not None else self._dpi)
-            )
-            outputs_encoded[output.name] = {
-                "terminal": output.terminal,
-                "args": terminal_args,
-                "kwargs": terminal_kwargs,
-                "calls": output_calls_encoded,
-                "dpi": dpi,
-                "file": files[output.name].name,
-            }
-            recipes[output.name] = (
-                tuple(builder_calls) + tuple(plot_calls) + tuple(output_calls),
-                output.terminal,
-                tuple(resolved_args),
-                resolved_kwargs,
-                dpi,
-            )
-
-        parameters = json.dumps(
-            {
-                "builder": builder_encoded,
-                "init": init_encoded,
-                "plot": plot_encoded,
-                "outputs": outputs_encoded,
-            },
-            sort_keys=True,
-        )
-
-        def generate(output_filenames, recipes=recipes, init_kwargs=init_kwargs):
-            for name, (calls, terminal, args, kwargs, dpi) in recipes.items():
-                target = output_filenames[name]
-                target.parent.mkdir(parents=True, exist_ok=True)
-                plotter = _replay(calls, init_kwargs)
-                figure = getattr(plotter, terminal)(*args, **kwargs)
-                figure.save(target, dpi=dpi)
-
-        job = ppg.MultiFileGeneratingJob(
-            files, generate, depend_on_function=True, resources=ppg.Resources.RunsHere
-        )
-        job.depends_on(builder_deps)
-        job.depends_on(list(walker.deps) + walker.function_invariants())
-        job.depends_on(ppg.ParameterInvariant(job_id + "_config", parameters))
-        job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
-        return job
-
-
-def _resolver(ppg):
-    """Path resolution that also yields the matching file dependency.
-
-    ``job_or_filename`` understands a filename or a job (whose first output is
-    the file), but not a ``(path, job)`` pair -- which is the only way to name
-    one particular file of a job that produces several, so it is resolved here.
-    """
-
-    def resolve(value):
-        if isinstance(value, tuple):
-            path, job = value
-            return Path(path), [job]
-        path, deps = ppg.util.job_or_filename(value)
-        return Path(path), deps
-
-    return resolve
+    def __repr__(self):
+        return f"<PlotBuilder {str(self.output_folder)!r}, {len(self._calls)} calls>"

@@ -1,8 +1,9 @@
 """Tests for the ppg2 call recorder that need no pipegraph.
 
-Recording, introspection, replay and argument encoding are deliberately free of
-pypipegraph2 so they can be exercised directly; the job wiring built on top of
-them lives in test_ppg2.py.
+Recording, immutability, introspection, replay and argument encoding are
+deliberately free of pypipegraph2 so they can be exercised directly.  Terminal
+calls create a job on the spot and therefore need a graph; they live in
+test_ppg2.py.
 """
 
 import functools
@@ -17,7 +18,6 @@ import pytest
 from mbf_singlecell_plotter import ppg2
 from mbf_singlecell_plotter.plots import ScatterPlotter
 from mbf_singlecell_plotter.ppg2 import (
-    Output,
     Plot,
     PlotBuilder,
     UnencodableArgument,
@@ -41,15 +41,22 @@ def a_filter(data):
     return np.ones(1, dtype=bool)
 
 
-def script(builder, plot, output, data):
+def builder(**kwargs) -> PlotBuilder:
+    kwargs.setdefault("output_folder", "results")
+    return PlotBuilder(**kwargs)
+
+
+def plot(column=None, **kwargs) -> Plot:
+    return builder().plot(column, **kwargs)
+
+
+def script(builder, plot, data):
     """The merged script, with an in-memory source spliced in.
 
     ``PlotBuilder.set_source`` only accepts trackable paths, so these
     pipegraph-free tests supply the session's EmbeddingData directly.
     """
-    return (
-        [_Call("set_source", (data,))] + builder._calls + plot._calls + output._calls
-    )
+    return [_Call("set_source", (data,)), *builder._calls, *plot._calls]
 
 
 # ---------------------------------------------------------------------------
@@ -71,12 +78,12 @@ class TestIntrospection:
     def test_config_and_terminal_are_disjoint(self):
         assert not set(ppg2.CONFIG_METHODS) & set(ppg2.TERMINAL_METHODS)
 
-    @pytest.mark.parametrize("cls", [PlotBuilder, Plot, Output])
+    @pytest.mark.parametrize("cls", [PlotBuilder, Plot])
     def test_config_methods_are_installed(self, cls):
         for name in ppg2.CONFIG_METHODS:
             assert callable(getattr(cls, name)), name
 
-    def test_output_shorthands_are_installed(self):
+    def test_terminal_shorthands_are_installed(self):
         for terminal in ppg2.TERMINAL_METHODS:
             assert callable(getattr(Plot, ppg2._output_name_for(terminal)))
         assert callable(Plot.scatter) and callable(Plot.violin)
@@ -93,6 +100,11 @@ class TestIntrospection:
             params = set(inspect.signature(fn).parameters)
             assert not params & set(ppg2.RESERVED_OUTPUT_KWARGS), terminal
 
+    def test_generated_methods_do_not_shadow_our_own(self):
+        """The guard that fires if plots.py grows an `into`/`dpi`/`plot`."""
+        with pytest.raises(RuntimeError, match="silently replace"):
+            ppg2._check_no_shadowing(Plot, ["into"], "configuration method")
+
     def test_docstrings_are_carried_over(self):
         assert "dot_size" in Plot.style.__doc__
         assert "Recorded, not executed" in Plot.style.__doc__
@@ -108,160 +120,156 @@ class TestIntrospection:
 
 class TestRecording:
     def test_calls_are_recorded_not_executed(self):
-        plot = Plot("S100A8").style(dot_size=3).panel_size(2, 2)
-        assert [c.method for c in plot._calls] == ["style", "panel_size"]
-        assert plot._calls[0].kwargs == {"dot_size": 3}
-        assert plot._calls[1].args == (2, 2)
-
-    def test_config_methods_chain(self):
-        plot = Plot("x")
-        assert plot.style(dot_size=1) is plot
+        p = plot("S100A8").style(dot_size=3).panel_size(2, 2)
+        assert [c.method for c in p._calls] == ["style", "panel_size"]
+        assert p._calls[0].kwargs == {"dot_size": 3}
+        assert p._calls[1].args == (2, 2)
 
     def test_unknown_keyword_fails_at_record_time(self):
         with pytest.raises(TypeError, match="dot_sizes"):
-            Plot("x").style(dot_sizes=3)
+            plot("x").style(dot_sizes=3)
 
     def test_too_many_positionals_fail_at_record_time(self):
         with pytest.raises(TypeError, match="panel_size"):
-            Plot("x").panel_size(1, 2, 3)
+            plot("x").panel_size(1, 2, 3)
 
     def test_unknown_terminal_keyword_fails_at_record_time(self):
+        """Rejected before a graph is ever consulted."""
         with pytest.raises(TypeError, match="scatter"):
-            Plot("x").scatter(nonsense=1)
+            plot("x").scatter(nonsense=1)
+
+    def test_missing_column_fails_at_record_time(self):
+        with pytest.raises(TypeError, match="no column"):
+            plot(name="anonymous").scatter()
 
     def test_builder_init_kwargs_are_validated(self):
-        assert PlotBuilder(base_size=20).init_kwargs == {"base_size": 20}
+        assert builder(base_size=20).init_kwargs == {"base_size": 20}
         with pytest.raises(TypeError, match="base_sizes"):
-            PlotBuilder(base_sizes=20)
+            builder(base_sizes=20)
+
+    def test_output_folder_is_mandatory(self):
+        with pytest.raises(TypeError, match="output_folder"):
+            PlotBuilder(base_size=20)
+
+    def test_constructor_source_is_rejected(self):
+        """ad_or_data would bypass set_source's trackability check."""
+        with pytest.raises(TypeError, match="set_source"):
+            builder(ad_or_data=Path("analysis.h5ad"))
 
     def test_string_source_is_rejected(self):
         """A str path would silently lose its file invariant."""
         with pytest.raises(TypeError, match="must be a"):
-            PlotBuilder().set_source("analysis.h5ad")
+            builder().set_source("analysis.h5ad")
 
     def test_in_memory_source_is_rejected(self, ad):
         with pytest.raises(TypeError, match="AnnData"):
-            PlotBuilder().set_source(ad)
+            builder().set_source(ad)
 
     def test_string_alternative_source_is_rejected(self):
         with pytest.raises(TypeError, match="must be a"):
-            PlotBuilder().add_alternative_source("genes.h5ad", name="genes")
+            builder().add_alternative_source("genes.h5ad", name="genes")
 
     def test_path_source_is_accepted(self):
-        builder = PlotBuilder().set_source(Path("analysis.h5ad"), embedding="umap")
-        assert builder._calls[0].args == (Path("analysis.h5ad"),)
+        b = builder().set_source(Path("analysis.h5ad"), embedding="umap")
+        assert b._calls[0].args == (Path("analysis.h5ad"),)
 
 
 # ---------------------------------------------------------------------------
-# outputs
+# immutability -- the point of the whole exercise
 # ---------------------------------------------------------------------------
 
 
-class TestOutputs:
-    def test_column_is_injected(self):
-        output = Plot("S100A8").scatter()
-        assert output.terminal == "plot"
-        assert output.terminal_args == ("S100A8",)
+class TestImmutability:
+    def test_a_builder_config_call_returns_a_copy(self):
+        first = builder()
+        second = first.style(dot_size=1)
+        assert second is not first
+        assert first._calls == ()
+        assert len(second._calls) == 1
 
-    def test_column_is_injected_before_positional_args(self):
-        """violin('leiden') means (column=S100A8, group_by=leiden)."""
-        output = Plot("S100A8").violin("leiden")
-        assert output.terminal_args == ("S100A8", "leiden")
+    def test_a_plot_config_call_returns_a_copy(self):
+        first = plot("S100A8")
+        second = first.panel_size(2, 2)
+        assert second is not first
+        assert first._calls == ()
 
-    def test_explicit_column_wins(self):
-        output = Plot("S100A8").scatter(column="CST3")
-        assert output.terminal_args == ()
-        assert output.terminal_kwargs == {"column": "CST3"}
+    def test_into_and_dpi_return_copies(self):
+        b = builder()
+        assert b.into("genes") is not b
+        assert b._into == ()
+        p = plot("x")
+        assert p.dpi(300) is not p
+        assert p._dpi is None
 
-    def test_terminal_without_column_gets_none(self):
-        output = Plot(name="density").density(bins=12)
-        assert output.terminal == "plot_density"
-        assert output.terminal_args == ()
-        assert output.terminal_kwargs == {"bins": 12}
+    def test_a_plot_is_unaffected_by_later_builder_calls(self):
+        b = builder().panel_size(1, 1)
+        p = b.plot("S100A8")
+        b.panel_size(9, 9)  # discarded -- and must not reach p either
+        assert [c.args for c in p._builder._calls] == [(1, 1)]
 
-    def test_missing_column_is_an_error(self):
-        with pytest.raises(TypeError, match="no column"):
-            Plot(name="anonymous").scatter()
+    def test_divergent_builders_share_nothing(self):
+        base = builder().style(dot_size=1)
+        faceted = base.facet("AgeGroup")
+        assert [c.method for c in base._calls] == ["style"]
+        assert [c.method for c in faceted._calls] == ["style", "facet"]
 
-    def test_default_names(self):
-        plot = Plot("S100A8")
-        assert plot.scatter().name == "scatter"
-        assert plot.violin("leiden").name == "violin_leiden"
-        assert plot.ridgeline("coarse").name == "ridgeline_coarse"
+    def test_copies_share_the_job_session(self):
+        """builder.jobs_ must see what a derived builder created."""
+        base = builder()
+        assert base.facet("x")._session is base._session
+        assert base.plot("y")._builder._session is base._session
 
-    def test_duplicate_names_are_rejected(self):
-        plot = Plot("S100A8")
-        plot.violin("leiden")
-        with pytest.raises(ValueError, match="already has an output"):
-            plot.violin("leiden")
 
-    def test_explicit_name_disambiguates(self):
-        plot = Plot("S100A8")
-        plot.violin("leiden")
-        assert plot.violin("leiden", name="violin_again").name == "violin_again"
-
-    def test_file_names(self):
-        plot = Plot("S100A8")
-        assert plot.scatter().file_name("S100A8") == "S100A8_scatter.png"
-        assert plot.violin("leiden").file_name("S100A8") == "S100A8_violin_leiden.png"
-
-    def test_explicit_filename_is_used_verbatim(self):
-        output = Plot("S100A8").scatter(filename="custom.pdf")
-        assert output.file_name("ignored") == "custom.pdf"
-
-    def test_output_takes_its_own_config(self):
-        output = Plot("S100A8").ridgeline("leiden").unfacet()
-        assert isinstance(output, Output)
-        assert [c.method for c in output._calls] == ["unfacet"]
-
-    def test_generic_output_reaches_unwrapped_terminals(self):
-        output = Plot("S100A8").output("plot_moran_markers", min_moran=0.3)
-        assert output.terminal == "plot_moran_markers"
-        assert output.name == "moran_markers"
-
-    def test_generic_output_does_not_inject_the_column(self):
-        output = Plot("S100A8").output("plot_histogram", "CST3")
-        assert output.terminal_args == ("CST3",)
-
-    def test_generic_output_rejects_a_config_method(self):
-        with pytest.raises(ValueError, match="not a ScatterPlotter terminal"):
-            Plot("x").output("style", dot_size=1)
-
-    def test_stem_falls_back_to_the_column(self):
-        assert Plot("S100A8").stem == "S100A8"
-        assert Plot(("genes", "CST3")).stem == "CST3"
-        assert Plot("S100A8", name="custom").stem == "custom"
-
-    def test_stem_without_column_or_name_is_an_error(self):
-        with pytest.raises(ValueError, match="needs a name"):
-            _ = Plot().stem
+# ---------------------------------------------------------------------------
+# layout
+# ---------------------------------------------------------------------------
 
 
 class TestLayout:
     def test_into_composes_builder_then_plot(self):
-        builder = PlotBuilder(into="genes")
-        plot = builder.add(Plot("S100A8", into="markers"))
-        assert builder._out_dir(plot, Path("/out")) == Path("/out/genes/markers")
+        p = builder(into="genes").plot("S100A8", into="markers")
+        assert p._target("scatter", None) == Path(
+            "results/genes/markers/S100A8_scatter.png"
+        )
 
     def test_into_accepts_nested_paths(self):
-        builder = PlotBuilder().into("a/b")
-        assert builder._out_dir(Plot("x"), Path("/out")) == Path("/out/a/b")
+        p = builder().into("a/b").plot("x")
+        assert p._target("scatter", None) == Path("results/a/b/x_scatter.png")
+
+    def test_absolute_output_folders_are_left_alone(self):
+        """ppg2 has a mode for those; it is not ours to second-guess."""
+        p = PlotBuilder(output_folder="/srv/out").plot("x")
+        assert p._target("scatter", None) == Path("/srv/out/x_scatter.png")
 
     def test_no_implicit_facet_subdirectory(self):
         """Faceting is a plain recorded call; it must not move files around."""
-        builder = PlotBuilder()
-        plot = builder.add(Plot("S100A8").facet("leiden"))
-        assert builder._out_dir(plot, Path("/out")) == Path("/out")
+        p = builder().plot("S100A8").facet("leiden")
+        assert p._target("scatter", None) == Path("results/S100A8_scatter.png")
 
-    def test_add_returns_the_plot(self):
-        builder = PlotBuilder()
-        plot = Plot("S100A8")
-        assert builder.add(plot) is plot
-        assert builder.plots == [plot]
+    def test_explicit_filename_is_used_verbatim(self):
+        p = builder().plot("S100A8")
+        assert p._target("scatter", "custom.pdf") == Path("results/custom.pdf")
 
-    def test_add_rejects_non_plots(self):
-        with pytest.raises(TypeError, match="expected a Plot"):
-            PlotBuilder().add("S100A8")
+    def test_stem_falls_back_to_the_column(self):
+        assert plot("S100A8").stem == "S100A8"
+        assert plot(("genes", "CST3")).stem == "CST3"
+        assert plot("S100A8", name="custom").stem == "custom"
+
+    def test_stem_without_column_or_name_is_an_error(self):
+        with pytest.raises(ValueError, match="needs a name"):
+            _ = plot().stem
+
+
+class TestJobHandles:
+    def test_a_plot_without_terminals_has_no_jobs(self):
+        assert plot("x").jobs_ == []
+
+    def test_job_before_any_terminal_is_an_error(self):
+        with pytest.raises(AttributeError, match="no terminal"):
+            _ = plot("x").job_
+
+    def test_builder_jobs_are_empty_without_a_graph(self):
+        assert builder().jobs_ == []
 
 
 # ---------------------------------------------------------------------------
@@ -305,31 +313,26 @@ class TestReplay:
         plotter = _replay([_Call("facet", ("leiden",)), _Call("unfacet", ())], {})
         assert plotter._facet_variable is None
 
-    def test_builder_then_plot_then_output_order(self, data):
+    def test_builder_then_plot_order(self, data):
         """The documented merge order, end to end, without a pipegraph."""
-        builder = PlotBuilder().panel_size(1, 1).style(dot_size=2)
-        plot = builder.add(Plot("S100A8").panel_size(2, 2))
-        output = plot.scatter().panel_size(3, 3)
-        plotter = _replay(script(builder, plot, output, data), {})
-        assert plotter._fixed_panel_size == (3, 3)
+        b = builder().panel_size(1, 1).style(dot_size=2)
+        p = b.plot("S100A8").panel_size(2, 2)
+        plotter = _replay(script(b, p, data), {})
+        assert plotter._fixed_panel_size == (2, 2)
         assert plotter._dot_size == 2
 
-    def test_output_config_does_not_leak_to_siblings(self, data):
-        builder = PlotBuilder()
-        plot = builder.add(Plot("S100A8").facet("leiden"))
-        scatter = plot.scatter()
-        ridge = plot.ridgeline("leiden").unfacet()
-        assert _replay(script(builder, plot, scatter, data), {})._facet_variable
-        assert _replay(script(builder, plot, ridge, data), {})._facet_variable is None
+    def test_plot_config_does_not_leak_to_siblings(self, data):
+        b = builder()
+        p = b.plot("S100A8").facet("leiden")
+        assert _replay(script(b, p, data), {})._facet_variable
+        assert _replay(script(b, p.unfacet(), data), {})._facet_variable is None
 
     def test_a_recorded_script_renders(self, data):
         """Everything recorded is genuinely callable on a ScatterPlotter."""
-        builder = PlotBuilder().style(dot_size=2)
-        plot = builder.add(Plot("S100A8"))
-        output = plot.scatter()
-        plotter = _replay(script(builder, plot, output, data), {})
-        figure = getattr(plotter, output.terminal)(*output.terminal_args)
-        assert isinstance(figure, p9.ggplot)
+        b = builder().style(dot_size=2)
+        p = b.plot("S100A8")
+        plotter = _replay(script(b, p, data), {})
+        assert isinstance(plotter.plot("S100A8"), p9.ggplot)
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +381,7 @@ class TestEncoding:
     def test_functions_are_collected_for_invariants(self):
         walker = _Walker("prefix")
         walker.walk(a_filter, "where")
-        assert len(walker._functions) == 1
-        assert walker._functions[0][0].startswith("prefix::fn0::")
+        assert walker._functions == [a_filter]
 
     def test_partials_record_their_binding(self):
         encoded = encode(functools.partial(a_filter, 1, keyword=2))
@@ -441,10 +443,11 @@ class TestEncoding:
 
 class TestEncodingIsStable:
     def build(self, dot_size, transform=a_filter):
-        builder = PlotBuilder(base_size=15)
-        builder.set_source(Path("a.h5ad"), transform=transform)
-        builder.style(dot_size=dot_size)
-        return builder
+        return (
+            builder(base_size=15)
+            .set_source(Path("a.h5ad"), transform=transform)
+            .style(dot_size=dot_size)
+        )
 
     def parameters(self, builder):
         return json.dumps(encode_calls(builder._calls), sort_keys=True)
@@ -464,12 +467,12 @@ class TestEncodingIsStable:
         )
 
     def test_keyword_order_does_not_change_the_encoding(self):
-        first = PlotBuilder().style(dot_size=1, dot_alpha=0.5)
-        second = PlotBuilder().style(dot_alpha=0.5, dot_size=1)
+        first = builder().style(dot_size=1, dot_alpha=0.5)
+        second = builder().style(dot_alpha=0.5, dot_size=1)
         assert self.parameters(first) == self.parameters(second)
 
     def test_encoding_covers_builder_level_configuration(self):
         """The bug the old wrapper had: builder defaults must be hashed too."""
-        assert self.parameters(PlotBuilder().panel_size(4, 4)) != self.parameters(
-            PlotBuilder().panel_size(5, 5)
+        assert self.parameters(builder().panel_size(4, 4)) != self.parameters(
+            builder().panel_size(5, 5)
         )
