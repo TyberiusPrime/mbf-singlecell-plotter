@@ -563,7 +563,9 @@ def _make_terminal_method(terminal: str, fn):
 
 
 def _install_terminal_methods(cls):
-    names = {_output_name_for(terminal): fn for terminal, fn in TERMINAL_METHODS.items()}
+    names = {
+        _output_name_for(terminal): fn for terminal, fn in TERMINAL_METHODS.items()
+    }
     _check_no_shadowing(cls, names, "terminal")
     for terminal, fn in TERMINAL_METHODS.items():
         method = _make_terminal_method(terminal, fn)
@@ -698,8 +700,7 @@ class Plot(_Recorder):
 
     def _require_source(self, label: str) -> None:
         if not any(
-            call.method == "set_source"
-            for call in self._builder._calls + self._calls
+            call.method == "set_source" for call in self._builder._calls + self._calls
         ):
             raise ValueError(
                 f"{self._describe()}.{label}(): no data source - call "
@@ -746,7 +747,15 @@ class Plot(_Recorder):
             sort_keys=True,
         )
 
-        def generate(output_filename):
+        def generate(
+            output_filename,
+            args_resolved=args_resolved,
+            calls=calls,
+            dpi=dpi,
+            init_kwargs=init_kwargs,
+            kwargs_resolved=kwargs_resolved,
+            terminal=terminal,
+        ):
             output_filename.parent.mkdir(parents=True, exist_ok=True)
             plotter = _replay(calls, init_kwargs)
             figure = getattr(plotter, terminal)(*args_resolved, **kwargs_resolved)
@@ -756,7 +765,7 @@ class Plot(_Recorder):
         job.depends_on(builder_deps)
         job.depends_on(list(walker.deps) + walker.function_invariants())
         job.depends_on(ppg.ParameterInvariant(job_id + "_config", parameters))
-        #job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
+        # job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
         return job
 
     # -- misc --------------------------------------------------------------
@@ -829,9 +838,7 @@ class PlotBuilder(_Recorder):
         Nothing is created yet -- a job appears when a terminal (``scatter``,
         ``violin``, ...) is called on the result.
         """
-        return Plot(
-            self, column, name=name, into=into, dpi=dpi, **plotter_kwargs
-        )
+        return Plot(self, column, name=name, into=into, dpi=dpi, **plotter_kwargs)
 
     @property
     def jobs_(self) -> list:

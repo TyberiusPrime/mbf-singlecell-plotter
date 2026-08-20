@@ -377,7 +377,7 @@ class TestDependencies:
         # relative: pypipegraph2 refuses absolute paths as job ids
         path = Path("generated.h5ad")
 
-        def make_source(output_filename):
+        def make_source(output_filename, EXAMPLE_DATA=EXAMPLE_DATA):
             shutil.copy(EXAMPLE_DATA, output_filename)
 
         def build():
