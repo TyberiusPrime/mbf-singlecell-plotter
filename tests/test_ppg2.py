@@ -10,6 +10,7 @@ stay valid across pypipegraph2 versions.
 """
 
 import shutil
+import warnings
 from pathlib import Path
 
 import anndata
@@ -48,12 +49,13 @@ def h5ad(workdir):
 @pytest.fixture
 def graph(workdir):
     """An empty graph, for tests that only create jobs and never run them."""
-    ppg.new()
+    # explicit: ppg.new() otherwise reuses the previous test's run mode
+    ppg.new(run_mode=ppg.RunMode.CONSOLE)
 
 
 def run(build):
     """Create a fresh graph, let *build* populate it, and run it."""
-    ppg.new()
+    ppg.new(run_mode=ppg.RunMode.CONSOLE)
     result = build()
     ppg.run()
     return result
@@ -115,7 +117,7 @@ class TestJobCreation:
     def test_builder_jobs_reset_with_a_new_graph(self, h5ad, graph):
         builder = source(h5ad)
         builder.plot(CELL_TYPE_COLUMN).histogram()
-        ppg.new()
+        ppg.new(run_mode=ppg.RunMode.CONSOLE)
         assert builder.jobs_ == []
 
     def test_default_names(self, h5ad, graph):
@@ -200,39 +202,129 @@ class TestOutputPaths:
 
 
 class TestCollisions:
+    """Two different plots may not claim one file -- but see TestRedeclaration."""
+
     def test_two_terminals_writing_one_file_are_rejected(self, h5ad, graph):
         builder = source(h5ad)
         builder.plot(CELL_TYPE_COLUMN).histogram()
         with pytest.raises(ValueError, match="already produced by"):
-            builder.plot(CELL_TYPE_COLUMN).histogram()
+            builder.style(dot_size=3).plot(CELL_TYPE_COLUMN).histogram()
 
     def test_the_error_names_the_first_claimant(self, h5ad, graph):
         builder = source(h5ad)
         builder.plot(CELL_TYPE_COLUMN).histogram()
         with pytest.raises(ValueError, match=r"Plot\('leiden'\).histogram\(\) at"):
-            builder.plot(CELL_TYPE_COLUMN).histogram()
+            builder.style(dot_size=3).plot(CELL_TYPE_COLUMN).histogram()
 
     def test_a_filename_disambiguates(self, h5ad, graph):
         builder = source(h5ad)
         builder.plot(CELL_TYPE_COLUMN).histogram()
-        plot = builder.plot(CELL_TYPE_COLUMN).histogram(filename="other.png")
+        plot = builder.style(dot_size=3).plot(CELL_TYPE_COLUMN).histogram(
+            filename="other.png"
+        )
         assert names(plot) == ["other.png"]
 
     def test_a_name_disambiguates(self, h5ad, graph):
         builder = source(h5ad)
         builder.plot(CELL_TYPE_COLUMN).histogram()
-        plot = builder.plot(CELL_TYPE_COLUMN).histogram(name="again")
+        plot = builder.style(dot_size=3).plot(CELL_TYPE_COLUMN).histogram(name="again")
         assert names(plot) == [f"{CELL_TYPE_COLUMN}_again.png"]
 
     def test_separate_builders_collide_too(self, h5ad, graph):
         source(h5ad).plot(CELL_TYPE_COLUMN).histogram()
         with pytest.raises(ValueError, match="already produced by"):
-            source(h5ad).plot(CELL_TYPE_COLUMN).histogram()
+            source(h5ad, base_size=20).plot(CELL_TYPE_COLUMN).histogram()
 
     def test_a_new_graph_clears_the_claims(self, h5ad, graph):
         source(h5ad).plot(CELL_TYPE_COLUMN).histogram()
-        ppg.new()
-        source(h5ad).plot(CELL_TYPE_COLUMN).histogram()  # must not raise
+        ppg.new(run_mode=ppg.RunMode.CONSOLE)
+        source(h5ad, base_size=20).plot(CELL_TYPE_COLUMN).histogram()  # must not raise
+
+
+class TestRedeclaration:
+    """One graph, adjusted and re-run -- the interactive workflow."""
+
+    def test_an_identical_redeclaration_is_not_a_collision(self, h5ad, graph):
+        builder = source(h5ad)
+        builder.plot(CELL_TYPE_COLUMN).histogram()
+        builder.plot(CELL_TYPE_COLUMN).histogram()  # must not raise
+
+    def test_an_identical_redeclaration_yields_the_same_job(self, h5ad, graph):
+        builder = source(h5ad)
+        first = builder.plot(CELL_TYPE_COLUMN).histogram()
+        second = builder.plot(CELL_TYPE_COLUMN).histogram()
+        assert first.job_ is second.job_
+
+    def test_an_identical_redeclaration_does_not_multiply_jobs(self, h5ad, graph):
+        builder = source(h5ad)
+        builder.plot(CELL_TYPE_COLUMN).histogram()
+        builder.plot(CELL_TYPE_COLUMN).histogram()
+        assert len(builder.jobs_) == 1
+
+    def test_a_changed_redeclaration_warns_in_an_interactive_run_mode(self, h5ad):
+        ppg.new(run_mode=ppg.RunMode.NOTEBOOK)
+        try:
+            builder = source(h5ad)
+            builder.plot(CELL_TYPE_COLUMN).histogram()
+            with pytest.warns(UserWarning, match="Redefining it"):
+                builder.style(dot_size=3).plot(CELL_TYPE_COLUMN).histogram()
+        finally:
+            ppg.new(run_mode=ppg.RunMode.CONSOLE)
+
+    def test_an_identical_redeclaration_stays_quiet_in_a_notebook(self, h5ad):
+        ppg.new(run_mode=ppg.RunMode.NOTEBOOK)
+        try:
+            builder = source(h5ad)
+            builder.plot(CELL_TYPE_COLUMN).histogram()
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                builder.plot(CELL_TYPE_COLUMN).histogram()
+        finally:
+            ppg.new(run_mode=ppg.RunMode.CONSOLE)
+
+    def test_one_graph_can_be_declared_and_run_twice(self, h5ad, workdir):
+        """The interactive loop: same graph, same declarations, run again."""
+
+        def build(builder):
+            builder.plot(CELL_TYPE_COLUMN).histogram()
+            builder.plot("n_genes").histogram()
+
+        ppg.new(run_mode=ppg.RunMode.CONSOLE)
+        build(source(h5ad))
+        ppg.run()
+        targets = [
+            workdir / RESULTS / f"{CELL_TYPE_COLUMN}_histogram.png",
+            workdir / RESULTS / "n_genes_histogram.png",
+        ]
+        before = mtimes(*targets)
+
+        build(source(h5ad))  # same graph, re-declared
+        ppg.run()
+        assert mtimes(*targets) == before
+
+    def test_an_adjusted_plot_reruns_alone(self, h5ad, workdir):
+        """Adjust one plot in an interactive graph: only that file is rebuilt."""
+
+        def build(dot_size):
+            builder = source(h5ad)
+            builder.plot(CELL_TYPE_COLUMN).style(dot_size=dot_size).histogram()
+            builder.plot("n_genes").grid_histogram(column=CELL_TYPE_COLUMN)
+
+        ppg.new(run_mode=ppg.RunMode.NOTEBOOK)
+        try:
+            build(1)
+            ppg.run()
+            adjusted = workdir / RESULTS / f"{CELL_TYPE_COLUMN}_histogram.png"
+            untouched = workdir / RESULTS / "n_genes_grid_histogram.png"
+            before_adjusted, before_untouched = mtimes(adjusted, untouched)
+
+            with pytest.warns(UserWarning, match="Redefining it"):
+                build(3)
+            ppg.run()
+            assert mtimes(adjusted)[0] != before_adjusted
+            assert mtimes(untouched)[0] == before_untouched
+        finally:
+            ppg.new(run_mode=ppg.RunMode.CONSOLE)
 
 
 # ---------------------------------------------------------------------------

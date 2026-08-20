@@ -47,6 +47,12 @@ be wired into further dependencies::
     p1.jobs_        # [scatter job, grid_histogram job]
     p1.job_         # the grid_histogram job
 
+Declaring one file twice with the *same* configuration is not an error -- an
+interactive graph that is adjusted and re-run redeclares everything, and that has
+to go through untouched.  Two *differing* declarations of one file do collide:
+fatally in a strict run mode, with a warning in the interactive ones, following
+pypipegraph2's own policy on redefinition.
+
 Anything a recorded call receives ends up in the job's invariants:  ``Path``\\ s
 (and ``(Path, job)`` pairs) become file dependencies, callables become
 :class:`FunctionInvariant`\\ s, everything else is JSON-encoded into a single
@@ -60,6 +66,7 @@ import hashlib
 import inspect
 import json
 import sys
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple, Union
@@ -389,25 +396,60 @@ def _caller_location() -> str:
     return f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}"
 
 
-def _claim_output(graph, target: Path, description: str) -> None:
+@dataclass
+class _Recipe:
+    """One output file's replayable script, plus what it hashes to."""
+
+    parameters: str
+    calls: tuple
+    init_kwargs: dict
+    terminal: str
+    args: tuple
+    kwargs: dict
+    dpi: int
+    walker: "_Walker"
+    builder_deps: list
+
+
+@dataclass
+class _Claim:
+    """Who declared one output file, and what they declared."""
+
+    fingerprint: str
+    description: str
+
+
+def _claim_output(graph, target: Path, fingerprint: str, description: str) -> None:
     """Reserve one output path, or explain who took it first.
 
-    pypipegraph2 catches most of these itself (a redefined ParameterInvariant
-    raises in strict mode), but only after the fact and with a diff of two JSON
-    blobs; and two byte-identical declarations dedup silently.  The registry
-    lives on the graph, so builders that share an output directory collide too.
+    Re-declaring the *same* file with the *same* recipe is not a collision: it
+    is what an interactive session does when a graph is adjusted and re-run, and
+    pypipegraph2 deduplicates it silently.  Only a differing recipe is a real
+    conflict, and there this follows pypipegraph2's own redefinition policy --
+    fatal in a strict run mode, a warning in the interactive ones, where
+    redefining a plot is the whole point.
+
+    pypipegraph2 would eventually catch the strict case itself, through the
+    redefined ParameterInvariant, but only with a diff of two JSON blobs.  The
+    registry lives on the graph, so builders that share an output directory
+    collide too.
     """
     registry = getattr(graph, "_mbf_singlecell_plotter_outputs", None)
     if registry is None:
         registry = {}
         graph._mbf_singlecell_plotter_outputs = registry
     key = str(target)
-    if key in registry:
-        raise ValueError(
-            f"{key} is already produced by {registry[key]}.\n"
-            "Pass filename=... or name=... to disambiguate."
+    previous = registry.get(key)
+    if previous is not None and previous.fingerprint != fingerprint:
+        message = (
+            f"{key} is already produced by {previous.description}, with a "
+            "different configuration.\nPass filename=... or name=... to "
+            "disambiguate."
         )
-    registry[key] = description
+        if graph.run_mode.is_strict():
+            raise ValueError(message)
+        warnings.warn(f"{message}\nRedefining it ({graph.run_mode}).", stacklevel=3)
+    registry[key] = _Claim(fingerprint, description)
 
 
 class _Session:
@@ -421,7 +463,8 @@ class _Session:
         if self.graph is not graph:  # ppg.new() -- the old jobs are history
             self.graph = graph
             self.jobs = []
-        self.jobs.append(job)
+        if not any(known is job for known in self.jobs):  # re-declared, not new
+            self.jobs.append(job)
 
     def current(self, graph) -> list:
         return list(self.jobs) if self.graph is graph else []
@@ -684,10 +727,14 @@ class Plot(_Recorder):
         ppg, graph = _active_graph(f"{type(self).__name__}.{label}()")
         self._require_source(label)
         target = self._target(name, filename)
+        recipe = self._encode(ppg, graph, terminal, args, kwargs, target, dpi)
         _claim_output(
-            graph, target, f"{self._describe()}.{label}() at {_caller_location()}"
+            graph,
+            target,
+            recipe.parameters,
+            f"{self._describe()}.{label}() at {_caller_location()}",
         )
-        job = self._create_job(ppg, graph, terminal, args, kwargs, target, dpi)
+        job = self._create_job(ppg, target, recipe)
         self._builder._session.record(graph, job)
         new = self._copy()
         new._jobs = self._jobs + (job,)
@@ -707,7 +754,13 @@ class Plot(_Recorder):
                 "set_source() on the builder or on the plot first."
             )
 
-    def _create_job(self, ppg, graph, terminal, args, kwargs, target: Path, dpi):
+    def _encode(self, ppg, graph, terminal, args, kwargs, target: Path, dpi):
+        """Everything this file needs, and the fingerprint it hashes to.
+
+        Kept separate from job creation so the fingerprint is available before
+        the output path is claimed -- a re-declaration is only a collision when
+        the recipe actually differs.
+        """
         builder = self._builder
         job_id = str(target)
 
@@ -731,41 +784,52 @@ class Plot(_Recorder):
 
         if dpi is None:
             dpi = self._dpi if self._dpi is not None else builder._dpi
-        calls = tuple(builder_calls) + tuple(plot_calls)
-        args_resolved = tuple(args_resolved)
 
-        parameters = json.dumps(
-            {
-                "builder": builder_encoded,
-                "init": init_encoded,
-                "plot": plot_encoded,
-                "terminal": terminal,
-                "args": args_encoded,
-                "kwargs": kwargs_encoded,
-                "dpi": dpi,
-            },
-            sort_keys=True,
+        return _Recipe(
+            parameters=json.dumps(
+                {
+                    "builder": builder_encoded,
+                    "init": init_encoded,
+                    "plot": plot_encoded,
+                    "terminal": terminal,
+                    "args": args_encoded,
+                    "kwargs": kwargs_encoded,
+                    "dpi": dpi,
+                },
+                sort_keys=True,
+            ),
+            calls=tuple(builder_calls) + tuple(plot_calls),
+            init_kwargs=init_kwargs,
+            terminal=terminal,
+            args=tuple(args_resolved),
+            kwargs=kwargs_resolved,
+            dpi=dpi,
+            walker=walker,
+            builder_deps=builder_deps,
         )
 
-        def generate(
-            output_filename,
-            args_resolved=args_resolved,
-            calls=calls,
-            dpi=dpi,
-            init_kwargs=init_kwargs,
-            kwargs_resolved=kwargs_resolved,
-            terminal=terminal,
-        ):
+    def _create_job(self, ppg, target: Path, recipe: "_Recipe"):
+        job_id = str(target)
+        calls = recipe.calls
+        init_kwargs = recipe.init_kwargs
+        terminal = recipe.terminal
+        args = recipe.args
+        kwargs = recipe.kwargs
+        dpi = recipe.dpi
+
+        def generate(output_filename):
             output_filename.parent.mkdir(parents=True, exist_ok=True)
             plotter = _replay(calls, init_kwargs)
-            figure = getattr(plotter, terminal)(*args_resolved, **kwargs_resolved)
+            figure = getattr(plotter, terminal)(*args, **kwargs)
             figure.save(output_filename, dpi=dpi)
 
-        job = ppg.FileGeneratingJob(target, generate, depend_on_function=False)
-        job.depends_on(builder_deps)
-        job.depends_on(list(walker.deps) + walker.function_invariants())
-        job.depends_on(ppg.ParameterInvariant(job_id + "_config", parameters))
-        # job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
+        job = ppg.FileGeneratingJob(target, generate, depend_on_function=True)
+        job.depends_on(recipe.builder_deps)
+        job.depends_on(
+            list(recipe.walker.deps) + recipe.walker.function_invariants()
+        )
+        job.depends_on(ppg.ParameterInvariant(job_id + "_config", recipe.parameters))
+        job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
         return job
 
     # -- misc --------------------------------------------------------------
