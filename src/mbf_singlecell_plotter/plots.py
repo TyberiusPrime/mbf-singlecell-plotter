@@ -763,7 +763,9 @@ class ScatterPlotter:
             raise RuntimeError("No data source set — call set_source() first.")
         return self._data.get_column(name)
 
-    def add_alternative_source(self, source, name=None) -> "ScatterPlotter":
+    def add_alternative_source(
+        self, source, name=None, layer="X", transform=None
+    ) -> "ScatterPlotter":
         """Register a fallback source for column / gene lookup.
 
         When a name passed to :meth:`plot` or :meth:`get_column` is not found
@@ -778,6 +780,10 @@ class ScatterPlotter:
         specific source only.  Names must be unique among registered
         alternatives.
 
+        *layer* selects which expression matrix feature columns are read from
+        (``'X'`` → ``.X``, else ``.layers[layer]``).  *transform*, when given,
+        is a callable applied to each feature column read from this source.
+
         ``source`` may be an ``AnnData``, an :class:`H5adFacade`, a path to an
         ``.h5ad`` file (requires ``h5ad-inspect``), or another
         ``EmbeddingData``.  The plotter is immutable — a new copy is returned.
@@ -785,7 +791,9 @@ class ScatterPlotter:
         if self._data is None:
             raise RuntimeError("call .set_source() before .add_alternative_source()")
         new = copy.copy(self)
-        new._data = self._data.add_alternative_source(source, name=name)
+        new._data = self._data.add_alternative_source(
+            source, name=name, layer=layer, transform=transform
+        )
         return new
 
     def add_derived_source(
