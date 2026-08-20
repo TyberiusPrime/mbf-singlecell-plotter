@@ -797,7 +797,7 @@ class ScatterPlotter:
         return new
 
     def add_derived_source(
-        self, derived, name=None, layer="X", transform=None
+        self, derived, name=None
     ) -> "ScatterPlotter":
         """Register a computed (derived) source for column / gene lookup.
 
@@ -820,7 +820,7 @@ class ScatterPlotter:
             raise RuntimeError("call .set_source() before .add_derived_source()")
         new = copy.copy(self)
         new._data = self._data.add_derived_source(
-            derived, name=name, layer=layer, transform=transform
+            derived, name=name
         )
         return new
 
