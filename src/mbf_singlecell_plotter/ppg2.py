@@ -47,6 +47,29 @@ Both files become dependencies of every job built from that builder.  The
 embedding file is registered as an ordinary alternative source, so its ``obs``
 columns (clusters, QC metrics, ...) resolve under their plain names too.
 
+Interactive HTML exports
+------------------------
+``save_interactive_moran_grid`` / ``save_interactive_cluster_markers`` write
+their own file rather than returning a figure, so they are neither
+configuration nor a terminal.  They are recognised as *exports* and appear on
+:class:`Plot` without the ``save_`` prefix; the output path is the job's output
+file, and ``save_tsv=True`` simply makes the TSV a second output of the same
+job::
+
+    p = builder.plot("leiden")
+    p.interactive_cluster_markers(save_tsv=True)   # .html + .tsv, one job
+
+``plot_genes`` additionally declares a :class:`pypipegraph2.JobGeneratingJob`
+that waits for the export, reads the marker genes back out of the TSV (which it
+turns on) and plots each of them with *this* plot's configuration -- builder
+calls and plot calls alike, only the column swapped.  The genes are only known
+once the export has run, which is exactly what a job-generating job is for::
+
+    p.interactive_moran_grid(plot_genes=True)      # one scatter per gene
+    p.interactive_cluster_markers(                 # or spell it out
+        plot_genes=lambda gene: gene.into("markers").scatter().violin("leiden")
+    )
+
 Semantics
 ---------
 Replay order is ``builder calls -> plot calls``, exactly as if you had made
@@ -131,29 +154,43 @@ def _active_graph(what: str):
 
 # ── introspection of ScatterPlotter ──────────────────────────────────────────
 
-# Methods are classified purely by return annotation: '-> "ScatterPlotter"' is a
+# Methods are classified purely by their signature: '-> "ScatterPlotter"' is a
 # configuration step we can record and replay, '-> p9.ggplot' is a terminal that
-# produces one output file.  Adding either to plots.py needs no change here.
+# produces one output file, and '-> None' taking (column, output_path) is an
+# export -- a method that writes its own file (the interactive HTML views)
+# instead of handing back a figure.  Adding any of them to plots.py needs no
+# change here.
 
 
-def _classify(cls) -> Tuple[dict, dict]:
-    config, terminal = {}, {}
+def _classify(cls) -> Tuple[dict, dict, dict]:
+    config, terminal, export = {}, {}, {}
     for name, fn in inspect.getmembers(cls, inspect.isfunction):
         if name.startswith("_"):
             continue
-        annotation = str(inspect.signature(fn).return_annotation)
+        signature = inspect.signature(fn)
+        annotation = str(signature.return_annotation)
         if cls.__name__ in annotation:
             config[name] = fn
         elif "ggplot" in annotation:
             terminal[name] = fn
-    return config, terminal
+        elif annotation == "None" and list(signature.parameters)[1:3] == [
+            "column",
+            "output_path",
+        ]:
+            export[name] = fn
+    return config, terminal, export
 
 
-CONFIG_METHODS, TERMINAL_METHODS = _classify(ScatterPlotter)
+CONFIG_METHODS, TERMINAL_METHODS, EXPORT_METHODS = _classify(ScatterPlotter)
 
 # Terminal-level keywords that shadow nothing in any terminal signature; see
 # test_ppg2_core.py::test_reserved_output_kwargs_do_not_shadow_terminals.
 RESERVED_OUTPUT_KWARGS = ("name", "filename", "dpi")
+
+# The same for exports -- `dpi` is missing on purpose: it is a real argument of
+# the export methods (the resolution of the PNG embedded in the HTML), so it is
+# passed through to the call rather than consumed here.
+RESERVED_EXPORT_KWARGS = ("name", "filename", "plot_genes")
 
 # The methods that take a data source.  A source has to be a Path (or a
 # ``(Path, job)`` pair, or a job) so it can become a file dependency -- a plain
@@ -170,12 +207,18 @@ def _output_name_for(terminal: str) -> str:
     return "scatter" if terminal == "plot" else terminal[len("plot_") :]
 
 
+def _export_name_for(export: str) -> str:
+    """``save_interactive_moran_grid`` -> ``interactive_moran_grid``."""
+    return export[len("save_") :] if export.startswith("save_") else export
+
+
 def _first_param_is_column(fn) -> bool:
     params = list(inspect.signature(fn).parameters)
     return len(params) > 1 and params[1] == "column"
 
 
 _SELF = object()  # placeholder for the bound `self` during signature checks
+_OUTPUT = object()  # ... and for an export's output_path, which we supply
 
 
 # ── recorded calls ───────────────────────────────────────────────────────────
@@ -638,6 +681,131 @@ def _install_terminal_methods(cls):
     return cls
 
 
+# ── exports (self-writing outputs: the interactive HTML views) ───────────────
+
+
+def _default_gene_plot(plot: "Plot") -> None:
+    """The ``plot_genes=True`` hook: one scatter per marker gene."""
+    plot.scatter()  # ty: ignore - installed by _install_terminal_methods
+
+
+def _marker_genes(tsv_path) -> list:
+    """The marker genes of an export's TSV, deduplicated, best-ranked first."""
+    import pandas as pd
+
+    table = pd.read_csv(tsv_path, sep="\t")
+    if "gene" not in table.columns:  # pragma: no cover - only a changed writer
+        raise ValueError(
+            f"{tsv_path} has no 'gene' column, so the marker genes cannot be "
+            f"plotted (columns: {list(table.columns)})."
+        )
+    if "rank" in table.columns:
+        table = table.sort_values("rank", kind="stable")
+    return list(dict.fromkeys(table["gene"].dropna().astype(str)))
+
+
+def _generate_gene_plots(tsv_path, template: "Plot", hook) -> list:
+    """Replay *template* once per marker gene in *tsv_path*, through *hook*.
+
+    Runs inside a JobGeneratingJob, i.e. only once the export has written its
+    TSV -- which is why the genes cannot be known when the graph is declared.
+    """
+    genes = _marker_genes(tsv_path)
+    for gene in genes:
+        plot = template._copy()
+        plot.column = gene
+        plot._jobs = ()
+        hook(plot)
+    return genes
+
+
+def _make_export_method(export: str, fn):
+    default_name = _export_name_for(export)
+    signature = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, name=None, filename=None, plot_genes=None, **kwargs):
+        column = kwargs.pop("column", None)
+        if args:
+            if len(args) > 1:
+                raise TypeError(
+                    f"{type(self).__name__}.{default_name}(): only the column may "
+                    "be passed positionally - everything else is keyword-only, "
+                    "and the output file comes from name=/filename=."
+                )
+            if column is not None:
+                raise TypeError(
+                    f"{type(self).__name__}.{default_name}(): got two values for "
+                    "column."
+                )
+            column = args[0]
+        if column is None:
+            column = self.column
+        if column is None:
+            raise TypeError(
+                f"{type(self).__name__}.{default_name}(): this plot has no "
+                "column; pass column=... explicitly."
+            )
+        if "output_path" in kwargs:
+            raise TypeError(
+                f"{type(self).__name__}.{default_name}(): the output path is the "
+                "job's output file - name it with filename=... or name=..., not "
+                "with output_path=..."
+            )
+        try:
+            signature.bind(_SELF, column, _OUTPUT, **kwargs)
+        except TypeError as e:
+            raise TypeError(f"{type(self).__name__}.{default_name}(): {e}") from None
+        if not (
+            plot_genes is None or isinstance(plot_genes, bool) or callable(plot_genes)
+        ):
+            raise TypeError(
+                f"{type(self).__name__}.{default_name}(): plot_genes must be "
+                "True/False or a callable taking the gene's Plot - got "
+                f"{type(plot_genes).__name__}."
+            )
+        return self._build_export(
+            export,
+            column,
+            dict(kwargs),
+            name=default_name if name is None else name,
+            filename=filename,
+            plot_genes=plot_genes,
+        )
+
+    wrapper.__doc__ = (fn.__doc__ or "").rstrip() + (
+        "\n\n        Creates the pipegraph job for this file instead of writing it"
+        "\n        now; the plot's column is supplied automatically and the output"
+        "\n        path is the job's output file (name it with name=/filename=)."
+        "\n        With ``save_tsv=True`` the TSV is a second output of the same job."
+        "\n"
+        "\n        ``plot_genes`` adds a JobGeneratingJob that, once the export has"
+        "\n        run, plots every marker gene of the TSV (which it turns on) with"
+        "\n        this plot's own configuration -- builder calls and plot calls"
+        "\n        alike, only the column swapped. ``True`` makes one scatter per"
+        "\n        gene; a callable receives each gene's Plot and may call any"
+        "\n        terminals on it::"
+        "\n"
+        "\n            p.interactive_cluster_markers("
+        "\n                plot_genes=lambda gene: gene.into('genes').scatter()"
+        "\n            )"
+        "\n"
+        "\n        Returns a copy of the plot with .job_ and .jobs_ set."
+    )
+    return wrapper
+
+
+def _install_export_methods(cls):
+    names = {_export_name_for(export): fn for export, fn in EXPORT_METHODS.items()}
+    _check_no_shadowing(cls, names, "export")
+    for export, fn in EXPORT_METHODS.items():
+        method = _make_export_method(export, fn)
+        method.__qualname__ = f"{cls.__name__}.{_export_name_for(export)}"
+        setattr(cls, _export_name_for(export), method)
+    return cls
+
+
+@_install_export_methods
 @_install_terminal_methods
 @_install_config_methods
 class Plot(_Recorder):
@@ -730,6 +898,13 @@ class Plot(_Recorder):
         the shorthands this does *not* inject the plot's column.
         """
         if terminal not in TERMINAL_METHODS:
+            if terminal in EXPORT_METHODS or terminal in {
+                _export_name_for(e) for e in EXPORT_METHODS
+            }:
+                raise ValueError(
+                    f"{terminal!r} writes its own file rather than returning a "
+                    f"figure - call .{_export_name_for(terminal)}() directly."
+                )
             known = ", ".join(sorted(TERMINAL_METHODS))
             raise ValueError(f"{terminal!r} is not a ScatterPlotter terminal ({known})")
         signature = inspect.signature(TERMINAL_METHODS[terminal])
@@ -761,10 +936,13 @@ class Plot(_Recorder):
         new._jobs = self._jobs + (job,)
         return new
 
-    def _target(self, name: str, filename: Optional[str]) -> Path:
+    def _target(self, name: str, filename: Optional[str], suffix=".png") -> Path:
         builder = self._builder
         directory = builder.output_folder.joinpath(*builder._into, *self._into)
-        return directory / (filename if filename else f"{self.stem}_{name}.png")
+        return directory / (filename if filename else f"{self.stem}_{name}{suffix}")
+
+    def _resolved_dpi(self) -> int:
+        return self._dpi if self._dpi is not None else self._builder._dpi
 
     def _require_source(self, label: str) -> None:
         if not any(
@@ -859,6 +1037,92 @@ class Plot(_Recorder):
         job.depends_on(list(recipe.walker.deps) + recipe.walker.function_invariants())
         job.depends_on(ppg.ParameterInvariant(job_id + "_config", recipe.parameters))
         # job.depends_on(ppg.FunctionInvariant("mbf_scp_replay", _replay))
+        return job
+
+    # -- exports -----------------------------------------------------------
+
+    def _build_export(self, export, column, kwargs, *, name, filename, plot_genes):
+        """One HTML export (plus its TSV), and optionally its per-gene plots."""
+        label = _export_name_for(export)
+        ppg, graph = _active_graph(f"{type(self).__name__}.{label}()")
+        self._require_source(label)
+        target = self._target(name, filename, suffix=".html")
+        kwargs.setdefault("dpi", self._resolved_dpi())
+        if plot_genes:
+            kwargs["save_tsv"] = True  # the genes are read back from it
+        tsv = target.with_suffix(".tsv")
+        if kwargs.get("save_tsv") and tsv == target:
+            raise ValueError(
+                f"{self._describe()}.{label}(): save_tsv writes {tsv}, which is "
+                "the HTML file itself - give the output a non-.tsv filename."
+            )
+        recipe = self._encode(
+            ppg, graph, export, (column,), kwargs, target, kwargs["dpi"]
+        )
+        outputs = [target] + ([tsv] if kwargs.get("save_tsv") else [])
+        description = f"{self._describe()}.{label}() at {_caller_location()}"
+        for output in outputs:
+            _claim_output(graph, output, recipe.parameters, description)
+        job = self._create_export_job(ppg, outputs, recipe)
+        self._builder._session.record(graph, job)
+        new = self._copy()
+        new._jobs = self._jobs + (job,)
+        if plot_genes:
+            hook = _default_gene_plot if plot_genes is True else plot_genes
+            genes_job = self._create_gene_job(ppg, tsv, hook, job)
+            self._builder._session.record(graph, genes_job)
+            new._jobs = new._jobs + (genes_job,)
+        return new
+
+    def _create_export_job(self, ppg, outputs: list, recipe: "_Recipe"):
+        calls = recipe.calls
+        init_kwargs = recipe.init_kwargs
+        export = recipe.terminal
+        args_resolved = recipe.args
+        kwargs_resolved = recipe.kwargs
+
+        # as in _create_job: nothing may be read from the enclosing scope.
+        def generate(
+            output_filenames,
+            args_resolved=args_resolved,
+            calls=calls,
+            export=export,
+            init_kwargs=init_kwargs,
+            kwargs_resolved=kwargs_resolved,
+        ):
+            target = Path(output_filenames[0])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            plotter = _replay(calls, init_kwargs)
+            getattr(plotter, export)(*args_resolved, target, **kwargs_resolved)
+
+        job = ppg.MultiFileGeneratingJob(outputs, generate, depend_on_function=False)
+        job.depends_on(recipe.builder_deps)
+        job.depends_on(list(recipe.walker.deps) + recipe.walker.function_invariants())
+        job.depends_on(
+            ppg.ParameterInvariant(str(outputs[0]) + "_config", recipe.parameters)
+        )
+        return job
+
+    def _create_gene_job(self, ppg, tsv: Path, hook, export_job):
+        """A JobGeneratingJob that plots the export's marker genes.
+
+        The genes only exist once the export has run, so the plots cannot be
+        declared up front.  The template is this very plot -- builder script,
+        plot script, ``into``, ``dpi`` -- with the column swapped per gene, and
+        each generated plot goes through the ordinary job machinery, so it gets
+        its own invariants and output claim.
+        """
+        template = self._copy()
+        template._jobs = ()
+        template._name = None  # each gene names its own files
+
+        def callback(hook=hook, template=template, tsv=tsv):
+            _generate_gene_plots(tsv, template, hook)
+
+        job = ppg.JobGeneratingJob(
+            f"{tsv}::gene_plots", callback, depend_on_function=False
+        )
+        job.depends_on(export_job)
         return job
 
     # -- misc --------------------------------------------------------------

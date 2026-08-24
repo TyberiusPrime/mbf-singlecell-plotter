@@ -26,14 +26,12 @@ from mbf_singlecell_plotter.ppg2 import (
     _Walker,
 )
 
-# Public ScatterPlotter methods that are neither configuration nor a plot, and
-# so legitimately have no counterpart on the recorder.
+# Public ScatterPlotter methods that are neither configuration nor an output,
+# and so legitimately have no counterpart on the recorder.
 NON_PLOT_METHODS = {
     "get_cluster_markers",
     "get_column",
     "get_morans_i_markers",
-    "save_interactive_cluster_markers",
-    "save_interactive_moran_grid",
 }
 
 
@@ -72,11 +70,24 @@ class TestIntrospection:
             for name, _ in inspect.getmembers(ScatterPlotter, inspect.isfunction)
             if not name.startswith("_")
         }
-        classified = set(ppg2.CONFIG_METHODS) | set(ppg2.TERMINAL_METHODS)
+        classified = (
+            set(ppg2.CONFIG_METHODS)
+            | set(ppg2.TERMINAL_METHODS)
+            | set(ppg2.EXPORT_METHODS)
+        )
         assert public - classified - NON_PLOT_METHODS == set()
 
     def test_config_and_terminal_are_disjoint(self):
         assert not set(ppg2.CONFIG_METHODS) & set(ppg2.TERMINAL_METHODS)
+
+    def test_exports_are_their_own_category(self):
+        """A self-writing method is neither configuration nor a terminal."""
+        assert set(ppg2.EXPORT_METHODS) == {
+            "save_interactive_cluster_markers",
+            "save_interactive_moran_grid",
+        }
+        assert not set(ppg2.EXPORT_METHODS) & set(ppg2.CONFIG_METHODS)
+        assert not set(ppg2.EXPORT_METHODS) & set(ppg2.TERMINAL_METHODS)
 
     @pytest.mark.parametrize("cls", [PlotBuilder, Plot])
     def test_config_methods_are_installed(self, cls):
@@ -94,11 +105,26 @@ class TestIntrospection:
             signature = inspect.signature(ppg2.CONFIG_METHODS[method])
             assert list(signature.parameters)[1] == param
 
+    def test_export_shorthands_are_installed(self):
+        """The `save_` prefix is dropped -- the recorder saves nothing yet."""
+        for export in ppg2.EXPORT_METHODS:
+            assert callable(getattr(Plot, ppg2._export_name_for(export))), export
+        assert callable(Plot.interactive_moran_grid)
+        assert callable(Plot.interactive_cluster_markers)
+        assert not hasattr(PlotBuilder, "interactive_moran_grid")
+
     def test_reserved_output_kwargs_do_not_shadow_terminals(self):
         """name=/filename=/dpi= are ours; no terminal may claim them."""
         for terminal, fn in ppg2.TERMINAL_METHODS.items():
             params = set(inspect.signature(fn).parameters)
             assert not params & set(ppg2.RESERVED_OUTPUT_KWARGS), terminal
+
+    def test_reserved_export_kwargs_do_not_shadow_exports(self):
+        """name=/filename=/plot_genes= are ours; dpi= deliberately is not."""
+        for export, fn in ppg2.EXPORT_METHODS.items():
+            params = set(inspect.signature(fn).parameters)
+            assert not params & set(ppg2.RESERVED_EXPORT_KWARGS), export
+            assert "dpi" in params, export
 
     def test_generated_methods_do_not_shadow_our_own(self):
         """The guard that fires if plots.py grows an `into`/`dpi`/`plot`."""
@@ -108,6 +134,11 @@ class TestIntrospection:
     def test_docstrings_are_carried_over(self):
         assert "dot_size" in Plot.style.__doc__
         assert "Recorded, not executed" in Plot.style.__doc__
+
+    def test_export_docstrings_are_carried_over(self):
+        doc = Plot.interactive_cluster_markers.__doc__
+        assert "pseudobulk" in doc  # the ScatterPlotter docstring
+        assert "plot_genes" in doc  # ... and what the recorder adds
 
     def test_signature_is_carried_over(self):
         assert "dot_alpha" in inspect.signature(Plot.style).parameters
@@ -141,6 +172,35 @@ class TestRecording:
     def test_missing_column_fails_at_record_time(self):
         with pytest.raises(TypeError, match="no column"):
             plot(name="anonymous").scatter()
+
+    def test_unknown_export_keyword_fails_at_record_time(self):
+        with pytest.raises(TypeError, match="interactive_moran_grid"):
+            plot("x").interactive_moran_grid(nonsense=1)
+
+    def test_an_export_without_a_column_fails_at_record_time(self):
+        with pytest.raises(TypeError, match="no column"):
+            plot(name="anonymous").interactive_cluster_markers()
+
+    def test_an_export_output_path_is_rejected(self):
+        """The output path is the job's output file, not an argument."""
+        with pytest.raises(TypeError, match="filename="):
+            plot("x").interactive_moran_grid(output_path="out.html")
+
+    def test_only_the_column_may_be_positional_in_an_export(self):
+        with pytest.raises(TypeError, match="only the column"):
+            plot("x").interactive_moran_grid("leiden", "out.html")
+
+    def test_a_doubly_given_export_column_is_rejected(self):
+        with pytest.raises(TypeError, match="two values for column"):
+            plot("x").interactive_moran_grid("leiden", column="leiden")
+
+    def test_plot_genes_must_be_a_flag_or_a_callable(self):
+        with pytest.raises(TypeError, match="plot_genes"):
+            plot("x").interactive_cluster_markers(plot_genes="scatter")
+
+    def test_an_export_is_not_reachable_through_output(self):
+        with pytest.raises(ValueError, match="writes its own file"):
+            plot("x").output("save_interactive_moran_grid")
 
     def test_builder_init_kwargs_are_validated(self):
         assert builder(base_size=20).init_kwargs == {"base_size": 20}

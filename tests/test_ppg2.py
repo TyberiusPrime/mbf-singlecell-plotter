@@ -636,3 +636,207 @@ class TestReachability:
     def test_an_unwrapped_terminal_is_reachable(self, h5ad, workdir):
         run(lambda: source(h5ad).plot(name="cells").density(bins=8))
         assert (workdir / RESULTS / "cells_density.png").exists()
+
+
+# ---------------------------------------------------------------------------
+# exports: the interactive HTML views, which write their own file
+# ---------------------------------------------------------------------------
+
+
+CLUSTER_MARKERS = dict(k=2, min_cells_per_group=1)
+MORAN_GRID = dict(k=2, min_moran=0.0)
+
+
+def genes_of(tsv: Path) -> list:
+    """The marker genes an export wrote, deduplicated."""
+    return list(dict.fromkeys(pd.read_csv(tsv, sep="\t")["gene"]))
+
+
+class TestExports:
+    def test_an_export_creates_its_job(self, h5ad, graph):
+        plot = source(h5ad).plot(CELL_TYPE_COLUMN)
+        plot = plot.interactive_cluster_markers(**CLUSTER_MARKERS)
+        assert len(plot.jobs_) == 1
+        assert plot.job_.job_id.endswith(
+            f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.html"
+        )
+
+    def test_the_tsv_is_a_second_output_of_the_same_job(self, h5ad, graph):
+        plot = source(h5ad).plot("S100A8")
+        plot = plot.interactive_moran_grid(save_tsv=True, **MORAN_GRID)
+        assert [str(f) for f in plot.job_.files] == [
+            f"{RESULTS}/S100A8_interactive_moran_grid.html",
+            f"{RESULTS}/S100A8_interactive_moran_grid.tsv",
+        ]
+
+    def test_without_save_tsv_only_the_html_is_declared(self, h5ad, graph):
+        plot = source(h5ad).plot("S100A8").interactive_moran_grid(**MORAN_GRID)
+        assert len(plot.job_.files) == 1
+
+    def test_an_export_writes_its_files(self, h5ad, workdir):
+        run(
+            lambda: (
+                source(h5ad)
+                .plot(CELL_TYPE_COLUMN)
+                .interactive_cluster_markers(save_tsv=True, **CLUSTER_MARKERS)
+            )
+        )
+        out = workdir / RESULTS / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers"
+        assert "<html" in out.with_suffix(".html").read_text().lower()
+        assert genes_of(out.with_suffix(".tsv"))
+
+    def test_name_and_filename_are_honoured(self, h5ad, graph):
+        plot = source(h5ad).plot("S100A8")
+        assert names(
+            plot.interactive_moran_grid(name="markers", **MORAN_GRID),
+            plot.interactive_moran_grid(filename="explore.html", **MORAN_GRID),
+        ) == ["S100A8_markers.html", "explore.html"]
+
+    def test_an_explicit_column_stays_out_of_the_name(self, h5ad, graph):
+        """As for terminals: the file is named after the plot, not the argument."""
+        plot = source(h5ad).plot("S100A8")
+        plot = plot.interactive_cluster_markers(CELL_TYPE_COLUMN, **CLUSTER_MARKERS)
+        assert names(plot) == ["S100A8_interactive_cluster_markers.html"]
+
+    def test_the_builder_and_plot_configuration_reaches_the_export(self, h5ad, workdir):
+        run(
+            lambda: (
+                source(h5ad, into="html")
+                .style(dot_size=2)
+                .plot(CELL_TYPE_COLUMN, into="clusters")
+                .interactive_cluster_markers(**CLUSTER_MARKERS)
+            )
+        )
+        target = workdir / RESULTS / "html" / "clusters"
+        assert (
+            target / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.html"
+        ).exists()
+
+    def test_two_exports_writing_one_file_collide(self, h5ad, graph):
+        builder = source(h5ad)
+        builder.plot("S100A8").interactive_moran_grid(filename="x.html", **MORAN_GRID)
+        with pytest.raises(ValueError, match="already produced by"):
+            builder.plot("CST3").interactive_moran_grid(filename="x.html", **MORAN_GRID)
+
+    def test_the_tsv_collides_too(self, h5ad, graph):
+        """The second output is claimed like the first."""
+        builder = source(h5ad)
+        builder.plot("S100A8").interactive_moran_grid(
+            filename="x.html", save_tsv=True, **MORAN_GRID
+        )
+        with pytest.raises(ValueError, match="already produced by"):
+            builder.plot("S100A8").interactive_moran_grid(
+                filename="x.tsv", save_tsv=False, **MORAN_GRID
+            )
+
+    def test_an_export_without_a_source_is_rejected(self, graph):
+        with pytest.raises(ValueError, match="no data source"):
+            PlotBuilder(output_folder=RESULTS).plot("S100A8").interactive_moran_grid()
+
+    def test_an_export_without_a_graph_is_rejected(self, h5ad, monkeypatch):
+        monkeypatch.setattr(ppg, "global_pipegraph", None)
+        with pytest.raises(RuntimeError, match="needs an active graph"):
+            source(h5ad).plot("S100A8").interactive_moran_grid()
+
+    def test_a_changed_source_reruns_the_export(self, h5ad, workdir):
+        target = workdir / RESULTS / "S100A8_interactive_moran_grid.html"
+
+        def build():
+            source(h5ad).plot("S100A8").interactive_moran_grid(**MORAN_GRID)
+
+        run(build)
+        before = mtimes(target)
+        run(build)
+        assert mtimes(target) == before  # nothing changed: nothing re-ran
+
+        modified = anndata.read_h5ad(h5ad)
+        modified.obsm["X_umap"] = modified.obsm["X_umap"] + 100.0
+        modified.write_h5ad(h5ad)
+        run(build)
+        assert mtimes(target) != before
+
+
+class TestPlotGenes:
+    """The job-generating job that plots an export's marker genes."""
+
+    def test_the_gene_job_is_declared_next_to_the_export(self, h5ad, graph):
+        plot = source(h5ad).plot(CELL_TYPE_COLUMN)
+        plot = plot.interactive_cluster_markers(plot_genes=True, **CLUSTER_MARKERS)
+        export, genes = plot.jobs_
+        assert isinstance(genes, ppg.JobGeneratingJob)
+        assert plot.job_ is genes
+        assert export.job_id.endswith(".html:::" + str(export.files[1]))
+
+    def test_plot_genes_turns_the_tsv_on(self, h5ad, graph):
+        """The genes are read back from it, so it is not optional."""
+        plot = source(h5ad).plot("S100A8")
+        plot = plot.interactive_moran_grid(plot_genes=True, **MORAN_GRID)
+        assert [f.suffix for f in plot.jobs_[0].files] == [".html", ".tsv"]
+
+    def test_every_marker_gene_is_plotted(self, h5ad, workdir):
+        run(
+            lambda: (
+                source(h5ad)
+                .plot(CELL_TYPE_COLUMN)
+                .interactive_cluster_markers(plot_genes=True, **CLUSTER_MARKERS)
+            )
+        )
+        out = workdir / RESULTS
+        genes = genes_of(out / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.tsv")
+        assert genes
+        for gene in genes:
+            assert (out / f"{gene}_scatter.png").exists(), gene
+
+    def test_a_hook_may_do_anything_with_the_gene(self, h5ad, workdir):
+        def build():
+            source(h5ad).plot(CELL_TYPE_COLUMN).interactive_cluster_markers(
+                plot_genes=lambda gene: gene.into("markers").histogram(),
+                **CLUSTER_MARKERS,
+            )
+
+        run(build)
+        out = workdir / RESULTS
+        genes = genes_of(out / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.tsv")
+        for gene in genes:
+            assert (out / "markers" / f"{gene}_histogram.png").exists(), gene
+
+    def test_the_gene_plots_inherit_builder_and_plot_configuration(self, h5ad, workdir):
+        """Same script as the export -- only the column is swapped."""
+
+        def build():
+            (
+                source(h5ad, into="html")
+                .plot(CELL_TYPE_COLUMN, into="clusters")
+                .interactive_cluster_markers(plot_genes=True, **CLUSTER_MARKERS)
+            )
+
+        run(build)
+        out = workdir / RESULTS / "html" / "clusters"
+        genes = genes_of(out / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.tsv")
+        for gene in genes:
+            assert (out / f"{gene}_scatter.png").exists(), gene
+
+    def test_the_gene_plots_are_reachable_through_the_builder(self, h5ad, workdir):
+        """They are ordinary jobs, created inside the run."""
+        builder = source(h5ad)
+
+        def build():
+            builder.plot(CELL_TYPE_COLUMN).interactive_cluster_markers(
+                plot_genes=True, **CLUSTER_MARKERS
+            )
+
+        run(build)
+        created = [Path(job.job_id).name for job in builder.jobs_]
+        assert sum(name.endswith("_scatter.png") for name in created) > 0
+
+    def test_a_rerun_creates_nothing_new(self, h5ad, workdir):
+        def build():
+            source(h5ad).plot(CELL_TYPE_COLUMN).interactive_cluster_markers(
+                plot_genes=True, **CLUSTER_MARKERS
+            )
+
+        run(build)
+        before = {p: p.stat().st_mtime_ns for p in (workdir / RESULTS).glob("*")}
+        run(build)
+        after = {p: p.stat().st_mtime_ns for p in (workdir / RESULTS).glob("*")}
+        assert after == before
