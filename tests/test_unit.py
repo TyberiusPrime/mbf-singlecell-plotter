@@ -20,7 +20,7 @@ from mbf_singlecell_plotter import (
     map_to_integers,
     unmap,
 )
-from conftest import MULTI_DIGIT_COLUMN
+from conftest import CELL_TYPE_COLUMN, MULTI_DIGIT_COLUMN
 
 # The categorical obs column in the example data
 CAT_COL = "leiden"
@@ -2156,6 +2156,140 @@ class TestSourceRoutedEmbeddingPlotter:
         assert sp._data.embedding_source == "alt"
         coords = sp._data.coordinates()
         np.testing.assert_allclose(coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0)
+
+
+class TestSetEmbeddingSource:
+    """``set_embedding_source`` -- the one-call form of source routing."""
+
+    def test_coordinates_from_source_columns_from_primary(self, ad):
+        alt = _embedding_ad(ad, factor=1000.0)
+        data = EmbeddingData(ad, None).set_embedding_source(alt, "umap")
+        coords = data.coordinates()
+        np.testing.assert_allclose(coords["x"].values, ad.obsm["X_umap"][:, 0] + 1000.0)
+        assert coords.index.equals(ad.obs_names)
+        # the gene still resolves under its plain name, from the primary
+        series, name = data.get_column("S100A8")
+        assert name == "S100A8"
+        np.testing.assert_allclose(
+            series.values, EmbeddingData(ad, "umap").get_column("S100A8")[0].values
+        )
+
+    def test_equivalent_to_the_tuple_form(self, ad):
+        alt = _embedding_ad(ad, factor=1000.0)
+        short = EmbeddingData(ad, None).set_embedding_source(alt, "umap")
+        long = EmbeddingData(ad, ("alt", "umap")).add_alternative_source(
+            alt, name="alt"
+        )
+        pd.testing.assert_frame_equal(short.coordinates(), long.coordinates())
+
+    def test_source_columns_are_available_by_plain_name(self, ad):
+        """The embedding source is a normal alternative -- its obs comes along."""
+        alt = _embedding_ad(ad)
+        alt.obs["only_in_alt"] = np.arange(alt.n_obs, dtype=float)
+        primary = ad.copy()
+        del primary.obs[CELL_TYPE_COLUMN]
+        data = EmbeddingData(primary, None).set_embedding_source(alt, "umap")
+        series, name = data.get_column("only_in_alt")
+        assert name == "only_in_alt"
+        np.testing.assert_allclose(series.values, np.arange(ad.n_obs, dtype=float))
+
+    def test_tuple_embedding_inside_the_source(self, ad):
+        alt = _embedding_ad(ad, key="pca", factor=500.0)
+        data = EmbeddingData(ad, None).set_embedding_source(alt, ("pca", 0, 1))
+        coords = data.coordinates()
+        np.testing.assert_allclose(coords["x"].values, ad.obsm["X_pca"][:, 0] + 500.0)
+
+    def test_calling_again_replaces_the_default_registration(self, ad):
+        """Switching the embedding file is one edit, not a duplicate-name error."""
+        first = _embedding_ad(ad, factor=1000.0)
+        second = _embedding_ad(ad, factor=2000.0)
+        data = (
+            EmbeddingData(ad, None)
+            .set_embedding_source(first, "umap")
+            .set_embedding_source(second, "umap")
+        )
+        np.testing.assert_allclose(
+            data.coordinates()["x"].values, ad.obsm["X_umap"][:, 0] + 2000.0
+        )
+        assert len(data.alternative_sources) == 1
+
+    def test_named_source_is_addressable_and_unique(self, ad):
+        alt = _embedding_ad(ad)
+        alt.obs["only_in_alt"] = np.arange(alt.n_obs, dtype=float)
+        data = EmbeddingData(ad, None).set_embedding_source(alt, "umap", name="coords")
+        assert data.embedding_source == "coords"
+        series, _ = data.get_column(("coords", "only_in_alt"))
+        assert len(series) == ad.n_obs
+        with pytest.raises(ValueError, match="Duplicate alternative source name"):
+            data.set_embedding_source(alt, "umap", name="coords")
+
+    def test_a_named_source_does_not_replace_an_unrelated_one(self, ad):
+        alt = _embedding_ad(ad)
+        data = EmbeddingData(ad, None).add_alternative_source(alt, name="imputed")
+        data = data.set_embedding_source(_embedding_ad(ad, factor=2000.0), "umap")
+        assert {a.name for a in data.alternative_sources} == {
+            "imputed",
+            EmbeddingData.EMBEDDING_SOURCE_NAME,
+        }
+
+    def test_it_returns_a_copy(self, ad):
+        data = EmbeddingData(ad, "umap")
+        routed = data.set_embedding_source(_embedding_ad(ad), "umap")
+        assert routed is not data
+        assert data.embedding_source is None
+        assert data.alternative_sources == []
+
+
+class TestSetEmbedding:
+    def test_switches_the_embedding(self, ad):
+        data = EmbeddingData(ad, "umap").set_embedding(("pca", 0, 1))
+        np.testing.assert_allclose(
+            data.coordinates()["x"].values, ad.obsm["X_pca"][:, 0]
+        )
+
+    def test_unset_embedding_explains_itself(self, ad):
+        data = EmbeddingData(ad, None)
+        assert data.embedding_source is None
+        with pytest.raises(ValueError, match="set_embedding_source"):
+            data.coordinates()
+        with pytest.raises(ValueError, match="No embedding selected"):
+            _ = data.embedding
+
+    def test_missing_key_without_any_obsm_points_at_the_helper(self, ad):
+        bare = ad.copy()
+        for key in list(bare.obsm.keys()):
+            del bare.obsm[key]
+        with pytest.raises(KeyError, match="set_embedding_source"):
+            EmbeddingData(bare, "umap")
+
+    def test_missing_key_still_lists_what_is_there(self, ad):
+        with pytest.raises(KeyError, match="X_umap"):
+            EmbeddingData(ad, "nonexistent_embedding")
+
+
+class TestSetEmbeddingSourcePlotter:
+    def test_plotter_split_files(self, ad):
+        alt = _embedding_ad(ad, factor=1000.0)
+        plotter = (
+            ScatterPlotter()
+            .set_source(ad, embedding=None)
+            .set_embedding_source(alt, "umap")
+        )
+        p = plotter.plot("S100A8")
+        assert isinstance(p, p9.ggplot)
+        assert p.data["x"].mean() > 500  # from the alternative, not the primary
+
+    def test_set_embedding_on_the_plotter(self, ad):
+        plotter = ScatterPlotter().set_source(ad, "umap").set_embedding(("pca", 0, 1))
+        np.testing.assert_allclose(
+            plotter._data.coordinates()["x"].values, ad.obsm["X_pca"][:, 0]
+        )
+
+    def test_requires_a_source_first(self, ad):
+        with pytest.raises(RuntimeError, match="set_source"):
+            ScatterPlotter().set_embedding_source(ad, "umap")
+        with pytest.raises(RuntimeError, match="set_source"):
+            ScatterPlotter().set_embedding("umap")
 
 
 class TestSourceRoutedEmbeddingH5adFacade:

@@ -218,6 +218,10 @@ class EmbeddingData:
     # and readers can see it. Maps ``@computed_column`` lookup name → method attr.
     _computed_columns: Dict[str, str] = {}
 
+    #: Name :meth:`set_embedding_source` registers its source under when no
+    #: explicit one is given.  Reserved: a second call replaces it.
+    EMBEDDING_SOURCE_NAME = "__embedding__"
+
     def __init__(
         self,
         ad,
@@ -262,92 +266,11 @@ class EmbeddingData:
             derived_sources or [], existing_names=alt_names
         )
 
-        # Resolve embedding.  Accepted forms:
-        #   "umap"                        primary source .obsm key
-        #   ("pca", 0, 1)                 primary source .obsm key + two columns
-        #   (source_name, "umap")         named alternative source .obsm key
-        #   (source_name, ("pca", 0, 1))  named alternative source + two columns
-        #
-        # The source-routed 2-tuple forms are resolved LAZILY: the named
-        # alternative source is usually registered via add_alternative_source()
-        # *after* construction, so its .obsm keys cannot be validated here.
-        # Validation (and the obsm read) happens on first coordinates()/embedding
-        # access — see _embedding_source_ad() / _resolve_obsm_key().
+        self._embedding: Optional[str] = None
+        self._embedding_cols: Optional[tuple[int, int]] = None
         self._embedding_source: Optional[str] = None
         self._embedding_raw_key: Optional[str] = None
-        if isinstance(embedding, tuple):
-            if len(embedding) == 2 and isinstance(embedding[0], str):
-                # Source-routed embedding — pull the array from a named
-                # alternative source instead of the primary .obsm.
-                source_name, inner = embedding
-                if isinstance(inner, str):
-                    self._embedding_source = source_name
-                    self._embedding_raw_key = inner
-                    self._embedding = None
-                    self._embedding_cols: Optional[tuple[int, int]] = None
-                elif isinstance(inner, tuple):
-                    if (
-                        len(inner) != 3
-                        or not isinstance(inner[0], str)
-                        or not isinstance(inner[1], int)
-                        or not isinstance(inner[2], int)
-                    ):
-                        raise ValueError(
-                            "Source-routed tuple embedding must be "
-                            "(source_name, (key, col1, col2)), e.g. "
-                            "('ad2', ('pca', 0, 1)); got " + repr(inner)
-                        )
-                    key_raw, c1, c2 = inner
-                    self._embedding_source = source_name
-                    self._embedding_raw_key = key_raw
-                    self._embedding = None
-                    self._embedding_cols = (c1, c2)
-                else:
-                    raise ValueError(
-                        "Source-routed embedding must be (source_name, key) or "
-                        "(source_name, (key, col1, col2)); the second element "
-                        "must be a str or 3-tuple, got "
-                        f"{type(inner).__name__}"
-                    )
-            elif len(embedding) == 3:
-                # Primary source — check tuple BEFORE string concatenation.
-                key_raw, c1, c2 = embedding
-                if key_raw in ad.obsm:
-                    key = key_raw
-                elif "X_" + key_raw in ad.obsm:
-                    key = "X_" + key_raw
-                else:
-                    raise KeyError(
-                        f"Embedding {key_raw!r} not found in ad.obsm. Available: "
-                        + ", ".join(sorted(ad.obsm.keys()))
-                    )
-                self._embedding = key
-                self._embedding_cols = (c1, c2)
-            else:
-                raise ValueError(
-                    "Tuple embedding must be (key, col1, col2) for the primary "
-                    "source, or (source_name, key) / "
-                    "(source_name, (key, col1, col2)) to pull the embedding from "
-                    "a named alternative source"
-                )
-        elif isinstance(embedding, str):
-            if embedding in ad.obsm:
-                self._embedding = embedding
-            elif "X_" + embedding in ad.obsm:
-                self._embedding = "X_" + embedding
-            else:
-                raise KeyError(
-                    f"Embedding {embedding!r} not found in ad.obsm. Available: "
-                    + ", ".join(sorted(ad.obsm.keys()))
-                )
-            self._embedding_cols = None
-        else:
-            raise ValueError(
-                "embedding must be a string, a (key, col1, col2) tuple, or a "
-                "(source_name, key) / (source_name, (key, col1, col2)) tuple "
-                "to source the embedding from a named alternative; got "
-                f"{type(embedding).__name__}"
-            )
+        self._apply_embedding_spec(embedding)
         self._focus: Optional[tuple[float, float, float, float]] = (
             None  # (x_min, x_max, y_min, y_max)
         )
@@ -387,6 +310,170 @@ class EmbeddingData:
             setattr(new, "_" + k, v)
         return new
 
+    def _apply_embedding_spec(self, embedding) -> None:
+        """Resolve *embedding* into the four private embedding attributes.
+
+        Accepted forms:
+
+        * ``"umap"``                        primary source ``.obsm`` key
+        * ``("pca", 0, 1)``                 primary ``.obsm`` key + two columns
+        * ``(source_name, "umap")``         named alternative source ``.obsm`` key
+        * ``(source_name, ("pca", 0, 1))``  named alternative source + two columns
+        * ``None``                          no embedding yet — pick one later with
+          :meth:`set_embedding` or :meth:`set_embedding_source`; anything that
+          needs coordinates raises until then.
+
+        The source-routed 2-tuple forms are resolved LAZILY: the named
+        alternative source is usually registered via add_alternative_source()
+        *after* construction, so its .obsm keys cannot be validated here.
+        Validation (and the obsm read) happens on first coordinates()/embedding
+        access — see _embedding_source_ad() / _resolve_obsm_key().
+        """
+        ad = self.ad
+        self._embedding = None
+        self._embedding_cols = None
+        self._embedding_source = None
+        self._embedding_raw_key = None
+        if embedding is None:
+            return
+        if isinstance(embedding, tuple):
+            if len(embedding) == 2 and isinstance(embedding[0], str):
+                # Source-routed embedding — pull the array from a named
+                # alternative source instead of the primary .obsm.
+                source_name, inner = embedding
+                if isinstance(inner, str):
+                    self._embedding_source = source_name
+                    self._embedding_raw_key = inner
+                elif isinstance(inner, tuple):
+                    if (
+                        len(inner) != 3
+                        or not isinstance(inner[0], str)
+                        or not isinstance(inner[1], int)
+                        or not isinstance(inner[2], int)
+                    ):
+                        raise ValueError(
+                            "Source-routed tuple embedding must be "
+                            "(source_name, (key, col1, col2)), e.g. "
+                            "('ad2', ('pca', 0, 1)); got " + repr(inner)
+                        )
+                    key_raw, c1, c2 = inner
+                    self._embedding_source = source_name
+                    self._embedding_raw_key = key_raw
+                    self._embedding_cols = (c1, c2)
+                else:
+                    raise ValueError(
+                        "Source-routed embedding must be (source_name, key) or "
+                        "(source_name, (key, col1, col2)); the second element "
+                        "must be a str or 3-tuple, got "
+                        f"{type(inner).__name__}"
+                    )
+            elif len(embedding) == 3:
+                # Primary source — check tuple BEFORE string concatenation.
+                key_raw, c1, c2 = embedding
+                self._embedding = self._resolve_primary_obsm_key(ad, key_raw)
+                self._embedding_cols = (c1, c2)
+            else:
+                raise ValueError(
+                    "Tuple embedding must be (key, col1, col2) for the primary "
+                    "source, or (source_name, key) / "
+                    "(source_name, (key, col1, col2)) to pull the embedding from "
+                    "a named alternative source"
+                )
+        elif isinstance(embedding, str):
+            self._embedding = self._resolve_primary_obsm_key(ad, embedding)
+        else:
+            raise ValueError(
+                "embedding must be a string, a (key, col1, col2) tuple, a "
+                "(source_name, key) / (source_name, (key, col1, col2)) tuple "
+                "to source the embedding from a named alternative, or None to "
+                f"choose one later; got {type(embedding).__name__}"
+            )
+
+    @staticmethod
+    def _resolve_primary_obsm_key(ad, key_raw: str) -> str:
+        """``"umap"`` → ``"X_umap"``, or a pointed KeyError listing what is there.
+
+        The error names :meth:`set_embedding_source` as well: an expression
+        matrix that carries no ``obsm`` at all is the normal case when the
+        embedding lives in a second file.
+        """
+        if key_raw in ad.obsm:
+            return key_raw
+        if "X_" + key_raw in ad.obsm:
+            return "X_" + key_raw
+        available = ", ".join(sorted(ad.obsm.keys()))
+        raise KeyError(
+            f"Embedding {key_raw!r} not found in ad.obsm. Available: {available}"
+            + (
+                ". This source has no embeddings at all - if the embedding "
+                "lives in another file, use set_embedding_source(other, "
+                f"{key_raw!r}) instead."
+                if not available
+                else ""
+            )
+        )
+
+    def set_embedding(self, embedding) -> "EmbeddingData":
+        """Return a copy plotted on a different embedding.
+
+        *embedding* takes the same forms as the constructor's argument —
+        including the source-routed ``(source_name, key)`` tuple and ``None``
+        to unset it.  The sources themselves are untouched, so this only
+        changes which coordinates the cells are drawn at.
+        """
+        new = copy.copy(self)
+        new._apply_embedding_spec(embedding)
+        return new
+
+    def set_embedding_source(
+        self,
+        source: Any,
+        embedding="umap",
+        name: Optional[str] = None,
+        layer: str = "X",
+        transform: Optional[Callable[["np.ndarray"], "np.ndarray"]] = None,
+    ) -> "EmbeddingData":
+        """Return a copy taking its embedding from *source* — a second file.
+
+        The one-call form of the source-routed embedding: it registers *source*
+        as an alternative source and points the embedding at it, so the primary
+        source stays the expression matrix and columns keep resolving under
+        their plain names (``"S100A8"``, not ``("coords", "S100A8")``)::
+
+            data = EmbeddingData(expression_ad, embedding=None)
+            data = data.set_embedding_source(coords_ad, "umap")
+
+        *embedding* is a key in *source*'s ``obsm`` (``"umap"`` finds
+        ``"X_umap"``), or a ``(key, col1, col2)`` tuple to pick two columns of
+        one array.  Coordinates are reindexed onto the primary ``obs_names``
+        like any alternative-source column: extra cells are dropped, primary
+        cells the source does not know become ``NaN``.
+
+        Because *source* is registered as an ordinary alternative, its ``obs``
+        columns (cluster labels, QC metrics, ...) also become available to
+        :meth:`get_column` under their plain names.
+
+        *name* is the name the source is registered under, for explicit
+        ``(name, column)`` routing; it defaults to
+        :attr:`EMBEDDING_SOURCE_NAME` and calling this again replaces that
+        default registration rather than colliding with it — switching
+        embedding file is one edit in one place.  An explicit *name* must be
+        unused, exactly as in :meth:`add_alternative_source`.  *layer* and
+        *transform* are passed through to the registration.
+        """
+        replaceable = name is None
+        name = self.EMBEDDING_SOURCE_NAME if name is None else name
+        new = self
+        if replaceable:
+            kept = [a for a in self._alternative_sources if a.name != name]
+            if len(kept) != len(self._alternative_sources):
+                new = copy.copy(self)
+                new._alternative_sources = kept
+        new = new.add_alternative_source(
+            source, name=name, layer=layer, transform=transform
+        )
+        return new.set_embedding((name, embedding))
+
     @property
     def embedding(self) -> str:
         """The resolved obsm key backing this embedding (e.g. ``"X_umap"``).
@@ -394,12 +481,24 @@ class EmbeddingData:
         For a source-routed embedding — ``EmbeddingData(ad, (source, key))`` —
         the key is resolved lazily against the named alternative source on
         first access (sources are registered after construction).  Raises
-        ``KeyError`` if that source is not registered or lacks the key.
+        ``KeyError`` if that source is not registered or lacks the key, and
+        ``ValueError`` if no embedding has been chosen at all.
         """
         if self._embedding is not None:
             return self._embedding
+        self._require_embedding()
         # Source-routed — resolve the obsm key lazily.
         return self._resolved_source_embedding()[1]
+
+    def _require_embedding(self) -> None:
+        """Raise unless an embedding has been chosen (see :meth:`set_embedding`)."""
+        if self._embedding is None and self._embedding_source is None:
+            raise ValueError(
+                "No embedding selected. Pass embedding=... (e.g. "
+                "set_source(ad, embedding='umap')), or - when the coordinates "
+                "live in a different file than the expression matrix - "
+                "set_embedding_source(coords_file, 'umap')."
+            )
 
     @property
     def embedding_source(self) -> Optional[str]:
@@ -1212,6 +1311,7 @@ class EmbeddingData:
         :meth:`get_column`'s alignment behaviour (extra cells dropped, primary
         cells absent from the source → ``NaN`` coordinates).
         """
+        self._require_embedding()
         src_ad = self._embedding_source_ad()
         if self._embedding_source is None:
             key = self._embedding

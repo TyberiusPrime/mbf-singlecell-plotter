@@ -61,10 +61,39 @@ plotter.set_source(ad_or_data, embedding="umap", layer='X', transform=lambda x: 
 plotter.set_source(ad, embedding=("pca", 0, 1))
 ```
 
-You can also pull the **embedding from a different (named alternative) source**
-than the primary one — e.g. gene expression from `ad` but the UMAP
-coordinates from a second `ad2`. Use a `(source_name, embedding)` tuple,
-paralleling `(source_name, column)` column routing:
+#### Embedding from a different file
+
+When the expression matrix and the embedding live in **two different files**,
+keep the expression file as the primary source and name the other one with
+`set_embedding_source` — every column then keeps its plain name:
+
+```python
+plotter = (
+    ScatterPlotter()
+    .set_source("expression.h5ad", embedding=None)   # no embedding in here
+    .set_embedding_source("coordinates.h5ad", "umap")
+)
+plotter.plot("S100A8")        # not ("coordinates", "S100A8")
+plotter.plot("leiden")        # obs of the coordinates file, also plain
+```
+
+`embedding=None` means "choose one later"; anything that needs coordinates
+raises until you do. The embedding source is registered as an ordinary
+alternative source, so its `obs` columns are available under their plain names
+too, and its coordinates are reindexed onto the primary `obs_names` (extra
+cells dropped, primary cells it does not know become `NaN`).
+
+`set_embedding_source(source, embedding="umap", name=None, layer="X",
+transform=None)` accepts the same sources as `add_alternative_source`, and the
+same embedding forms as `set_source` — a bare key (`"umap"`) or a column tuple
+(`("pca", 0, 1)`). Calling it again replaces the previous embedding source, so
+switching files stays a single edit. Pass `name=` to register it under a name
+of your own (then it must be unused, and `(name, column)` routing works).
+
+`set_embedding(embedding)` swaps only the embedding, leaving the sources alone.
+
+Under the hood this is the **source-routed embedding** tuple, which you can
+also write out by hand:
 ```python
 plotter = (
     ScatterPlotter()
@@ -73,9 +102,6 @@ plotter = (
 )
 plotter.plot("S100A8")  # expression from ad, points placed via ad2's UMAP
 ```
-The inner spec accepts the same forms as the primary embedding — a bare key
-(`"umap"`) or a column tuple (`("pca", 0, 1)`). Coordinates are reindexed onto
-the primary `obs_names`, exactly like alternative-source columns.
 
 Layer within the data source (ad.layer['xyz']) can be chosen via `layer`, 'X' means the .X
 instead of ad.layer['X']!
@@ -578,7 +604,7 @@ from mbf_singlecell_plotter import EmbeddingData, ColumnData
 ```python
 data = EmbeddingData(
     ad,                             # anndata.AnnData
-    embedding="umap",               # str key in ad.obsm, or ("pca", col1, col2) tuple
+    embedding="umap",               # str key in ad.obsm, ("pca", col1, col2) tuple, or None
     alternative_id_column=None,     # ad.var column to use as a secondary gene lookup key
     alternative_sources=None,       # list of fallback AnnData/H5adFacade/path sources
     grid_size=12,                   # cells per axis (max 26)
@@ -597,10 +623,17 @@ data = EmbeddingData(
    resolved lazily, so it can be registered after construction. Coordinates
    are reindexed onto the primary `obs_names`.
 
+5. `None` — no embedding yet. Pick one later with `set_embedding(spec)`, or
+   point at another file with `set_embedding_source(...)`; anything that needs
+   coordinates raises until then.
+
 ```python
 # embedding from ad2, expression/obs still resolved from the primary ad
 data = EmbeddingData(ad, ("ad2", "umap")).add_alternative_source(ad2, name="ad2")
 data.embedding_source  # → "ad2"
+
+# the same thing in one call — registers ad2 *and* routes the embedding to it
+data = EmbeddingData(ad, None).set_embedding_source(ad2, "umap")
 ```
 
 ```python

@@ -169,6 +169,15 @@ class TestRecording:
         with pytest.raises(TypeError, match="must be a"):
             builder().add_alternative_source("genes.h5ad", name="genes")
 
+    def test_string_embedding_source_is_rejected(self):
+        with pytest.raises(TypeError, match="must be a"):
+            builder().set_embedding_source("coordinates.h5ad", "umap")
+
+    def test_path_embedding_source_is_accepted(self):
+        b = builder().set_source(Path("expression.h5ad"), embedding=None)
+        b = b.set_embedding_source(Path("coordinates.h5ad"), "umap")
+        assert b._calls[-1].args == (Path("coordinates.h5ad"), "umap")
+
     def test_path_source_is_accepted(self):
         b = builder().set_source(Path("analysis.h5ad"), embedding="umap")
         assert b._calls[0].args == (Path("analysis.h5ad"),)

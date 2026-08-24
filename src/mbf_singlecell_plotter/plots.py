@@ -712,7 +712,7 @@ class ScatterPlotter:
     def set_source(
         self,
         ad_or_data,
-        embedding: str = "umap",
+        embedding: Union[str, tuple, None] = "umap",
         alternative_id_column=None,
         layer: str = "X",
         transform: Optional[Callable[["np.ndarray"], "np.ndarray"]] = None,
@@ -722,7 +722,20 @@ class ScatterPlotter:
         Constructs an EmbeddingData from the anndata/h5ad file,
         passing in alternative_id_column, layer, and transform if provided.
 
+        *embedding* is an ``obsm`` key of this source (``"umap"`` finds
+        ``"X_umap"``), a ``(key, col1, col2)`` tuple to pick two columns of one
+        array, a ``(source_name, key)`` tuple to read it from a named
+        alternative source instead, or ``None`` to choose it later.  When the
+        coordinates live in a *different file* than the expression matrix, keep
+        that file the primary source and follow up with
+        :meth:`set_embedding_source` — then columns still resolve under their
+        plain names::
 
+            plotter = (
+                ScatterPlotter()
+                .set_source("expression.h5ad", embedding=None)
+                .set_embedding_source("coordinates.h5ad", "umap")
+            )
         """
         new = copy.copy(self)
         if isinstance(ad_or_data, EmbeddingData):
@@ -749,6 +762,65 @@ class ScatterPlotter:
                 transform=transform,
                 layer=layer,
             )
+        new._boundary_cache = {"df": None}
+        return new
+
+    def set_embedding(self, embedding) -> "ScatterPlotter":
+        """Plot on a different embedding, leaving the sources untouched.
+
+        *embedding* takes the same forms as :meth:`set_source`'s argument.
+        The plotter is immutable — a new copy is returned.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .set_embedding()")
+        new = copy.copy(self)
+        new._data = self._data.set_embedding(embedding)
+        new._boundary_cache = {"df": None}
+        return new
+
+    def set_embedding_source(
+        self,
+        source,
+        embedding="umap",
+        name=None,
+        layer="X",
+        transform=None,
+    ) -> "ScatterPlotter":
+        """Take the embedding from *source* while the primary source stays put.
+
+        For the common split where one file holds the expression matrix and
+        another the coordinates (plus the ``obs`` annotation that goes with
+        them).  Keep the expression file as the primary source, name the other
+        one here, and every column keeps its plain name::
+
+            plotter = (
+                ScatterPlotter()
+                .set_source("expression.h5ad", embedding=None)
+                .set_embedding_source("coordinates.h5ad", "umap")
+            )
+            plotter.plot("S100A8")          # not ("coordinates", "S100A8")
+
+        *source* may be an ``AnnData``, an :class:`H5adFacade`, a path to an
+        ``.h5ad`` file, or another ``EmbeddingData``; it is registered as an
+        alternative source, so its ``obs`` columns are available to
+        :meth:`plot` / :meth:`get_column` under their plain names too.
+        Coordinates are reindexed onto the primary ``obs_names`` (extra cells
+        dropped, primary cells missing from *source* → ``NaN``).
+
+        *embedding* is an ``obsm`` key of *source* (or a ``(key, col1, col2)``
+        tuple).  *name* is the name the source is registered under (default:
+        a reserved one, which a second call replaces — so switching embedding
+        file stays a single edit).  *layer* and *transform* apply to feature
+        columns read from *source*.
+
+        The plotter is immutable — a new copy is returned.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .set_embedding_source()")
+        new = copy.copy(self)
+        new._data = self._data.set_embedding_source(
+            source, embedding, name=name, layer=layer, transform=transform
+        )
         new._boundary_cache = {"df": None}
         return new
 

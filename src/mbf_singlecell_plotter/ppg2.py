@@ -30,6 +30,23 @@ leaking settings into the next.
 
     jobs = builder.jobs_              # everything created from this builder
 
+Expression and embedding in different files
+-------------------------------------------
+Keep the *expression* file as the primary source and name the file holding the
+coordinates with ``set_embedding_source`` -- then every column keeps its plain
+name, and swapping either file is one edit::
+
+    builder = (
+        PlotBuilder(output_folder="results/plots")
+        .set_source(Path("expression.h5ad"), embedding=None)
+        .set_embedding_source(Path("coordinates.h5ad"), "umap")
+    )
+    builder.plot("S100A8").scatter()      # not ("coordinates", "S100A8")
+
+Both files become dependencies of every job built from that builder.  The
+embedding file is registered as an ordinary alternative source, so its ``obs``
+columns (clusters, QC metrics, ...) resolve under their plain names too.
+
 Semantics
 ---------
 Replay order is ``builder calls -> plot calls``, exactly as if you had made
@@ -138,10 +155,14 @@ CONFIG_METHODS, TERMINAL_METHODS = _classify(ScatterPlotter)
 # test_ppg2_core.py::test_reserved_output_kwargs_do_not_shadow_terminals.
 RESERVED_OUTPUT_KWARGS = ("name", "filename", "dpi")
 
-# The two methods that take a data source.  A source has to be a Path (or a
+# The methods that take a data source.  A source has to be a Path (or a
 # ``(Path, job)`` pair, or a job) so it can become a file dependency -- a plain
 # string would look like any other argument and silently lose its invariant.
-SOURCE_PARAMS = {"set_source": "ad_or_data", "add_alternative_source": "source"}
+SOURCE_PARAMS = {
+    "set_source": "ad_or_data",
+    "add_alternative_source": "source",
+    "set_embedding_source": "source",
+}
 
 
 def _output_name_for(terminal: str) -> str:

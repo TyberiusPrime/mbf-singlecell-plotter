@@ -467,6 +467,104 @@ class TestInvariants:
         assert (workdir / RESULTS / "b.png").exists()
 
 
+class TestSplitFiles:
+    """Expression in one file, embedding (and its obs) in another.
+
+    ``set_embedding_source`` keeps the expression file primary, so columns stay
+    plain names -- and both files are dependencies of every job.
+    """
+
+    @pytest.fixture
+    def split(self, workdir):
+        """``(expression.h5ad, coordinates.h5ad)`` -- the example data, cut in two."""
+        full = anndata.read_h5ad(EXAMPLE_DATA)
+        expression = anndata.AnnData(
+            X=full.X.copy(),
+            obs=pd.DataFrame(index=full.obs.index),
+            var=full.var.copy(),
+        )
+        coordinates = anndata.AnnData(
+            X=np.zeros((full.n_obs, 1)),
+            obs=full.obs.copy(),
+            var=pd.DataFrame(index=["placeholder"]),
+        )
+        coordinates.obsm["X_umap"] = full.obsm["X_umap"]
+        # relative: pypipegraph2 refuses absolute paths as job ids
+        expression_path, coordinates_path = Path("expression.h5ad"), Path("coords.h5ad")
+        expression.write_h5ad(workdir / expression_path)
+        coordinates.write_h5ad(workdir / coordinates_path)
+        return expression_path, coordinates_path
+
+    def builder(self, split, embedding="umap"):
+        expression, coordinates = split
+        return (
+            PlotBuilder(output_folder=RESULTS)
+            .set_source(expression, embedding=None)
+            .set_embedding_source(coordinates, embedding)
+        )
+
+    def test_columns_keep_their_plain_names(self, split, workdir):
+        """A gene from the primary file and an obs column from the other one."""
+
+        def build():
+            builder = self.builder(split)
+            builder.plot("S100A8").scatter()
+            builder.plot(CELL_TYPE_COLUMN).scatter()
+
+        run(build)
+        assert (workdir / RESULTS / "S100A8_scatter.png").exists()
+        assert (workdir / RESULTS / f"{CELL_TYPE_COLUMN}_scatter.png").exists()
+
+    def test_it_matches_the_source_routed_tuple_form(self, split, workdir):
+        """The shorthand is exactly the two-call form it replaces."""
+        expression, coordinates = split
+
+        def build():
+            self.builder(split).plot("S100A8").scatter(filename="short.png")
+            (
+                PlotBuilder(output_folder=RESULTS)
+                .set_source(expression, embedding=("coords", "umap"))
+                .add_alternative_source(coordinates, name="coords")
+                .plot("S100A8")
+                .scatter(filename="long.png")
+            )
+
+        run(build)
+        short = (workdir / RESULTS / "short.png").read_bytes()
+        assert short == (workdir / RESULTS / "long.png").read_bytes()
+
+    def test_a_changed_embedding_file_reruns(self, split, workdir):
+        """The second file is a real dependency, not just a lookup path."""
+        target = workdir / RESULTS / "S100A8_scatter.png"
+
+        def build():
+            self.builder(split).plot("S100A8").scatter()
+
+        run(build)
+        before = mtimes(target)
+
+        coordinates = workdir / split[1]
+        modified = anndata.read_h5ad(coordinates)
+        modified.obsm["X_umap"] = modified.obsm["X_umap"] + 100.0
+        modified.write_h5ad(coordinates)
+
+        run(build)
+        assert mtimes(target) != before
+
+    def test_switching_the_embedding_reruns(self, split, workdir):
+        """Naming a different embedding is recorded, so the file is rebuilt."""
+        full = anndata.read_h5ad(EXAMPLE_DATA)
+        coordinates = anndata.read_h5ad(workdir / split[1])
+        coordinates.obsm["X_pca"] = full.obsm["X_pca"]
+        coordinates.write_h5ad(workdir / split[1])
+        target = workdir / RESULTS / "S100A8_scatter.png"
+
+        run(lambda: self.builder(split, "umap").plot("S100A8").scatter())
+        before = mtimes(target)
+        run(lambda: self.builder(split, "pca").plot("S100A8").scatter())
+        assert mtimes(target) != before
+
+
 class TestDependencies:
     def test_a_source_job_is_waited_for(self, workdir):
         """(path, job) sources make the plot wait for the file's producer."""
