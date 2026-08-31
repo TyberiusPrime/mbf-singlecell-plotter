@@ -1,7 +1,7 @@
 """Layer 3: plotnine plot builders."""
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union, List, Dict, Callable, override, Any
 
@@ -580,13 +580,64 @@ def _draw_numerical_legend(
         )
 
 
+def _normalize_discrete_palette(value):
+    """Coerce one discrete-palette spec into ``None`` | list | dict.
+
+    Accepts a list/tuple of colors, a ``{category: color}`` dict, ``None``
+    (= use the defaults) or a matplotlib ``ListedColormap``-alike.
+    """
+    if value is None or isinstance(value, dict):
+        return value
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    # Assume matplotlib ListedColormap or similar
+    return list(value.colors)
+
+
+def _palette_key(column) -> str | tuple:
+    """Palette lookup key for a column spec.
+
+    Source-routed ``(source, column)`` specs keep their source, so a routed
+    column is addressed exactly as it is plotted and can carry a palette of its
+    own, separate from a same-named column of the primary source.
+    """
+    if isinstance(column, tuple) and len(column) == 2:
+        return (str(column[0]), str(column[1]))
+    return str(column)
+
+
+def _is_per_column_palette(mapping: dict) -> bool:
+    """True if *mapping* is column → palette rather than category → color.
+
+    The two dict forms are told apart by their values: a color is a string,
+    a palette is anything else (list/tuple/dict/ListedColormap/None).
+    Mixing both in one dict is an error.
+    """
+    if not mapping:
+        return False
+    is_palette = [not isinstance(v, str) for v in mapping.values()]
+    if all(is_palette):
+        return True
+    if any(is_palette):
+        cat_like = sorted(str(k) for k, v in mapping.items() if isinstance(v, str))
+        raise ValueError(
+            "colormap_discrete() got a dict mixing category → color entries "
+            f"({cat_like}) with column → palette entries. Pass either a flat "
+            "{category: color} palette, or a {column: palette} mapping whose "
+            "values are lists/dicts of colors."
+        )
+    return False
+
+
 @dataclass(frozen=True)
 class BorderConfig:
     size: float = 15
     resolution: int = 200
     blur: float = 1.1
     threshold: float = 0.95
-    colors: tuple = field(default_factory=lambda: tuple(DEFAULT_COLORS_BORDERS))
+    # None → resolved at draw time: the per-column discrete palette for the
+    # cell type column if one is set, else DEFAULT_COLORS_BORDERS.
+    colors: Optional[tuple] = None
     legend: bool = True
     legend_dot_size: float = 4
     legend_dot_alpha: float = 1
@@ -669,6 +720,9 @@ class ScatterPlotter:
         self._cat_colors: Optional[List[str] | Dict[str, str]] = (
             None  # None → DEFAULT_COLORS_CATEGORIES
         )
+        # {column: palette} mapping (key "" = fallback for any other column);
+        # keys are _palette_key()s, mutually exclusive with flat _cat_colors.
+        self._cat_colors_by_column: Optional[Dict[str | tuple, object]] = None
         self._cat_colors_title: Optional[str] = None  # None → auto from column name
 
         # layer visibility
@@ -1002,20 +1056,61 @@ class ScatterPlotter:
         - A list of hex color strings (positional, cycling).
         - A dict mapping category name → hex color string.
         - A matplotlib ``ListedColormap`` or similar (uses ``.colors``).
+        - A dict mapping *column name* → any of the above, so one plotter
+          colors every column consistently (see below).
+        - ``None`` — reset to the built-in default palette.
         - ``DoNotUpdate`` (default) — leave the palette unchanged.
+
+        Per-column palettes::
+
+            plotter.colormap_discrete({
+                "leiden": ["#98414f", "#776431", ...],   # positional
+                "genotype": {"wt": "#333333", "ko": "#cc0000"},  # by category
+                ("imputed", "leiden"): [...],            # source-routed column
+                "": ["#111111", "#eeeeee"],              # fallback, any other column
+            })
+
+        Whenever a categorical column is plotted, its palette is looked up by
+        the column spec as passed to the plot method — including
+        ``(source, column)`` tuples, which are keyed with their source, so a
+        routed column can differ from the primary column of the same name.  The
+        lookup then falls back to the name the spec resolved to, the ``""``
+        entry, and finally the built-in defaults.  That way a single plotter (or
+        a single configured base plotter that others are derived from)
+        guarantees column X is always drawn in the same colors, without having
+        to remember to re-apply the right palette per builder.
+
+        The two dict forms are told apart by their values: string values mean
+        ``{category: color}``, anything else (list/dict/ListedColormap/None)
+        means ``{column: palette}``.  Mixing both raises ``ValueError``.
+        Setting a palette replaces the previous one — the mapping is not merged
+        with an earlier call.
 
         title: Legend title for the color scale.  ``None`` resets to the
         auto-derived column name; ``DoNotUpdate`` leaves the current title.
         """
         new = copy.copy(self)
         if cmap_or_list_or_dict is not DoNotUpdate:
-            if cmap_or_list_or_dict is None:
+            if isinstance(cmap_or_list_or_dict, dict) and _is_per_column_palette(
+                cmap_or_list_or_dict
+            ):
                 new._cat_colors = None
-            elif isinstance(cmap_or_list_or_dict, (dict, list)):
-                new._cat_colors = cmap_or_list_or_dict
+                new._cat_colors_by_column = {
+                    _palette_key(k): _normalize_discrete_palette(v)
+                    for k, v in cmap_or_list_or_dict.items()
+                }
             else:
-                # Assume matplotlib ListedColormap or similar
-                new._cat_colors = list(cmap_or_list_or_dict.colors)
+                new._cat_colors = _normalize_discrete_palette(cmap_or_list_or_dict)
+                new._cat_colors_by_column = None
+            # Borders may draw their colors from the per-column mapping, and the
+            # boundary df caches the resolved colors — drop it if it no longer
+            # matches (cheap no-op when nothing was cached).
+            if (
+                self._border_config is not None
+                and self._border_config.colors is None
+                and self._boundary_cache["df"] is not None
+            ):
+                new._boundary_cache = {"df": None}
         if title is not DoNotUpdate:
             assert not isinstance(title, _DoNotUpdateType)
             new._cat_colors_title = title
@@ -1129,10 +1224,18 @@ class ScatterPlotter:
         legend_title: Optional[str] = None,
         respect_filter: bool = False,
     ) -> "ScatterPlotter":
+        """Overlay cell-type region borders.
+
+        Args:
+            colors: Border palette (positional, cycling over the cell type
+                    categories).  ``None`` (default) auto-resolves: the
+                    per-column palette from :meth:`colormap_discrete` if one is
+                    configured for *cell_type_column* (or via its ``""``
+                    fallback), else ``DEFAULT_COLORS_BORDERS``.
+        """
         new = copy.copy(self)
-        resolved_colors = (
-            tuple(colors) if colors is not None else tuple(DEFAULT_COLORS_BORDERS)
-        )
+        # None = resolve lazily at draw time (see _resolve_border_colors)
+        resolved_colors = tuple(colors) if colors is not None else None
         new._border_config = BorderConfig(
             size=size,
             resolution=resolution,
@@ -1604,7 +1707,7 @@ class ScatterPlotter:
         if is_numerical:
             p = self._build_numerical(df, expr_name, is_gene=is_gene)
         else:
-            p = self._build_categorical(df, expr_name)
+            p = self._build_categorical(df, expr_name, column=column)
 
         # Focus viewport
         if data.has_focus:
@@ -2290,7 +2393,7 @@ class ScatterPlotter:
         ]
         hdf = hdf.sort_values(facet_cols + ["x", "y", "category"])
         cats = list(hdf["category"].cat.categories)
-        colors = self._colors_as_list(cats)
+        colors = self._colors_as_list(cats, column=column)
 
         if fill_fraction is None:
             fill_fraction = 1.0 if scale_by_count else 0.8
@@ -2437,13 +2540,20 @@ class ScatterPlotter:
         )
         if is_numerical:
             return self._plot_histogram_numeric(
-                data, expr, expr_name, stat_bin_args or {}
+                data, expr, expr_name, stat_bin_args or {}, column=column
             )
         else:
-            return self._plot_histogram_categorical(data, expr, expr_name, normalize_to)
+            return self._plot_histogram_categorical(
+                data, expr, expr_name, normalize_to, column=column
+            )
 
     def _plot_histogram_categorical(
-        self, data, expr: pd.Series, expr_name: str, normalize_to: Optional[str]
+        self,
+        data,
+        expr: pd.Series,
+        expr_name: str,
+        normalize_to: Optional[str],
+        column=None,
     ) -> p9.ggplot:
         if expr.dtype == "category":
             cats = list(expr.cat.categories)
@@ -2513,7 +2623,7 @@ class ScatterPlotter:
                     )
                 counts = _normalize_counts(counts, norm_rows["count"].sum())
 
-        colors = self._colors_as_list(cats_str)
+        colors = self._colors_as_list(cats_str, column=column, resolved_name=expr_name)
         color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
         legend_title = (
             self._cat_colors_title if self._cat_colors_title is not None else expr_name
@@ -2572,7 +2682,12 @@ class ScatterPlotter:
         return p
 
     def _plot_histogram_numeric(
-        self, data, expr: pd.Series, expr_name: str, stat_bin_args: dict
+        self,
+        data,
+        expr: pd.Series,
+        expr_name: str,
+        stat_bin_args: dict,
+        column=None,
     ) -> p9.ggplot:
         df = pd.DataFrame({"value": expr})
 
@@ -2590,7 +2705,9 @@ class ScatterPlotter:
             df["facet_col"] = pd.Categorical(cv.reindex(expr.index).astype(str))
             facet_cols.append("facet_col")
 
-        color = self._colors_as_list([expr_name])[0]
+        color = self._colors_as_list(
+            [expr_name], column=column, resolved_name=expr_name
+        )[0]
 
         p = (
             p9.ggplot(df, p9.aes(x="value"))
@@ -2712,7 +2829,11 @@ class ScatterPlotter:
             df["facet_col"] = pd.Categorical(cv.astype(str))
             facet_cols.append("facet_col")
 
-        colors = self._colors_as_list(cats_str)
+        colors = self._colors_as_list(
+            cats_str,
+            column=group_by if group_by is not None else column,
+            resolved_name=grp_name if group_by is not None else expr_name,
+        )
         color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
         legend_title = (
             self._cat_colors_title
@@ -2862,7 +2983,7 @@ class ScatterPlotter:
         if has_col_facet:
             df["facet_col"] = pd.Categorical(df["facet_col"], categories=facet_cats_str)
 
-        colors = self._colors_as_list(cats_str)
+        colors = self._colors_as_list(cats_str, column=group_by, resolved_name=grp_name)
         color_values = {c: colors[i % len(colors)] for i, c in enumerate(cats_str)}
         legend_title = (
             self._cat_colors_title if self._cat_colors_title is not None else grp_name
@@ -3188,27 +3309,54 @@ class ScatterPlotter:
         )
         return p
 
-    def _colors_as_list(self, cats: list) -> list:
-        """Return an ordered color list for *cats*.
+    def _palette_for(self, column=None, resolved_name: Optional[str] = None):
+        """Return the discrete palette (list | dict | None) for a column.
 
-        Handles both list (positional cycling) and dict (name → color) forms
-        of ``_cat_colors``.
+        With a per-column mapping set (see :meth:`colormap_discrete`), look up
+        the column spec as it was passed to the plot method (``(source, column)``
+        tuples included), then the name it resolved to, then the ``""`` fallback
+        entry.  Without such a mapping, the single flat palette applies to every
+        column.
         """
-        if isinstance(self._cat_colors, dict):
+        if self._cat_colors_by_column is None:
+            return self._cat_colors
+        for candidate in (column, resolved_name):
+            if candidate is None:
+                continue
+            key = _palette_key(candidate)
+            if key in self._cat_colors_by_column:
+                return self._cat_colors_by_column[key]
+        return self._cat_colors_by_column.get("")
+
+    def _colors_as_list(
+        self, cats: list, column=None, resolved_name: Optional[str] = None
+    ) -> list:
+        """Return an ordered color list for *cats* of a column.
+
+        Handles both list (positional cycling) and dict (name → color) palette
+        forms, picking the palette for the column when a per-column mapping is
+        configured.  *column* is the spec as passed to the plot method,
+        *resolved_name* what ``get_column`` resolved it to.
+        """
+        palette = self._palette_for(column, resolved_name)
+        label = column if column is not None else resolved_name
+        where = f" for column {label!r}" if label is not None else ""
+        if isinstance(palette, dict):
             # Normalize keys to str so {True: 'red'} and {'True': 'red'} both work
-            normalized = {str(k): v for k, v in self._cat_colors.items()}
+            normalized = {str(k): v for k, v in palette.items()}
             missing = sorted([str(c) for c in cats if str(c) not in normalized])
             if missing:
                 raise ValueError(
-                    f"not enough colors: dict is missing entries for: {missing}"
+                    f"not enough colors: dict{where} is missing entries for: {missing}"
                 )
             return [normalized[str(c)] for c in cats]
-        colors = self._cat_colors or DEFAULT_COLORS_CATEGORIES.get(
+        colors = palette or DEFAULT_COLORS_CATEGORIES.get(
             len(cats), DEFAULT_COLORS_CATEGORIES["any"]
         )
         if len(colors) < len(cats):
             raise ValueError(
-                f"not enough colors: {len(colors)} provided for {len(cats)} categories"
+                f"not enough colors: {len(colors)} provided{where} for "
+                f"{len(cats)} categories"
             )
         return colors
 
@@ -3223,7 +3371,12 @@ class ScatterPlotter:
         return [mcolors.to_hex(self._cmap(i / 9)) for i in range(10)]
 
     def _get_boundary_df(self) -> pd.DataFrame:
-        if self._boundary_cache["df"] is None:
+        colors = self._resolve_border_colors()
+        # colors are baked into the boundary df, so they are part of the cache key
+        if (
+            self._boundary_cache["df"] is None
+            or self._boundary_cache.get("colors") != colors
+        ):
             from .transforms import compute_boundaries
 
             bc = self._border_config
@@ -3231,11 +3384,12 @@ class ScatterPlotter:
             self._boundary_cache["df"] = compute_boundaries(
                 data=boundary_data,
                 cell_type_column=self._cell_type_column,
-                colors=list(bc.colors),
+                colors=colors,
                 resolution=bc.resolution,
                 blur=bc.blur,
                 threshold=bc.threshold,
             )
+            self._boundary_cache["colors"] = colors
         return self._boundary_cache["df"]
 
     def _display_name(self, data, expr_name: str) -> str:
@@ -3246,17 +3400,47 @@ class ScatterPlotter:
                 return f"{alt_id} ({expr_name})"
         return expr_name
 
-    def _border_cat_to_color(self) -> dict:
-        """Return ordered {category: hex_color} mapping for the border palette."""
+    def _border_categories(self) -> tuple[list, str]:
+        """Ordered categories of the border cell type column, and its name."""
         bc = self._border_config
         data = self._data if bc.respect_filter else self._data.unfilter()
-        cell_types, _ = data.get_column(self._cell_type_column)
+        cell_types, name = data.get_column(self._cell_type_column)
         cats = (
             list(cell_types.cat.categories)
             if hasattr(cell_types, "cat")
             else natsorted(cell_types.unique())
         )
-        colors = list(self._border_config.colors)
+        return cats, name
+
+    def _resolve_border_colors(self) -> list:
+        """Ordered border color list.
+
+        Explicit ``with_borders(colors=...)`` wins.  Otherwise, if a per-column
+        discrete palette is configured (:meth:`colormap_discrete`) and it has an
+        entry for the cell type column (or a ``""`` fallback), the borders reuse
+        it, so borders and dots agree on the color of a category.  Failing that,
+        the separate ``DEFAULT_COLORS_BORDERS`` palette is used.
+        """
+        bc = self._border_config
+        if bc.colors is not None:
+            return list(bc.colors)
+        if (
+            self._cat_colors_by_column is not None
+            and self._cell_type_column is not None
+        ):
+            cats, name = self._border_categories()
+            if self._palette_for(self._cell_type_column, name) is not None:
+                return list(
+                    self._colors_as_list(
+                        cats, column=self._cell_type_column, resolved_name=name
+                    )
+                )
+        return list(DEFAULT_COLORS_BORDERS)
+
+    def _border_cat_to_color(self) -> dict:
+        """Return ordered {category: hex_color} mapping for the border palette."""
+        cats, _ = self._border_categories()
+        colors = self._resolve_border_colors()
         return {cat: colors[i % len(colors)] for i, cat in enumerate(cats)}
 
     def _add_border_layers(self, p: p9.ggplot) -> p9.ggplot:
@@ -3464,13 +3648,14 @@ class ScatterPlotter:
         self,
         df: pd.DataFrame,
         expr_name: str,
+        column=None,
     ) -> p9.ggplot:
         if df["expression"].dtype == "category":
             cats = list(df["expression"].cat.categories)
         else:
             cats = natsorted(df["expression"].unique())
 
-        colors = self._colors_as_list(cats)
+        colors = self._colors_as_list(cats, column=column, resolved_name=expr_name)
         color_values = {str(c): colors[i % len(colors)] for i, c in enumerate(cats)}
 
         # Draw order: grouped by category (last category on top by default),

@@ -247,6 +247,38 @@ plotter.colormap_discrete(["#E41A1C", "#377EB8", "#4DAF4A"])
 plotter.colormap_discrete({"T cell": "#E41A1C", "B cell": "#377EB8"})
 ```
 
+#### One palette per column
+
+To keep colors consistent across a figure set, pass a **{column: palette}**
+dict once — every categorical plot then looks up the palette for the column it
+is drawing, so column X is always the same colors no matter which builder (or
+plot type) produced the plot:
+
+```python
+plotter = plotter.colormap_discrete({
+    "leiden": ["#E41A1C", "#377EB8", "#4DAF4A"],      # positional
+    "cell_type": {"T cell": "#E41A1C", "B cell": "#377EB8"},   # by category
+    ("imputed", "leiden"): ["#999999", ...],   # source-routed column
+    "": ["#999999", "#333333"],   # fallback for every other column
+})
+
+plotter.plot("leiden")                              # leiden palette
+plotter.plot_violin("S100A8", group_by="cell_type") # cell_type palette
+plotter.plot(("imputed", "leiden"))                 # the tuple's own palette
+plotter.plot("bool")                                # "" fallback palette
+```
+
+Keys are the column specs exactly as passed to the plot methods, so a
+source-routed `(source, column)` tuple keeps its source and can carry a palette
+separate from the primary column of the same name. Lookup order is *column
+spec* → *resolved column name* → `""` → the built-in defaults. The two dict
+forms are told apart by their values: string values mean `{category: color}`,
+anything else (list / dict / `ListedColormap`) means `{column: palette}` —
+mixing both in one dict raises `ValueError`.
+
+With a `{column: palette}` mapping set, `with_borders()` uses it too (see
+[Cell-type boundaries](#cell-type-boundaries)).
+
 ---
 
 ### Zero-value handling
@@ -342,10 +374,17 @@ plotter.with_borders(
     threshold=0.95,    # contour threshold
     legend=True,
     legend_title="Cell type",
+    colors=None,       # None = auto (see below)
 )
 
 plotter.without_borders()   # disable
 ```
+
+Border colors default to the separate `DEFAULT_COLORS_BORDERS` palette. If a
+per-column palette is configured via `colormap_discrete({column: palette})` and
+it has an entry for `cell_type_column` (or a `""` fallback), the borders reuse
+it instead, so borders and dots agree on each category's color. An explicit
+`colors=[...]` always wins.
 
 ---
 

@@ -985,7 +985,10 @@ class TestColormaps:
     def test_categorical_color_map_missing(self, plotter_no_boundary):
         with pytest.raises(
             ValueError,
-            match="not enough colors: dict is missing entries for: \\['7', '8'\\]",
+            match=(
+                "not enough colors: dict for column 'leiden' is missing "
+                "entries for: \\['7', '8'\\]"
+            ),
         ):
             plotter_no_boundary.colormap_discrete(
                 {

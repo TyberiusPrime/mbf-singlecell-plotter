@@ -20,7 +20,7 @@ from mbf_singlecell_plotter import (
     map_to_integers,
     unmap,
 )
-from conftest import CELL_TYPE_COLUMN, MULTI_DIGIT_COLUMN
+from conftest import CELL_TYPE_COLUMN, COARSE_COLUMN, MULTI_DIGIT_COLUMN
 
 # The categorical obs column in the example data
 CAT_COL = "leiden"
@@ -662,6 +662,309 @@ class TestCategoricalColorOrder:
         assert list(p.data["expression"].cat.categories) == list(
             ad.obs[CAT_COL].cat.categories.astype(str)
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-column discrete palettes
+# ---------------------------------------------------------------------------
+
+
+def _scale_values(p, aesthetic="color"):
+    """The {category: color} mapping of a built plot's manual scale."""
+    scale = next(s for s in p.scales if aesthetic in s.aesthetics)
+    return scale.palette(0)
+
+
+class TestPerColumnDiscreteColors:
+    """colormap_discrete({column: palette}) — one plotter, stable colors per column."""
+
+    LEIDEN_COLORS = [
+        "#111111",
+        "#222222",
+        "#333333",
+        "#444444",
+        "#555555",
+        "#666666",
+        "#777777",
+        "#888888",
+        "#999999",
+    ]
+    FALLBACK_COLORS = ["#aa0000", "#00aa00", "#0000aa", "#aaaa00"]
+
+    def _plotter(self, plotter_no_boundary):
+        return plotter_no_boundary.colormap_discrete(
+            {
+                CAT_COL: self.LEIDEN_COLORS,
+                COARSE_COLUMN: {"L": "#ff0000", "M": "#00ff00", "H": "#0000ff"},
+                "": self.FALLBACK_COLORS,
+            }
+        )
+
+    def test_stored_as_per_column_mapping(self, plotter_no_boundary):
+        sp = self._plotter(plotter_no_boundary)
+        assert sp._cat_colors is None
+        assert sp._cat_colors_by_column[CAT_COL] == self.LEIDEN_COLORS
+
+    def test_list_palette_for_column(self, plotter_no_boundary):
+        p = self._plotter(plotter_no_boundary).plot(CAT_COL)
+        assert list(_scale_values(p).values()) == self.LEIDEN_COLORS
+
+    def test_dict_palette_for_column(self, plotter_no_boundary):
+        p = self._plotter(plotter_no_boundary).plot(COARSE_COLUMN)
+        assert _scale_values(p) == {"L": "#ff0000", "M": "#00ff00", "H": "#0000ff"}
+
+    def test_empty_key_is_the_fallback(self, plotter_no_boundary):
+        """A column without its own entry falls back to the "" palette."""
+        p = self._plotter(plotter_no_boundary).plot(MULTI_DIGIT_COLUMN)
+        assert list(_scale_values(p).values()) == self.FALLBACK_COLORS
+
+    def test_defaults_when_neither_column_nor_fallback_present(
+        self, plotter_no_boundary
+    ):
+        from mbf_singlecell_plotter import DEFAULT_COLORS_CATEGORIES
+
+        sp = plotter_no_boundary.colormap_discrete({CAT_COL: self.LEIDEN_COLORS})
+        p = sp.plot(COARSE_COLUMN)
+        assert list(_scale_values(p).values()) == DEFAULT_COLORS_CATEGORIES["any"][:3]
+
+    def test_same_column_same_colors_across_plot_types(self, plotter_no_boundary):
+        """The whole point: column → color does not depend on the plot method."""
+        sp = self._plotter(plotter_no_boundary)
+        scatter = _scale_values(sp.plot(COARSE_COLUMN))
+        histogram = _scale_values(sp.plot_histogram(COARSE_COLUMN), "fill")
+        violin = _scale_values(
+            sp.plot_violin(NUMERIC_COL, group_by=COARSE_COLUMN), "fill"
+        )
+        ridgeline = _scale_values(
+            sp.plot_ridgeline(NUMERIC_COL, group_by=COARSE_COLUMN), "fill"
+        )
+        expected = {"L": "#ff0000", "M": "#00ff00", "H": "#0000ff"}
+        assert scatter == expected
+        assert histogram == expected
+        assert violin == expected
+        assert ridgeline == expected
+
+    def test_different_columns_get_different_palettes(self, plotter_no_boundary):
+        sp = self._plotter(plotter_no_boundary)
+        assert set(_scale_values(sp.plot(CAT_COL)).values()).isdisjoint(
+            set(_scale_values(sp.plot(COARSE_COLUMN)).values())
+        )
+
+    def test_missing_category_error_names_the_column(self, plotter_no_boundary):
+        sp = plotter_no_boundary.colormap_discrete(
+            {COARSE_COLUMN: {"L": "#ff0000", "M": "#00ff00"}}
+        )
+        with pytest.raises(ValueError, match=f"dict for column '{COARSE_COLUMN}'"):
+            sp.plot(COARSE_COLUMN)
+
+    def test_too_few_colors_error_names_the_column(self, plotter_no_boundary):
+        sp = plotter_no_boundary.colormap_discrete({CAT_COL: ["#ff0000", "#00ff00"]})
+        with pytest.raises(ValueError, match=f"for column '{CAT_COL}' for 9 cat"):
+            sp.plot(CAT_COL)
+
+    def test_mixed_dict_rejected(self, plotter_no_boundary):
+        with pytest.raises(ValueError, match="mixing category"):
+            plotter_no_boundary.colormap_discrete(
+                {CAT_COL: ["#ff0000"], "some_category": "#00ff00"}
+            )
+
+    def test_flat_dict_still_category_to_color(self, plotter_no_boundary):
+        """The pre-existing {category: color} form is unchanged."""
+        colors = {"L": "#ff0000", "M": "#00ff00", "H": "#0000ff"}
+        sp = plotter_no_boundary.colormap_discrete(colors)
+        assert sp._cat_colors == colors
+        assert sp._cat_colors_by_column is None
+        assert _scale_values(sp.plot(COARSE_COLUMN)) == colors
+
+    def test_setting_replaces_previous_form(self, plotter_no_boundary):
+        sp = plotter_no_boundary.colormap_discrete(["#ff0000"] * 9)
+        sp = sp.colormap_discrete({CAT_COL: self.LEIDEN_COLORS})
+        assert sp._cat_colors is None
+        sp = sp.colormap_discrete(["#00ff00"] * 9)
+        assert sp._cat_colors_by_column is None
+        assert list(_scale_values(sp.plot(CAT_COL)).values()) == ["#00ff00"] * 9
+
+    def test_none_resets_both_forms(self, plotter_no_boundary):
+        from mbf_singlecell_plotter import DEFAULT_COLORS_CATEGORIES
+
+        sp = plotter_no_boundary.colormap_discrete({CAT_COL: self.LEIDEN_COLORS})
+        sp = sp.colormap_discrete(None)
+        assert sp._cat_colors is None and sp._cat_colors_by_column is None
+        assert (
+            list(_scale_values(sp.plot(CAT_COL)).values())
+            == DEFAULT_COLORS_CATEGORIES["any"][:9]
+        )
+
+    def test_matplotlib_colormap_as_per_column_value(self, plotter_no_boundary):
+        from matplotlib.colors import ListedColormap
+
+        cmap = ListedColormap(["#ff0000", "#00ff00", "#0000ff"])
+        sp = plotter_no_boundary.colormap_discrete({COARSE_COLUMN: cmap})
+        assert list(_scale_values(sp.plot(COARSE_COLUMN)).values()) == [
+            "#ff0000",
+            "#00ff00",
+            "#0000ff",
+        ]
+
+    def test_original_plotter_unchanged(self, plotter_no_boundary):
+        self._plotter(plotter_no_boundary)
+        assert plotter_no_boundary._cat_colors_by_column is None
+
+
+class TestPerColumnDiscreteColorsRoutedColumns:
+    """Keys are the column spec as plotted — ``(source, column)`` keeps its source."""
+
+    TUPLE_COLORS = ["#ff0000", "#00ff00"]
+    PLAIN_COLORS = ["#0000ff", "#ffff00"]
+
+    @pytest.fixture
+    def routed_plotter(self, data):
+        """Plotter whose data has a derived 'grp' column, also routable as
+        ('derived', 'grp')."""
+
+        def grp(d):
+            leiden = d.get_column(CAT_COL).series.astype(int)
+            return pd.Series(
+                np.where(leiden < 4, "low", "high"), index=leiden.index
+            ).astype("category")
+
+        return ScatterPlotter().set_source(
+            data.add_derived_source({"grp": grp}, name="derived")
+        )
+
+    def test_tuple_key_matches_tuple_spec(self, routed_plotter):
+        sp = routed_plotter.colormap_discrete(
+            {("derived", "grp"): self.TUPLE_COLORS, "grp": self.PLAIN_COLORS}
+        )
+        assert (
+            list(_scale_values(sp.plot(("derived", "grp"))).values())
+            == self.TUPLE_COLORS
+        )
+
+    def test_plain_key_matches_plain_spec(self, routed_plotter):
+        sp = routed_plotter.colormap_discrete(
+            {("derived", "grp"): self.TUPLE_COLORS, "grp": self.PLAIN_COLORS}
+        )
+        assert list(_scale_values(sp.plot("grp")).values()) == self.PLAIN_COLORS
+
+    def test_tuple_spec_falls_back_to_resolved_name(self, routed_plotter):
+        """No entry for the tuple → the name it resolves to is tried next."""
+        sp = routed_plotter.colormap_discrete({"grp": self.PLAIN_COLORS})
+        assert (
+            list(_scale_values(sp.plot(("derived", "grp"))).values())
+            == self.PLAIN_COLORS
+        )
+
+    def test_plain_spec_does_not_use_the_tuple_palette(self, routed_plotter):
+        from mbf_singlecell_plotter import DEFAULT_COLORS_CATEGORIES
+
+        sp = routed_plotter.colormap_discrete({("derived", "grp"): self.TUPLE_COLORS})
+        assert (
+            list(_scale_values(sp.plot("grp")).values()) == DEFAULT_COLORS_CATEGORIES[2]
+        )
+
+    def test_tuple_key_across_plot_types(self, routed_plotter):
+        sp = routed_plotter.colormap_discrete(
+            {("derived", "grp"): self.TUPLE_COLORS, "grp": self.PLAIN_COLORS}
+        )
+        spec = ("derived", "grp")
+        assert (
+            list(_scale_values(sp.plot_histogram(spec), "fill").values())
+            == self.TUPLE_COLORS
+        )
+        assert (
+            list(
+                _scale_values(
+                    sp.plot_violin(NUMERIC_COL, group_by=spec), "fill"
+                ).values()
+            )
+            == self.TUPLE_COLORS
+        )
+        assert (
+            list(
+                _scale_values(
+                    sp.plot_ridgeline(NUMERIC_COL, group_by=spec), "fill"
+                ).values()
+            )
+            == self.TUPLE_COLORS
+        )
+
+    def test_error_names_the_full_spec(self, routed_plotter):
+        sp = routed_plotter.colormap_discrete({("derived", "grp"): {"low": "#ff0000"}})
+        with pytest.raises(ValueError, match=r"dict for column \('derived', 'grp'\)"):
+            sp.plot(("derived", "grp"))
+
+    def test_borders_use_the_routed_palette(self, routed_plotter):
+        palette = {"high": "#ff0000", "low": "#00ff00"}
+        sp = routed_plotter.colormap_discrete(
+            {("derived", "grp"): palette}
+        ).with_borders(cell_type_column=("derived", "grp"))
+        assert sp._border_cat_to_color() == palette
+
+
+class TestPerColumnDiscreteColorsBorders:
+    """with_borders() falls back to the per-column palette for its own column."""
+
+    BORDER_PALETTE = {str(i): f"#{i}{i}00{i}{i}" for i in range(9)}
+
+    def test_borders_use_per_column_palette(self, plotter_no_boundary):
+        sp = plotter_no_boundary.colormap_discrete(
+            {CELL_TYPE_COLUMN: self.BORDER_PALETTE}
+        ).with_borders(cell_type_column=CELL_TYPE_COLUMN)
+        assert sp._border_cat_to_color() == self.BORDER_PALETTE
+
+    def test_borders_match_the_dots(self, plotter_no_boundary):
+        sp = plotter_no_boundary.colormap_discrete(
+            {CELL_TYPE_COLUMN: self.BORDER_PALETTE}
+        ).with_borders(cell_type_column=CELL_TYPE_COLUMN)
+        assert sp._border_cat_to_color() == _scale_values(sp.plot(CELL_TYPE_COLUMN))
+
+    def test_borders_use_empty_key_fallback(self, plotter_no_boundary):
+        colors = ["#010101"] * 9
+        sp = plotter_no_boundary.colormap_discrete({"": colors}).with_borders(
+            cell_type_column=CELL_TYPE_COLUMN
+        )
+        assert sp._resolve_border_colors() == colors
+
+    def test_explicit_border_colors_win(self, plotter_no_boundary):
+        colors = ["#020202"] * 9
+        sp = plotter_no_boundary.colormap_discrete(
+            {CELL_TYPE_COLUMN: self.BORDER_PALETTE}
+        ).with_borders(cell_type_column=CELL_TYPE_COLUMN, colors=colors)
+        assert sp._resolve_border_colors() == colors
+
+    def test_default_border_palette_without_per_column_mapping(
+        self, plotter_no_boundary
+    ):
+        from mbf_singlecell_plotter import DEFAULT_COLORS_BORDERS
+
+        sp = plotter_no_boundary.with_borders(cell_type_column=CELL_TYPE_COLUMN)
+        assert sp._resolve_border_colors() == DEFAULT_COLORS_BORDERS
+
+    def test_flat_palette_does_not_leak_into_borders(self, plotter_no_boundary):
+        """A non-per-column palette leaves the separate border defaults alone."""
+        from mbf_singlecell_plotter import DEFAULT_COLORS_BORDERS
+
+        sp = plotter_no_boundary.colormap_discrete(["#030303"] * 9).with_borders(
+            cell_type_column=CELL_TYPE_COLUMN
+        )
+        assert sp._resolve_border_colors() == DEFAULT_COLORS_BORDERS
+
+    def test_palette_change_drops_the_boundary_cache(self, plotter_no_boundary):
+        sp = plotter_no_boundary.with_borders(cell_type_column=CELL_TYPE_COLUMN)
+        sp._boundary_cache["df"] = "sentinel"
+        sp._boundary_cache["colors"] = list(self.BORDER_PALETTE.values())
+        changed = sp.colormap_discrete({CELL_TYPE_COLUMN: self.BORDER_PALETTE})
+        assert changed._boundary_cache["df"] is None
+        assert sp._boundary_cache["df"] == "sentinel"  # original untouched
+
+    def test_explicit_border_colors_keep_their_cache(self, plotter_no_boundary):
+        sp = plotter_no_boundary.with_borders(
+            cell_type_column=CELL_TYPE_COLUMN, colors=["#040404"] * 9
+        )
+        sp._boundary_cache["df"] = "sentinel"
+        changed = sp.colormap_discrete({CELL_TYPE_COLUMN: self.BORDER_PALETTE})
+        assert changed._boundary_cache["df"] == "sentinel"
 
 
 # ---------------------------------------------------------------------------
