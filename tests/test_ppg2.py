@@ -785,7 +785,71 @@ class TestPlotGenes:
         genes = genes_of(out / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.tsv")
         assert genes
         for gene in genes:
-            assert (out / f"{gene}_scatter.png").exists(), gene
+            assert (out / "scatter" / f"{gene}_scatter.png").exists(), gene
+
+    def test_the_gene_plots_go_into_a_sub_directory(self, h5ad, workdir):
+        """Otherwise the HTML drowns in gene PNGs."""
+        run(
+            lambda: (
+                source(h5ad)
+                .plot(CELL_TYPE_COLUMN)
+                .interactive_cluster_markers(plot_genes=True, **CLUSTER_MARKERS)
+            )
+        )
+        out = workdir / RESULTS
+        assert not list(out.glob("*_scatter.png"))
+        assert list((out / "scatter").glob("*_scatter.png"))
+
+    def test_the_html_links_to_the_gene_plots(self, h5ad, workdir):
+        run(
+            lambda: (
+                source(h5ad)
+                .plot(CELL_TYPE_COLUMN)
+                .interactive_cluster_markers(plot_genes=True, **CLUSTER_MARKERS)
+            )
+        )
+        out = workdir / RESULTS
+        stem = f"{CELL_TYPE_COLUMN}_interactive_cluster_markers"
+        html = (out / f"{stem}.html").read_text()
+        assert "scatter/{gene}_scatter.png" in html  # the URL template
+        assert "GENE_URL_INLINE = true" in html  # shown in the panel, not a tab
+        for gene in genes_of(out / f"{stem}.tsv"):
+            assert (out / "scatter" / f"{gene}_scatter.png").exists(), gene
+
+    def test_an_explicit_gene_url_wins(self, h5ad, workdir):
+        run(
+            lambda: (
+                source(h5ad)
+                .plot(CELL_TYPE_COLUMN)
+                .interactive_cluster_markers(
+                    plot_genes=True,
+                    gene_url="https://example.com/{gene}",
+                    **CLUSTER_MARKERS,
+                )
+            )
+        )
+        html = (
+            workdir / RESULTS / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.html"
+        ).read_text()
+        assert "https://example.com/{gene}" in html
+        assert "scatter/{gene}_scatter.png" not in html
+
+    def test_a_hook_sets_no_links(self, h5ad, workdir):
+        """A callable names its own files, so we cannot know where they land."""
+        run(
+            lambda: (
+                source(h5ad)
+                .plot(CELL_TYPE_COLUMN)
+                .interactive_cluster_markers(
+                    plot_genes=lambda gene: gene.into("markers").scatter(),
+                    **CLUSTER_MARKERS,
+                )
+            )
+        )
+        html = (
+            workdir / RESULTS / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.html"
+        ).read_text()
+        assert "scatter/{gene}_scatter.png" not in html
 
     def test_a_hook_may_do_anything_with_the_gene(self, h5ad, workdir):
         def build():
@@ -814,7 +878,7 @@ class TestPlotGenes:
         out = workdir / RESULTS / "html" / "clusters"
         genes = genes_of(out / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.tsv")
         for gene in genes:
-            assert (out / f"{gene}_scatter.png").exists(), gene
+            assert (out / "scatter" / f"{gene}_scatter.png").exists(), gene
 
     def test_the_gene_plots_are_reachable_through_the_builder(self, h5ad, workdir):
         """They are ordinary jobs, created inside the run."""

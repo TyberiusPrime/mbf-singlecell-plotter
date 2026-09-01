@@ -70,6 +70,12 @@ once the export has run, which is exactly what a job-generating job is for::
         plot_genes=lambda gene: gene.into("markers").scatter().violin("leiden")
     )
 
+``plot_genes=True`` puts those scatters into a ``scatter/`` sub-directory of the
+export's own directory -- the HTML stays visible instead of drowning in PNGs --
+and points the export's ``gene_url`` at them, so clicking a gene in the HTML
+shows its plot inline.  Pass ``gene_url=`` yourself to link somewhere else; a
+callable ``plot_genes`` names its own files, so it links nowhere by default.
+
 Semantics
 ---------
 Replay order is ``builder calls -> plot calls``, exactly as if you had made
@@ -684,9 +690,27 @@ def _install_terminal_methods(cls):
 # ── exports (self-writing outputs: the interactive HTML views) ───────────────
 
 
+# The default ``plot_genes`` hook writes one scatter per gene into a
+# sub-directory named after the plot type, so the handful of HTML files stay
+# visible next to a folder instead of being buried under hundreds of PNGs.
+# The export links to exactly those files, hence the shared naming here.
+GENE_PLOT_TERMINAL = "scatter"
+
+
 def _default_gene_plot(plot: "Plot") -> None:
-    """The ``plot_genes=True`` hook: one scatter per marker gene."""
-    plot.scatter()  # ty: ignore - installed by _install_terminal_methods
+    """The ``plot_genes=True`` hook: one scatter per marker gene, in its own
+    sub-directory (``scatter/``) below the export's own directory."""
+    # .scatter() is installed by _install_terminal_methods
+    plot.into(GENE_PLOT_TERMINAL).scatter()  # ty: ignore
+
+
+def _default_gene_url() -> str:
+    """The ``gene_url`` template pointing at what :func:`_default_gene_plot` writes.
+
+    Relative to the HTML file, which sits in the directory the sub-directory
+    hangs off, so the link works from a copied result folder as well.
+    """
+    return f"{GENE_PLOT_TERMINAL}/{{gene}}_{GENE_PLOT_TERMINAL}.png"
 
 
 def _marker_genes(tsv_path) -> list:
@@ -783,8 +807,10 @@ def _make_export_method(export: str, fn):
         "\n        run, plots every marker gene of the TSV (which it turns on) with"
         "\n        this plot's own configuration -- builder calls and plot calls"
         "\n        alike, only the column swapped. ``True`` makes one scatter per"
-        "\n        gene; a callable receives each gene's Plot and may call any"
-        "\n        terminals on it::"
+        "\n        gene in a ``scatter/`` sub-directory and links the HTML's genes"
+        "\n        to them (unless you pass your own ``gene_url``); a callable"
+        "\n        receives each gene's Plot, may call any terminals on it, and"
+        "\n        sets no links::"
         "\n"
         "\n            p.interactive_cluster_markers("
         "\n                plot_genes=lambda gene: gene.into('genes').scatter()"
@@ -1050,6 +1076,14 @@ class Plot(_Recorder):
         kwargs.setdefault("dpi", self._resolved_dpi())
         if plot_genes:
             kwargs["save_tsv"] = True  # the genes are read back from it
+        if plot_genes is True:
+            # the default hook's files are known up front, so the HTML can link
+            # to them - and show them inline, they are right next to it.
+            _accepted = inspect.signature(EXPORT_METHODS[export]).parameters
+            if "gene_url" in _accepted and kwargs.get("gene_url") is None:
+                kwargs["gene_url"] = _default_gene_url()
+                if "gene_url_inline" in _accepted:
+                    kwargs.setdefault("gene_url_inline", True)
         tsv = target.with_suffix(".tsv")
         if kwargs.get("save_tsv") and tsv == target:
             raise ValueError(
