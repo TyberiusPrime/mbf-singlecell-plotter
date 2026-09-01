@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 import numpy as np
 import pandas as pd
 
-
+H5AD_TIMEOUT = 60
 # ── availability ─────────────────────────────────────────────────────────────
 
 
@@ -45,7 +45,7 @@ def _run_inspect(path: Path, *args: str) -> bytes:
             ["h5ad-inspect", path, *args],
             capture_output=True,
             check=True,
-            timeout=60,  # if it's that slow, something is seriously wrong. Best case your file is CSR and gigantic
+            timeout=H5AD_TIMEOUT,  # if it's that slow, something is seriously wrong. Best case your file is CSR and gigantic
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
@@ -54,6 +54,12 @@ def _run_inspect(path: Path, *args: str) -> bytes:
             f"stdout:\n{e.stdout.decode()}\n"
             f"stderr:\n{e.stderr.decode()}"
         ) from e
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"h5ad-inspect timed out on {path!r} with args {args!r}:\n"
+            f"mbf_singlecell_plotter.h5ad_source.H5AD_TIMEOUT was set to {H5AD_TIMEOUT}.\n"
+            f"Increase or fix the underlying perfomance problem"
+        )
 
 
 def _run_lines(path: Path, *args: str) -> list[str]:
