@@ -3655,6 +3655,41 @@ class TestInteractiveMarkers:
         assert any(len(c["clusters"]) > 1 for c in cells)
         assert any(cl["genes"] for c in cells for cl in c["clusters"])
 
+    def _legend(self, html):
+        import re
+        import json
+
+        m = re.search(r"const LEGEND = (\[.*?\]);", html)
+        return json.loads(m.group(1))
+
+    def test_legend_entries_are_clickable(self, plotter_no_boundary, ad, tmp_path):
+        out = tmp_path / "markers.html"
+        plotter_no_boundary.save_interactive_cluster_markers(CAT_COL, out, k=5)
+        html = out.read_text()
+        legend = self._legend(html)
+        categories = set(ad.obs[CAT_COL].astype(str))
+        # one hotspot per legend key, carrying that cluster's whole-embedding view
+        assert {e["label"] for e in legend} == categories
+        assert all(e["title"] == "Cluster " + e["label"] for e in legend)
+        assert all(e["w"] > 0 and e["h"] > 0 for e in legend)
+        assert all(len(e["genes"]) <= 5 for e in legend)
+        assert any(e["genes"] for e in legend)
+        # cell counts are the full per-category totals, not per-bin ones
+        counts = ad.obs[CAT_COL].astype(str).value_counts()
+        for e in legend:
+            assert e["n_cells"] == counts[e["label"]]
+        # hotspots live in the same overlay/index space as the grid cells
+        cells = self._cells(html)
+        assert html.count('class="gc lg"') == len(legend)
+        assert f'data-i="{len(cells)}"' in html
+
+    def test_grid_view_has_no_legend_hotspots(self, plotter_no_boundary, tmp_path):
+        out = tmp_path / "grid.html"
+        plotter_no_boundary.save_interactive_moran_grid(
+            CAT_COL, out, min_cells=3, min_moran=0.05
+        )
+        assert self._legend(out.read_text()) == []
+
     def test_min_cluster_cells_filters_small_clusters(
         self, plotter_no_boundary, tmp_path
     ):

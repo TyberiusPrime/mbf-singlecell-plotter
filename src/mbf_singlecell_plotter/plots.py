@@ -2278,6 +2278,11 @@ class ScatterPlotter:
         their mean-difference Δ — so a small cluster sharing a bin with a large
         one stays reachable.  Clicking locks/switches the selection.
 
+        Each **legend key** is clickable too: it shows that cluster's markers
+        across the whole embedding instead of within one bin.  The hotspots are
+        derived from the rendered legend artists, and are omitted when the plot
+        has no discrete legend.
+
         Unlike :meth:`save_interactive_moran_grid` (markers per spatial bin via
         Moran's I), markers here are computed per category of *column*.
 

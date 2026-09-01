@@ -20,13 +20,16 @@ import numpy as np
 
 
 # ── shared figure / geometry / binning helpers ───────────────────────────────
-def _prepare_figure(plotter, column, dpi):
+def _prepare_figure(plotter, column, dpi, *, legend_boxes: bool = False):
     """Render *column* to a base64 PNG and return CSS geometry + data→CSS mappers.
 
     Returns ``(img_b64, css_w, css_h, dx, dy, geom)`` where ``dx``/``dy`` map
     data coordinates to CSS pixels and ``geom`` carries the axes bounding box
     (used by the debug overlay).  The panel defaults to 5×5in unless the plotter
     already has a fixed panel size.
+
+    With *legend_boxes* the figure is drawn once more up front so
+    ``geom["legend_blocks"]`` can carry the on-screen box of every legend key.
     """
     from .plots import _PlotWithPostDraw
     import matplotlib.pyplot as plt
@@ -47,6 +50,11 @@ def _prepare_figure(plotter, column, dpi):
     if le is not None:
         le.execute(fig)
         fig.set_layout_engine(None)
+
+    if legend_boxes:
+        # Legend offsetboxes only get their offsets during a draw, so place
+        # every artist before reading the entry boxes below.
+        fig.draw_without_rendering()
 
     # ── Stable axes geometry (read AFTER layout is frozen) ───────────────────
     ax = fig.axes[0]
@@ -73,12 +81,15 @@ def _prepare_figure(plotter, column, dpi):
         frac = (y - ylim[0]) / (ylim[1] - ylim[0])
         return ax_bottom + frac * (ax_top - ax_bottom)
 
+    legend_blocks = _legend_entry_boxes(fig) if legend_boxes else []
+
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi)
     plt.close(fig)
     img_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
 
     geom = {
+        "legend_blocks": legend_blocks,
         "ax_left": ax_left,
         "ax_right": ax_right,
         "ax_top": ax_top,
@@ -87,6 +98,79 @@ def _prepare_figure(plotter, column, dpi):
         "ylim": ylim,
     }
     return img_b64, css_w, css_h, _dx, _dy, geom
+
+
+def _legend_entry_boxes(fig) -> list[list[dict]]:
+    """Read the per-key boxes of every legend in *fig*, in CSS pixels.
+
+    plotnine draws a discrete guide as an ``AnchoredOffsetbox`` whose leaves are
+    one ``HPacker`` per key — a swatch (``DrawingArea``) next to its label
+    (``TextArea``).  Their window extents give us the on-screen rectangle of each
+    legend entry, so no OCR of the rendered PNG is needed.
+
+    Returns one list of ``{label, x, y, w, h}`` dicts per legend found (a figure
+    can carry several, e.g. a colour guide plus a border guide); empty when the
+    plot has no discrete legend.  Must be called after the layout is frozen and
+    the figure has been drawn once.
+    """
+    import matplotlib.offsetbox as ob
+
+    scale = 96.0 / fig.dpi  # display pixels → CSS pixels
+    fig_h_px = fig.get_size_inches()[1] * fig.dpi
+
+    def _keys(art, out):
+        for ch in art.get_children():
+            if isinstance(ch, ob.HPacker):
+                kids = ch.get_children()
+                swatch = any(isinstance(k, ob.DrawingArea) for k in kids)
+                texts = [
+                    t.get_children()[0].get_text()
+                    for t in kids
+                    if isinstance(t, ob.TextArea) and t.get_children()
+                ]
+                if swatch and texts:
+                    out.append((ch, texts[0]))
+                    continue
+            _keys(ch, out)
+        return out
+
+    blocks = []
+    for art in fig.get_children():
+        if not isinstance(art, ob.AnchoredOffsetbox):
+            continue
+        entries = []
+        for box, label in _keys(art, []):
+            bb = box.get_window_extent()
+            entries.append(
+                {
+                    "label": label,
+                    "x": round(bb.x0 * scale, 1),
+                    "y": round((fig_h_px - bb.y1) * scale, 1),
+                    "w": round((bb.x1 - bb.x0) * scale, 1),
+                    "h": round((bb.y1 - bb.y0) * scale, 1),
+                }
+            )
+        if entries:
+            blocks.append(entries)
+    return blocks
+
+
+def _match_legend_entries(blocks: list[list[dict]], categories) -> list[tuple]:
+    """Pair legend key boxes with the categories they stand for.
+
+    Keys are matched by their rendered label against ``str(category)``; the
+    legend block with the most matches wins (a plot can also carry a border
+    guide).  Returns ``[(entry, category), ...]``, empty when nothing matches —
+    in which case the caller simply omits the legend hotspots.
+    """
+    by_label = {str(c): c for c in categories}
+    best: list[dict] = []
+    best_hits = 0
+    for blk in blocks:
+        hits = sum(1 for e in blk if e["label"] in by_label)
+        if hits > best_hits:
+            best, best_hits = blk, hits
+    return [(e, by_label[e["label"]]) for e in best if e["label"] in by_label]
 
 
 def _grid_binning(data):
@@ -431,6 +515,12 @@ def save_interactive_cluster_markers(
     mean-difference Δ — so a small cluster sharing a bin with a large one stays
     reachable.  Clicking locks/switches the selection just like the grid view.
 
+    Each **legend key** is a hotspot too: hovering (or clicking, to lock) one
+    shows that cluster's markers over the whole embedding rather than within a
+    single bin.  The key boxes are read from the rendered legend artists, so
+    they line up with the PNG; if the plot has no discrete legend the hotspots
+    are simply omitted.
+
     Args:
         plotter:             Configured :class:`~mbf_singlecell_plotter.ScatterPlotter`.
         column:              Categorical obs column (cluster labels) — also the
@@ -466,7 +556,9 @@ def save_interactive_cluster_markers(
 
     data = plotter._data
 
-    img_b64, css_w, css_h, _dx, _dy, geom = _prepare_figure(plotter, column, dpi)
+    img_b64, css_w, css_h, _dx, _dy, geom = _prepare_figure(
+        plotter, column, dpi, legend_boxes=True
+    )
     b = _grid_binning(data)
 
     bin_cell_counts = Counter(zip(b["xi_all"].tolist(), b["yi_all"].tolist()))
@@ -527,6 +619,23 @@ def save_interactive_cluster_markers(
         )
         cells.append(cell)
 
+    # ── Legend hotspots: one clickable box per legend key ─────────────────────
+    total_per_cat = bin_df["cat"].value_counts()
+    legend_items = []
+    for entry, cat in _match_legend_entries(geom["legend_blocks"], total_per_cat.index):
+        legend_items.append(
+            {
+                "x": entry["x"],
+                "y": entry["y"],
+                "w": entry["w"],
+                "h": entry["h"],
+                "label": entry["label"],
+                "title": f"Cluster {cat}",
+                "n_cells": int(total_per_cat[cat]),
+                "genes": cat_genes.get(cat, []),
+            }
+        )
+
     debug_svg = _build_debug_svg(geom, b, _dx, _dy) if debug else ""
 
     html = _build_html(
@@ -540,6 +649,7 @@ def save_interactive_cluster_markers(
         has_gene_urls=has_gene_urls,
         gene_url_inline=gene_url_inline,
         score_label="Δ",
+        legend_items=legend_items,
     )
     Path(output_path).write_text(html, encoding="utf-8")
 
@@ -577,8 +687,11 @@ def _build_html(
     has_gene_urls: bool = False,
     gene_url_inline: bool = False,
     score_label: str = "I",
+    legend_items: list[Any] | None = None,
 ) -> str:
+    legend_items = legend_items or []
     cells_json = json.dumps(cells, separators=(",", ":"))
+    legend_json = json.dumps(legend_items, separators=(",", ":"))
     gene_url_js = json.dumps(gene_url_template)
     gene_url_inline_js = "true" if (has_gene_urls and gene_url_inline) else "false"
     score_label_js = json.dumps(score_label)
@@ -590,13 +703,23 @@ def _build_html(
             f' x="{c["x"]}" y="{c["y"]}"'
             f' width="{c["w"]}" height="{c["h"]}"/>'
         )
+    # Legend keys share the overlay/index space, continuing after the grid cells.
+    for j, c in enumerate(legend_items):
+        rect_tags.append(
+            f'<rect class="gc lg" data-i="{len(cells) + j}" rx="3"'
+            f' x="{c["x"]}" y="{c["y"]}"'
+            f' width="{c["w"]}" height="{c["h"]}"/>'
+        )
     overlay_rects = "\n    ".join(rect_tags)
 
-    placeholder = (
-        "No cells found in embedding."
-        if not cells
+    hover_hint = (
+        "Hover over a region — or a legend entry — to see its cell count and "
+        "marker genes."
+        if legend_items
         else "Hover over a region to see its cell count and marker genes."
     )
+    placeholder = "No cells found in embedding." if not cells else hover_hint
+    placeholder_js = json.dumps(placeholder)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -658,6 +781,7 @@ h1 {{
   stroke: rgba(140, 80, 0, .80);
   stroke-width: 1.5;
 }}
+.gc.lg {{ stroke: rgba(0, 0, 0, .10); stroke-width: 1; }}
 /* ── gene panel ── */
 #panel {{
   margin-top: 10px;
@@ -767,6 +891,9 @@ h1 {{
 <script>
 (function () {{
   const CELLS = {cells_json};
+  const LEGEND = {legend_json};
+  const ITEMS = CELLS.concat(LEGEND);
+  const PLACEHOLDER = {placeholder_js};
   const GENE_URL = {gene_url_js};
   const GENE_URL_INLINE = {gene_url_inline_js};
   const SCORE_LABEL = {score_label_js};
@@ -774,7 +901,7 @@ h1 {{
   const imgWrap = document.getElementById('img-wrap');
   const imgEl  = document.getElementById('img-el');
   const rects = [...document.querySelectorAll('#overlay .gc')];
-  let active = null;   // index into rects / CELLS, or null
+  let active = null;   // index into rects / ITEMS, or null
 
   function geneUrl(name, precomputed) {{
     return precomputed || (GENE_URL ? GENE_URL.replace('{{gene}}', encodeURIComponent(name)) : null);
@@ -809,7 +936,7 @@ h1 {{
   }}
 
   function renderGenes(idx) {{
-    const c = CELLS[idx];
+    const c = ITEMS[idx];
     const nc = c.n_cells || 0;
     const cellPart = nc > 0
       ? `${{nc.toLocaleString()}} cell${{nc === 1 ? '' : 's'}}`
@@ -826,7 +953,7 @@ h1 {{
       const sep = cellPart ? ' · ' : '';
       let html =
         `<div class="hdr-row">` +
-          `<span class="hdr">Region ${{c.label}} — ${{cellPart}}${{sep}}${{clPart}}</span>` +
+          `<span class="hdr">${{c.title || ('Region ' + c.label)}} — ${{cellPart}}${{sep}}${{clPart}}</span>` +
         `</div>`;
       if (cl.length === 0) {{
         html += `<span class="ph">no clusters in this region</span>`;
@@ -850,7 +977,7 @@ h1 {{
       const sep = cellPart && n > 0 ? ' · ' : '';
       panel.innerHTML =
         `<div class="hdr-row">` +
-          `<span class="hdr">Region ${{c.label}} — ${{cellPart}}${{sep}}${{genesLabel(n)}}</span>` +
+          `<span class="hdr">${{c.title || ('Region ' + c.label)}} — ${{cellPart}}${{sep}}${{genesLabel(n)}}</span>` +
           (n > 0 ? copyBtnsHtml('all') : '') +
         `</div>` +
         (n > 0 ? chipsHtml(c.genes) : '');
@@ -866,8 +993,7 @@ h1 {{
   }}
 
   function clearPanel() {{
-    panel.innerHTML =
-      '<span class="ph">Hover over a region to see its cell count and marker genes.</span>';
+    panel.innerHTML = `<span class="ph">${{PLACEHOLDER}}</span>`;
     imgWrap.style.display = 'none';
   }}
 
@@ -885,7 +1011,8 @@ h1 {{
     }}
   }});
 
-  rects.forEach((el, i) => {{
+  rects.forEach((el) => {{
+    const i = +el.dataset.i;
     el.addEventListener('mouseenter', () => {{
       if (active === null) {{ el.classList.add('hov'); renderGenes(i); }}
     }});
