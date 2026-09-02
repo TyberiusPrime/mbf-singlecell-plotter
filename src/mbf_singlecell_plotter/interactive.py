@@ -100,6 +100,11 @@ def _prepare_figure(plotter, column, dpi, *, legend_boxes: bool = False):
     return img_b64, css_w, css_h, _dx, _dy, geom
 
 
+# Legend keys end tight against their label text; a little breathing room on
+# the right makes the hotspot comfortable to hit without covering the plot.
+_LEGEND_PAD_RIGHT = 6.0
+
+
 def _legend_entry_boxes(fig) -> list[list[dict]]:
     """Read the per-key boxes of every legend in *fig*, in CSS pixels.
 
@@ -623,11 +628,12 @@ def save_interactive_cluster_markers(
     total_per_cat = bin_df["cat"].value_counts()
     legend_items = []
     for entry, cat in _match_legend_entries(geom["legend_blocks"], total_per_cat.index):
+        width = min(entry["w"] + _LEGEND_PAD_RIGHT, css_w - entry["x"])
         legend_items.append(
             {
                 "x": entry["x"],
                 "y": entry["y"],
-                "w": entry["w"],
+                "w": round(width, 1),
                 "h": entry["h"],
                 "label": entry["label"],
                 "title": f"Cluster {cat}",
