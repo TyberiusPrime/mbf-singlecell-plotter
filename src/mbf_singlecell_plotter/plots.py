@@ -3352,7 +3352,7 @@ class ScatterPlotter:
             missing = sorted([str(c) for c in cats if str(c) not in normalized])
             if missing:
                 raise ValueError(
-                    f"not enough colors: dict{where} is missing entries for: {missing}"
+                    f"not enough colors: dict{where} is missing entries for: {missing}. Available {palette.keys()}"
                 )
             return [normalized[str(c)] for c in cats]
         colors = palette or DEFAULT_COLORS_CATEGORIES.get(
