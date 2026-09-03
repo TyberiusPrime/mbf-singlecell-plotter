@@ -80,14 +80,15 @@ Signatures
 ----------
 ``add_signature`` is ordinary configuration, so the gene set travels in the
 job's ParameterInvariant: editing the list re-runs the plots that use it.
-Every terminal that plots a signature also writes ``<stem>_genes.tsv``, saying
+Every terminal that plots a signature also writes ``<stem>/genes.tsv``, saying
 which of its genes this dataset actually has -- one job, declared identically by
 every terminal of that signature (its recipe covers the calls that decide gene
 resolution and nothing else), so styling one plot differently does not fork the
-file::
+file.  It shares the folder the per-gene plots go into, so everything the
+signature is made of sits together::
 
     sig = builder.add_signature("Myeloid", genes, method="mean").plot("Myeloid")
-    sig.scatter()                  # Myeloid_scatter.png + Myeloid_genes.tsv
+    sig.scatter()                  # Myeloid_scatter.png + Myeloid/genes.tsv
     sig.violin("leiden")           # ... and the very same TSV
 
 ``plot_genes`` is a property of the plot, not of one output: it fans *every*
@@ -720,7 +721,7 @@ def _make_terminal_method(terminal: str, fn):
         "\n        plot; the plot's column is supplied automatically. Returns a copy"
         "\n        of the plot with .job_ and .jobs_ set."
         "\n"
-        "\n        Plotting a registered signature also writes ``<stem>_genes.tsv``,"
+        "\n        Plotting a registered signature also writes ``<stem>/genes.tsv``,"
         "\n        listing which of its genes this data has, and -- when the plot"
         "\n        was created with ``plot_genes=`` -- repeats this very plot for"
         "\n        every gene of the set."
@@ -1236,7 +1237,7 @@ class Plot(_Recorder):
         return session.current(graph)[before:]
 
     def _build_signature_tsv(self, ppg, graph, signature: _Call):
-        """The ``<stem>_genes.tsv`` job: which genes of the set this data has.
+        """The ``<stem>/genes.tsv`` job: which genes of the set this data has.
 
         Declared by every terminal that plots the signature, so its recipe is
         built from the gene-resolution calls alone -- two terminals of one
@@ -1244,7 +1245,7 @@ class Plot(_Recorder):
         which is a no-op rather than a collision.
         """
         name = signature.args[0] if signature.args else signature.kwargs["name"]
-        target = self._target("genes", None, suffix=".tsv")
+        target = self._gene_folder() / "genes.tsv"
         calls = []
         for call in self._builder._calls + self._calls:
             if call.method == "add_signature":
@@ -1275,6 +1276,15 @@ class Plot(_Recorder):
         job.depends_on(ppg.ParameterInvariant(str(target) + "_config", parameters))
         self._builder._session.record(graph, job)
         return job
+
+    def _gene_folder(self) -> Path:
+        """Where this plot's per-gene files live: a folder named after it.
+
+        The default ``plot_genes`` hook reaches the same place through
+        ``into(self.stem)`` -- both are the plot's own directory plus its stem.
+        """
+        builder = self._builder
+        return builder.output_folder.joinpath(*builder._into, *self._into, self.stem)
 
     def _target(self, name: str, filename: Optional[str], suffix=".png") -> Path:
         builder = self._builder

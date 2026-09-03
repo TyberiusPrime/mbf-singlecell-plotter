@@ -925,7 +925,7 @@ class TestSignatures:
         run(lambda: signature(h5ad).plot("Myeloid").scatter())
         out = workdir / RESULTS
         assert (out / "Myeloid_scatter.png").exists()
-        report = pd.read_csv(out / "Myeloid_genes.tsv", sep="\t")
+        report = pd.read_csv(out / "Myeloid" / "genes.tsv", sep="\t")
         assert list(report["gene"]) == SIG_GENES
         assert list(report["present"]) == [True, True, True]
         assert list(report["source"]) == ["primary"] * 3
@@ -933,7 +933,7 @@ class TestSignatures:
     def test_the_tsv_reports_a_gene_the_data_lacks(self, h5ad, workdir):
         run(lambda: signature(h5ad, SIG_GENES_WITH_MISSING).plot("Myeloid").scatter())
         report = pd.read_csv(
-            workdir / RESULTS / "Myeloid_genes.tsv", sep="\t"
+            workdir / RESULTS / "Myeloid" / "genes.tsv", sep="\t"
         ).set_index("gene")
         assert not report.loc["__no_such_gene__", "present"]
         assert report.loc["S100A8", "present"]
@@ -945,10 +945,10 @@ class TestSignatures:
     def test_the_tsv_comes_first_and_once(self, h5ad, graph):
         plot = signature(h5ad).plot("Myeloid")
         plot = plot.scatter().histogram()
-        assert [Path(job.job_id).name for job in plot.jobs_] == [
-            "Myeloid_genes.tsv",
-            "Myeloid_scatter.png",
-            "Myeloid_histogram.png",
+        assert [str(Path(job.job_id)) for job in plot.jobs_] == [
+            f"{RESULTS}/Myeloid/genes.tsv",
+            f"{RESULTS}/Myeloid_scatter.png",
+            f"{RESULTS}/Myeloid_histogram.png",
         ]
 
     def test_differently_configured_terminals_share_one_tsv(self, h5ad):
@@ -989,6 +989,13 @@ class TestSignatures:
         assert [Path(job.job_id).name for job in plot.jobs_] == [
             f"{CELL_TYPE_COLUMN}_histogram.png"
         ]
+
+    def test_the_tsv_shares_the_folder_with_the_gene_plots(self, h5ad, workdir):
+        run(lambda: signature(h5ad).plot("Myeloid", plot_genes=True).scatter())
+        folder = workdir / RESULTS / "Myeloid"
+        assert sorted(p.name for p in folder.iterdir()) == sorted(
+            ["genes.tsv"] + [f"{gene}_scatter.png" for gene in SIG_GENES]
+        )
 
 
 class TestSignaturePlotGenes:
@@ -1039,7 +1046,8 @@ class TestSignaturePlotGenes:
         out = workdir / RESULTS
         for gene in SIG_GENES:
             assert (out / "genes" / f"{gene}_histogram.png").exists(), gene
-        assert not (out / "Myeloid").exists()
+        # the hook sent the plots elsewhere; only the TSV kept the folder
+        assert [p.name for p in (out / "Myeloid").iterdir()] == ["genes.tsv"]
 
     def test_the_gene_plots_keep_the_plots_configuration(self, h5ad, workdir):
         run(
@@ -1089,7 +1097,9 @@ class TestSignaturePlotGenes:
         """density() plots no column, so there is nothing to repeat per gene."""
         run(lambda: signature(h5ad).plot("Myeloid", plot_genes=True).density())
         assert (workdir / RESULTS / "Myeloid_density.png").exists()
-        assert not (workdir / RESULTS / "Myeloid").exists()
+        assert [p.name for p in (workdir / RESULTS / "Myeloid").iterdir()] == [
+            "genes.tsv"
+        ]
 
     def test_plot_genes_rejects_nonsense_where_it_was_passed(self, h5ad, graph):
         with pytest.raises(TypeError, match="plot_genes must be"):
