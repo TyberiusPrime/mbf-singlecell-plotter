@@ -90,19 +90,24 @@ file::
     sig.scatter()                  # Myeloid_scatter.png + Myeloid_genes.tsv
     sig.violin("leiden")           # ... and the very same TSV
 
-``plot_genes`` repeats a plot for every gene of the set, into a sub-directory
-named after the plot -- the score stays visible next to the folder::
+``plot_genes`` is a property of the plot, not of one output: it fans *every*
+terminal of that plot out over the genes behind its column, into a
+sub-directory named after the plot -- so the score stays visible next to the
+folder::
 
-    sig.scatter(plot_genes=True)   # Myeloid/LYZ_scatter.png, ...
-    sig.violin("leiden", plot_genes=True)   # per-gene violins, same folder
-    sig.scatter(plot_genes=lambda gene: gene.into("genes").histogram())
+    sig = builder.add_signature("Myeloid", genes).plot("Myeloid", plot_genes=True)
+    sig.scatter()                  # Myeloid/LYZ_scatter.png, ...
+    sig.violin("leiden")           # per-gene violins, same folder
 
-``True`` replays *this* terminal with the same arguments; a callable receives
-each gene's Plot and names its own files, as with the exports.  A signature
-keeps plotting when some of its genes are absent, so its fan-out has to skip
-them -- which only the TSV can tell, hence a :class:`pypipegraph2.JobGeneratingJob`
-waiting for it.  Genes named explicitly instead (``plot_genes=["LYZ", "CST3"]``,
-which works for any column) are declared right away and plotted as named.
+    builder.plot("Myeloid", plot_genes=lambda gene: gene.into("g").histogram())
+
+``True`` repeats each terminal with its own arguments; a callable receives each
+gene's Plot and names its own files, as with the exports.  A signature keeps
+plotting when some of its genes are absent, so its fan-out has to skip them --
+which only the TSV can tell, hence a :class:`pypipegraph2.JobGeneratingJob`
+waiting for it.  Genes named explicitly instead
+(``plot("leiden", plot_genes=["LYZ", "CST3"])``, which works for any column) are
+declared right away and plotted as named.
 
 Semantics
 ---------
@@ -220,7 +225,7 @@ CONFIG_METHODS, TERMINAL_METHODS, EXPORT_METHODS = _classify(ScatterPlotter)
 
 # Terminal-level keywords that shadow nothing in any terminal signature; see
 # test_ppg2_core.py::test_reserved_output_kwargs_do_not_shadow_terminals.
-RESERVED_OUTPUT_KWARGS = ("name", "filename", "dpi", "plot_genes")
+RESERVED_OUTPUT_KWARGS = ("name", "filename", "dpi")
 
 # The same for exports -- `dpi` is missing on purpose: it is a real argument of
 # the export methods (the resolution of the PNG embedded in the HTML), so it is
@@ -679,9 +684,7 @@ def _make_terminal_method(terminal: str, fn):
     signature = inspect.signature(fn)
 
     @functools.wraps(fn)
-    def wrapper(
-        self, *args, name=None, filename=None, dpi=None, plot_genes=None, **kwargs
-    ):
+    def wrapper(self, *args, name=None, filename=None, dpi=None, **kwargs):
         if takes_column and "column" not in kwargs:
             if self.column is None:
                 raise TypeError(
@@ -702,11 +705,6 @@ def _make_terminal_method(terminal: str, fn):
                     if isinstance(a, str)
                 ]
             )
-        if plot_genes is not None and not takes_column:
-            raise TypeError(
-                f"{type(self).__name__}.{default_name}(): plot_genes= needs a "
-                "terminal that plots one column, and this one does not take one."
-            )
         return self._build(
             terminal,
             tuple(args),
@@ -714,8 +712,7 @@ def _make_terminal_method(terminal: str, fn):
             name=name,
             filename=filename,
             dpi=dpi,
-            plot_genes=plot_genes,
-            gene_args=tuple(args[1:]) if takes_column else (),
+            gene_args=tuple(args[1:]) if takes_column else None,
         )
 
     wrapper.__doc__ = (fn.__doc__ or "").rstrip() + (
@@ -724,21 +721,9 @@ def _make_terminal_method(terminal: str, fn):
         "\n        of the plot with .job_ and .jobs_ set."
         "\n"
         "\n        Plotting a registered signature also writes ``<stem>_genes.tsv``,"
-        "\n        listing which of its genes this data has."
-        "\n"
-        "\n        ``plot_genes`` repeats the plot for every gene of the set, into a"
-        "\n        sub-directory named after this plot.  ``True`` replays *this*"
-        "\n        terminal with the same arguments; a list of genes does the same"
-        "\n        for a column that is no signature; a callable receives each"
-        "\n        gene's Plot and names its own files::"
-        "\n"
-        "\n            sig.violin('leiden', plot_genes=True)"
-        "\n            sig.scatter(plot_genes=lambda gene: gene.into('g').scatter())"
-        "\n"
-        "\n        A signature's genes are plotted by a JobGeneratingJob waiting"
-        "\n        for the genes TSV, so genes this data lacks are skipped rather"
-        "\n        than failing; genes named in a list are declared right away and"
-        "\n        plotted as named."
+        "\n        listing which of its genes this data has, and -- when the plot"
+        "\n        was created with ``plot_genes=`` -- repeats this very plot for"
+        "\n        every gene of the set."
     )
     return wrapper
 
@@ -770,6 +755,23 @@ def _default_gene_plot(plot: "Plot") -> None:
     sub-directory (``scatter/``) below the export's own directory."""
     # .scatter() is installed by _install_terminal_methods
     plot.into(GENE_PLOT_TERMINAL).scatter()  # ty: ignore
+
+
+def _check_plot_genes(plot_genes, where: str):
+    """Validate a ``plot_genes=`` value where it was passed, not where it fires."""
+    if plot_genes is None or isinstance(plot_genes, bool) or callable(plot_genes):
+        return plot_genes
+    if isinstance(plot_genes, (str, bytes)) or not isinstance(
+        plot_genes, (list, tuple)
+    ):
+        raise TypeError(
+            f"{where}: plot_genes must be True, a list of genes, or a callable "
+            f"taking the gene's Plot - got {type(plot_genes).__name__}."
+        )
+    genes = list(dict.fromkeys(plot_genes))
+    if not genes:
+        raise ValueError(f"{where}: plot_genes= is an empty list.")
+    return genes
 
 
 def _default_signature_gene_plot(
@@ -826,7 +828,7 @@ def _generate_signature_gene_plots(tsv_path, genes, template: "Plot", hook) -> l
         plot.column = gene
         plot._jobs = ()
         plot._job = None
-        hook(plot)
+        hook(plot)  # the template's own plot_genes was cleared before it got here
     return found
 
 
@@ -967,12 +969,14 @@ class Plot(_Recorder):
         name: Optional[str] = None,
         into: Optional[Union[str, Path]] = None,
         dpi: Optional[int] = None,
+        plot_genes=None,
         **plotter_kwargs,
     ):
         super().__init__()
         self._builder = builder
         self.column = column
         self._name = name
+        self._plot_genes = _check_plot_genes(plot_genes, self._describe())
         self._into: Tuple[str, ...] = Path(into).parts if into is not None else ()
         self._dpi = dpi
         self._jobs: Tuple[Any, ...] = ()
@@ -1076,14 +1080,13 @@ class Plot(_Recorder):
         name,
         filename,
         dpi,
-        plot_genes=None,
-        gene_args=(),
+        gene_args=None,
     ) -> "Plot":
         label = _output_name_for(terminal)
         ppg, graph = _active_graph(f"{type(self).__name__}.{label}()")
         self._require_source(label)
         signature = self._signature_call(self.column)
-        genes, from_signature = self._genes_to_plot(plot_genes, signature, label)
+        genes, from_signature = self._genes_to_plot(signature, label, gene_args)
         target = self._target(name, filename)
         recipe = self._encode(ppg, graph, terminal, args, kwargs, target, dpi)
         _claim_output(
@@ -1107,8 +1110,8 @@ class Plot(_Recorder):
         new._jobs = self._add_jobs(new._jobs, [job])
         if genes is not None:
             hook = (
-                plot_genes
-                if callable(plot_genes)  # True is not, so it takes the default
+                self._plot_genes
+                if callable(self._plot_genes)  # True is not: it takes the default
                 else functools.partial(
                     _default_signature_gene_plot,
                     terminal=terminal,
@@ -1143,6 +1146,7 @@ class Plot(_Recorder):
         template._jobs = ()
         template._job = None
         template._name = None  # each gene names its own files
+        template._plot_genes = None  # ... and fans out no further
 
         def callback(genes=tuple(genes), hook=hook, template=template, tsv=tsv_job):
             _generate_signature_gene_plots(Path(tsv.job_id), genes, template, hook)
@@ -1192,35 +1196,24 @@ class Plot(_Recorder):
         genes = call.args[1] if len(call.args) > 1 else call.kwargs["genes"]
         return list(dict.fromkeys(genes))
 
-    def _genes_to_plot(self, plot_genes, signature, label):
+    def _genes_to_plot(self, signature, label, gene_args):
         """``(genes, from_signature)`` -- or ``(None, False)`` for no fan-out.
 
         Genes named explicitly are plotted as named (and a typo fails loudly);
         a signature's genes are filtered by what the data has, which only its
-        genes TSV can say.
+        genes TSV can say.  A terminal that plots no single column has nothing
+        to repeat per gene, so ``plot_genes`` passes it by.
         """
-        if plot_genes is None or plot_genes is False:
+        plot_genes = self._plot_genes
+        if plot_genes is None or plot_genes is False or gene_args is None:
             return None, False
-        if not (plot_genes is True or callable(plot_genes)):
-            if isinstance(plot_genes, (str, bytes)) or not isinstance(
-                plot_genes, (list, tuple)
-            ):
-                raise TypeError(
-                    f"{self._describe()}.{label}(): plot_genes must be True, a "
-                    "list of genes, or a callable taking the gene's Plot - got "
-                    f"{type(plot_genes).__name__}."
-                )
-            genes = list(dict.fromkeys(plot_genes))
-            if not genes:
-                raise ValueError(
-                    f"{self._describe()}.{label}(): plot_genes= is an empty list."
-                )
-            return genes, False
+        if isinstance(plot_genes, list):
+            return plot_genes, False
         if signature is None:
             raise TypeError(
                 f"{self._describe()}.{label}(): plot_genes= plots the genes of a "
                 f"signature, and {self.column!r} is not one (add_signature(...) "
-                "registers it). Pass the genes as a list to plot them anyway."
+                "registers it). Pass the genes to plot(plot_genes=[...]) instead."
             )
         return self._signature_genes(signature), True
 
@@ -1236,6 +1229,7 @@ class Plot(_Recorder):
             plot = self._copy()
             plot.column = gene
             plot._name = None  # each gene names its own files
+            plot._plot_genes = None  # ... and fans out no further
             plot._jobs = ()
             plot._job = None
             hook(plot)
@@ -1543,14 +1537,41 @@ class PlotBuilder(_Recorder):
         name: Optional[str] = None,
         into: Optional[Union[str, Path]] = None,
         dpi: Optional[int] = None,
+        plot_genes=None,
         **plotter_kwargs,
     ) -> Plot:
         """A :class:`Plot` for one column, carrying this builder's script.
 
         Nothing is created yet -- a job appears when a terminal (``scatter``,
         ``violin``, ...) is called on the result.
+
+        ``plot_genes`` fans every terminal of this plot out over the genes
+        behind its column -- the gene set of a registered signature, or a list
+        of genes given here -- into a sub-directory named after the plot::
+
+            sig = builder.add_signature("Myeloid", genes).plot(
+                "Myeloid", plot_genes=True
+            )
+            sig.scatter()           # Myeloid_scatter.png + Myeloid/LYZ_scatter.png ...
+            sig.violin("leiden")    # ... and the same again as violins
+
+        ``True`` repeats each terminal with its own arguments; a callable
+        receives every gene's :class:`Plot` (column swapped, ``.into`` and
+        ``.dpi`` inherited) and names its own files::
+
+            builder.plot("Myeloid", plot_genes=lambda gene: gene.into("g").scatter())
+
+        Terminals that plot no single column (``density``) are left alone.
         """
-        return Plot(self, column, name=name, into=into, dpi=dpi, **plotter_kwargs)
+        return Plot(
+            self,
+            column,
+            name=name,
+            into=into,
+            dpi=dpi,
+            plot_genes=plot_genes,
+            **plotter_kwargs,
+        )
 
     @property
     def jobs_(self) -> list:

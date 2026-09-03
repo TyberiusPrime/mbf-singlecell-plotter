@@ -939,7 +939,7 @@ class TestSignatures:
         assert report.loc["S100A8", "present"]
 
     def test_job_is_the_plots_own_file(self, h5ad, graph):
-        plot = signature(h5ad).plot("Myeloid").scatter(plot_genes=True)
+        plot = signature(h5ad).plot("Myeloid", plot_genes=True).scatter()
         assert Path(plot.job_.job_id).name == "Myeloid_scatter.png"
 
     def test_the_tsv_comes_first_and_once(self, h5ad, graph):
@@ -992,33 +992,32 @@ class TestSignatures:
 
 
 class TestSignaturePlotGenes:
-    """plot_genes= : the same plot again, once per gene of the set."""
+    """plot_genes= on the plot: every terminal again, once per gene of the set."""
 
     def test_every_gene_is_plotted_into_the_signatures_folder(self, h5ad, workdir):
-        run(lambda: signature(h5ad).plot("Myeloid").scatter(plot_genes=True))
+        run(lambda: signature(h5ad).plot("Myeloid", plot_genes=True).scatter())
         out = workdir / RESULTS
         assert (out / "Myeloid_scatter.png").exists()
         for gene in SIG_GENES:
             assert (out / "Myeloid" / f"{gene}_scatter.png").exists(), gene
 
-    def test_it_repeats_the_terminal_it_was_passed_to(self, h5ad, workdir):
-        run(
-            lambda: (
-                signature(h5ad)
-                .plot("Myeloid")
-                .violin(CELL_TYPE_COLUMN, plot_genes=True)
-            )
-        )
-        out = workdir / RESULTS
+    def test_it_repeats_every_terminal_of_the_plot(self, h5ad, workdir):
+        def build():
+            sig = signature(h5ad).plot("Myeloid", plot_genes=True)
+            return sig.violin(CELL_TYPE_COLUMN).histogram()
+
+        run(build)
+        out = workdir / RESULTS / "Myeloid"
         for gene in SIG_GENES:
-            assert (out / "Myeloid" / f"{gene}_violin_{CELL_TYPE_COLUMN}.png").exists()
+            assert (out / f"{gene}_violin_{CELL_TYPE_COLUMN}.png").exists(), gene
+            assert (out / f"{gene}_histogram.png").exists(), gene
 
     def test_a_gene_the_data_lacks_is_skipped_not_failed(self, h5ad, workdir):
         run(
             lambda: (
                 signature(h5ad, SIG_GENES_WITH_MISSING)
-                .plot("Myeloid")
-                .scatter(plot_genes=True)
+                .plot("Myeloid", plot_genes=True)
+                .scatter()
             )
         )
         out = workdir / RESULTS / "Myeloid"
@@ -1030,8 +1029,11 @@ class TestSignaturePlotGenes:
         run(
             lambda: (
                 signature(h5ad)
-                .plot("Myeloid")
-                .scatter(plot_genes=lambda gene: gene.into("genes").histogram())
+                .plot(
+                    "Myeloid",
+                    plot_genes=lambda gene: gene.into("genes").histogram(),
+                )
+                .scatter()
             )
         )
         out = workdir / RESULTS
@@ -1044,9 +1046,9 @@ class TestSignaturePlotGenes:
             lambda: (
                 signature(h5ad)
                 .style(dot_size=4)
-                .plot("Myeloid")
+                .plot("Myeloid", plot_genes=True)
                 .panel_size(2, 2)
-                .scatter(plot_genes=True)
+                .scatter()
             )
         )
         gene_plot = workdir / RESULTS / "Myeloid" / "S100A8_scatter.png"
@@ -1058,38 +1060,41 @@ class TestSignaturePlotGenes:
         )
         assert gene_plot.read_bytes() == alone.read_bytes()
 
+    def test_the_gene_plots_do_not_fan_out_again(self, h5ad, workdir):
+        run(lambda: signature(h5ad).plot("Myeloid", plot_genes=True).scatter())
+        assert not (workdir / RESULTS / "Myeloid" / "S100A8").exists()
+
     def test_an_explicit_list_plots_any_columns_genes(self, h5ad, workdir):
-        run(lambda: source(h5ad).plot(CELL_TYPE_COLUMN).scatter(plot_genes=SIG_GENES))
+        run(lambda: source(h5ad).plot(CELL_TYPE_COLUMN, plot_genes=SIG_GENES).scatter())
         out = workdir / RESULTS
         for gene in SIG_GENES:
             assert (out / CELL_TYPE_COLUMN / f"{gene}_scatter.png").exists(), gene
 
     def test_a_declared_list_creates_its_jobs_right_away(self, h5ad, graph):
-        plot = source(h5ad).plot(CELL_TYPE_COLUMN).scatter(plot_genes=SIG_GENES)
+        plot = source(h5ad).plot(CELL_TYPE_COLUMN, plot_genes=SIG_GENES).scatter()
         assert [Path(job.job_id).name for job in plot.jobs_] == [
             f"{CELL_TYPE_COLUMN}_scatter.png"
         ] + [f"{gene}_scatter.png" for gene in SIG_GENES]
 
     def test_a_signature_fans_out_through_its_tsv(self, h5ad, graph):
-        plot = signature(h5ad).plot("Myeloid").scatter(plot_genes=True)
+        plot = signature(h5ad).plot("Myeloid", plot_genes=True).scatter()
         assert isinstance(plot.jobs_[-1], ppg.JobGeneratingJob)
 
     def test_plot_genes_needs_a_signature_or_a_list(self, h5ad, graph):
-        plot = source(h5ad).plot(CELL_TYPE_COLUMN)
+        plot = source(h5ad).plot(CELL_TYPE_COLUMN, plot_genes=True)
         with pytest.raises(TypeError, match="not one"):
-            plot.scatter(plot_genes=True)
+            plot.scatter()
 
-    def test_plot_genes_needs_a_terminal_with_a_column(self, h5ad, graph):
-        plot = signature(h5ad).plot("Myeloid")
-        with pytest.raises(TypeError, match="does not take one"):
-            plot.density(plot_genes=True)
+    def test_a_column_less_terminal_is_left_alone(self, h5ad, workdir):
+        """density() plots no column, so there is nothing to repeat per gene."""
+        run(lambda: signature(h5ad).plot("Myeloid", plot_genes=True).density())
+        assert (workdir / RESULTS / "Myeloid_density.png").exists()
+        assert not (workdir / RESULTS / "Myeloid").exists()
 
-    def test_plot_genes_rejects_nonsense(self, h5ad, graph):
-        plot = signature(h5ad).plot("Myeloid")
+    def test_plot_genes_rejects_nonsense_where_it_was_passed(self, h5ad, graph):
         with pytest.raises(TypeError, match="plot_genes must be"):
-            plot.scatter(plot_genes=3)
+            signature(h5ad).plot("Myeloid", plot_genes=3)
 
     def test_plot_genes_rejects_an_empty_list(self, h5ad, graph):
-        plot = signature(h5ad).plot("Myeloid")
         with pytest.raises(ValueError, match="empty list"):
-            plot.scatter(plot_genes=[])
+            signature(h5ad).plot("Myeloid", plot_genes=[])
