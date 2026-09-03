@@ -889,6 +889,16 @@ class ScatterPlotter:
             raise RuntimeError("No data source set — call set_source() first.")
         return self._data.get_column(name)
 
+    def signature_report(self, name: str) -> pd.DataFrame:
+        """Which genes of the signature *name* this data resolves, and where.
+
+        Columns: ``gene``, ``present``, ``resolved_name``, ``source``.  See
+        :meth:`EmbeddingData.signature_report`.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .signature_report()")
+        return self._data.signature_report(name)
+
     def add_alternative_source(
         self, source, name=None, layer="X", transform=None
     ) -> "ScatterPlotter":
@@ -944,6 +954,53 @@ class ScatterPlotter:
             raise RuntimeError("call .set_source() before .add_derived_source()")
         new = copy.copy(self)
         new._data = self._data.add_derived_source(derived, name=name)
+        return new
+
+    def add_signature(
+        self,
+        name: str,
+        genes,
+        *,
+        method="mean",
+        threshold: float = 0.0,
+        missing: str = "warn",
+        label: Optional[str] = None,
+    ) -> "ScatterPlotter":
+        """Register a gene-set score plottable under *name*.
+
+        ``plotter.add_signature("Myeloid", ["LYZ", "S100A8"]).plot("Myeloid")``
+        draws the score like any other numeric column — but because the
+        signature remembers its gene set and aggregation, the colour bar (and
+        the violin / ridgeline / histogram value axis) is labelled with what
+        the numbers *are* rather than with a bare column name.
+
+        Args:
+            name:      Column and display name; must not shadow an existing
+                       column or gene.
+            genes:     The gene set — anything :meth:`get_column` accepts,
+                       ``(source_name, gene)`` tuples included.
+            method:    ``"sum"``, ``"mean"``, ``"count_expressed"``,
+                       ``"fraction_expressed"``, or a callable taking the
+                       genes × cells DataFrame and returning a Series.
+            threshold: Cutoff for the ``*_expressed`` methods (strict ``>``).
+            missing:   ``"raise"``, ``"warn"`` (drop absent genes and say so in
+                       the label) or ``"ignore"``.
+            label:     Replaces the generated value-axis / colour-bar label.
+
+        See :meth:`EmbeddingData.add_signature` for the full semantics.  The
+        plotter is immutable — a new copy is returned.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .add_signature()")
+        new = copy.copy(self)
+        new._data = self._data.add_signature(
+            name,
+            genes,
+            method=method,
+            threshold=threshold,
+            missing=missing,
+            label=label,
+        )
         return new
 
     # ── dot appearance ───────────────────────────────────────────────────────
@@ -1705,7 +1762,7 @@ class ScatterPlotter:
         # Build plot
         is_gene = data.is_gene(column)
         if is_numerical:
-            p = self._build_numerical(df, expr_name, is_gene=is_gene)
+            p = self._build_numerical(df, expr_name, is_gene=is_gene, column=column)
         else:
             p = self._build_categorical(df, expr_name, column=column)
 
@@ -2717,7 +2774,10 @@ class ScatterPlotter:
         p = (
             p9.ggplot(df, p9.aes(x="value"))
             + p9.geom_histogram(fill=color, **stat_bin_args)
-            + p9.labs(x=self._display_name(data, expr_name), y="count")
+            + p9.labs(
+                x=self._value_label(data, column, self._display_name(data, expr_name)),
+                y="count",
+            )
         )
 
         p = self._apply_facet_layer(p)
@@ -2856,7 +2916,7 @@ class ScatterPlotter:
             )
             + p9.labs(
                 x=group_by if group_by is not None else "",
-                y=self._display_name(data, expr_name),
+                y=self._value_label(data, column, self._display_name(data, expr_name)),
             )
         )
 
@@ -3007,7 +3067,10 @@ class ScatterPlotter:
             + p9.facet_grid(
                 "group ~ facet_col" if has_col_facet else "group ~ .", scales=scales
             )
-            + p9.labs(x=self._display_name(data, expr_name), y="Density")
+            + p9.labs(
+                x=self._value_label(data, column, self._display_name(data, expr_name)),
+                y="Density",
+            )
         )
 
         if self._title_override is not _UNSET:
@@ -3405,6 +3468,15 @@ class ScatterPlotter:
                 return f"{alt_id} ({expr_name})"
         return expr_name
 
+    def _value_label(self, data, column, default: str) -> str:
+        """The label for a value axis / colour bar: signature-aware.
+
+        A registered signature names what its numbers mean (and how many of
+        its genes this dataset actually has); anything else keeps *default*.
+        """
+        label = data.signature_label(column) if data is not None else None
+        return default if label is None else label
+
     def _border_categories(self) -> tuple[list, str]:
         """Ordered categories of the border cell type column, and its name."""
         bc = self._border_config
@@ -3506,6 +3578,7 @@ class ScatterPlotter:
         df: pd.DataFrame,
         expr_name: str,
         is_gene: bool = False,
+        column=None,
     ) -> p9.ggplot:
         zero_val = self._zero_value if self._zero_value is not None else 0.0
 
@@ -3607,6 +3680,8 @@ class ScatterPlotter:
                 default_cbar_name = expr_name + ":\nlog2 expression"
         else:
             default_cbar_name = expr_name
+        signature = self._data.signature_for(column) if self._data is not None else None
+        default_cbar_name = self._value_label(self._data, column, default_cbar_name)
         cbar_name = (
             self._cbar_title if self._cbar_title is not None else default_cbar_name
         )
@@ -3624,10 +3699,11 @@ class ScatterPlotter:
         # end), at least 5 ticks remain.
         import matplotlib.ticker as _ticker
 
+        counts_genes = signature is not None and signature.method == "count_expressed"
         cbar_breaks = list(
-            _ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]).tick_values(
-                zero_val, clip_val
-            )
+            _ticker.MaxNLocator(
+                nbins=8, steps=[1, 2, 5, 10], integer=counts_genes
+            ).tick_values(zero_val, clip_val)
         )
         p = p + p9.scale_color_gradientn(
             colors=cmap_colors,

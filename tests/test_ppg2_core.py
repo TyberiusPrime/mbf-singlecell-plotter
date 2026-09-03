@@ -32,6 +32,7 @@ NON_PLOT_METHODS = {
     "get_cluster_markers",
     "get_column",
     "get_morans_i_markers",
+    "signature_report",
 }
 
 

@@ -7,6 +7,7 @@ from .data import (
     ColumnData,
     AlternativeSource,
     DerivedSource,
+    Signature,
     computed_column,
 )
 from .transforms import (
@@ -28,6 +29,7 @@ __all__ = [
     "ColumnData",
     "AlternativeSource",
     "DerivedSource",
+    "Signature",
     "computed_column",
     "H5adFacade",
     "is_h5ad_inspect_available",

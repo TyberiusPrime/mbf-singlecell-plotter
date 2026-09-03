@@ -76,6 +76,34 @@ and points the export's ``gene_url`` at them, so clicking a gene in the HTML
 shows its plot inline.  Pass ``gene_url=`` yourself to link somewhere else; a
 callable ``plot_genes`` names its own files, so it links nowhere by default.
 
+Signatures
+----------
+``add_signature`` is ordinary configuration, so the gene set travels in the
+job's ParameterInvariant: editing the list re-runs the plots that use it.
+Every terminal that plots a signature also writes ``<stem>_genes.tsv``, saying
+which of its genes this dataset actually has -- one job, declared identically by
+every terminal of that signature (its recipe covers the calls that decide gene
+resolution and nothing else), so styling one plot differently does not fork the
+file::
+
+    sig = builder.add_signature("Myeloid", genes, method="mean").plot("Myeloid")
+    sig.scatter()                  # Myeloid_scatter.png + Myeloid_genes.tsv
+    sig.violin("leiden")           # ... and the very same TSV
+
+``plot_genes`` repeats a plot for every gene of the set, into a sub-directory
+named after the plot -- the score stays visible next to the folder::
+
+    sig.scatter(plot_genes=True)   # Myeloid/LYZ_scatter.png, ...
+    sig.violin("leiden", plot_genes=True)   # per-gene violins, same folder
+    sig.scatter(plot_genes=lambda gene: gene.into("genes").histogram())
+
+``True`` replays *this* terminal with the same arguments; a callable receives
+each gene's Plot and names its own files, as with the exports.  A signature
+keeps plotting when some of its genes are absent, so its fan-out has to skip
+them -- which only the TSV can tell, hence a :class:`pypipegraph2.JobGeneratingJob`
+waiting for it.  Genes named explicitly instead (``plot_genes=["LYZ", "CST3"]``,
+which works for any column) are declared right away and plotted as named.
+
 Semantics
 ---------
 Replay order is ``builder calls -> plot calls``, exactly as if you had made
@@ -119,6 +147,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from .data import _spec_str as _gene_key  # the TSV's spelling of a gene spec
 from .plots import ScatterPlotter
 
 __all__ = ["PlotBuilder", "Plot", "UnencodableArgument"]
@@ -191,7 +220,7 @@ CONFIG_METHODS, TERMINAL_METHODS, EXPORT_METHODS = _classify(ScatterPlotter)
 
 # Terminal-level keywords that shadow nothing in any terminal signature; see
 # test_ppg2_core.py::test_reserved_output_kwargs_do_not_shadow_terminals.
-RESERVED_OUTPUT_KWARGS = ("name", "filename", "dpi")
+RESERVED_OUTPUT_KWARGS = ("name", "filename", "dpi", "plot_genes")
 
 # The same for exports -- `dpi` is missing on purpose: it is a real argument of
 # the export methods (the resolution of the PNG embedded in the HTML), so it is
@@ -201,6 +230,19 @@ RESERVED_EXPORT_KWARGS = ("name", "filename", "plot_genes")
 # The methods that take a data source.  A source has to be a Path (or a
 # ``(Path, job)`` pair, or a job) so it can become a file dependency -- a plain
 # string would look like any other argument and silently lose its invariant.
+# Everything a signature needs to know which of its genes this dataset has --
+# and nothing else.  The genes TSV is declared by *every* terminal that plots a
+# signature, so its recipe has to be blind to styling, faceting and filtering:
+# that is what lets .scatter() and .style(...).violin() declare one and the same
+# file instead of colliding over it.
+GENE_RESOLUTION_METHODS = (
+    "set_source",
+    "set_embedding_source",
+    "add_alternative_source",
+    "add_derived_source",
+    "add_signature",
+)
+
 SOURCE_PARAMS = {
     "set_source": "ad_or_data",
     "add_alternative_source": "source",
@@ -637,7 +679,9 @@ def _make_terminal_method(terminal: str, fn):
     signature = inspect.signature(fn)
 
     @functools.wraps(fn)
-    def wrapper(self, *args, name=None, filename=None, dpi=None, **kwargs):
+    def wrapper(
+        self, *args, name=None, filename=None, dpi=None, plot_genes=None, **kwargs
+    ):
         if takes_column and "column" not in kwargs:
             if self.column is None:
                 raise TypeError(
@@ -658,6 +702,11 @@ def _make_terminal_method(terminal: str, fn):
                     if isinstance(a, str)
                 ]
             )
+        if plot_genes is not None and not takes_column:
+            raise TypeError(
+                f"{type(self).__name__}.{default_name}(): plot_genes= needs a "
+                "terminal that plots one column, and this one does not take one."
+            )
         return self._build(
             terminal,
             tuple(args),
@@ -665,12 +714,31 @@ def _make_terminal_method(terminal: str, fn):
             name=name,
             filename=filename,
             dpi=dpi,
+            plot_genes=plot_genes,
+            gene_args=tuple(args[1:]) if takes_column else (),
         )
 
     wrapper.__doc__ = (fn.__doc__ or "").rstrip() + (
         "\n\n        Creates the pipegraph job for this file instead of building the"
         "\n        plot; the plot's column is supplied automatically. Returns a copy"
         "\n        of the plot with .job_ and .jobs_ set."
+        "\n"
+        "\n        Plotting a registered signature also writes ``<stem>_genes.tsv``,"
+        "\n        listing which of its genes this data has."
+        "\n"
+        "\n        ``plot_genes`` repeats the plot for every gene of the set, into a"
+        "\n        sub-directory named after this plot.  ``True`` replays *this*"
+        "\n        terminal with the same arguments; a list of genes does the same"
+        "\n        for a column that is no signature; a callable receives each"
+        "\n        gene's Plot and names its own files::"
+        "\n"
+        "\n            sig.violin('leiden', plot_genes=True)"
+        "\n            sig.scatter(plot_genes=lambda gene: gene.into('g').scatter())"
+        "\n"
+        "\n        A signature's genes are plotted by a JobGeneratingJob waiting"
+        "\n        for the genes TSV, so genes this data lacks are skipped rather"
+        "\n        than failing; genes named in a list are declared right away and"
+        "\n        plotted as named."
     )
     return wrapper
 
@@ -704,6 +772,25 @@ def _default_gene_plot(plot: "Plot") -> None:
     plot.into(GENE_PLOT_TERMINAL).scatter()  # ty: ignore
 
 
+def _default_signature_gene_plot(
+    plot: "Plot", *, terminal, args, kwargs, name, dpi, folder
+) -> None:
+    """The terminal ``plot_genes=True`` hook: this very plot, per gene.
+
+    Same terminal, same arguments, one sub-directory down -- so
+    ``violin('leiden', plot_genes=True)`` yields per-gene violins rather than
+    something the caller did not ask for.
+    """
+    plot.into(folder)._build(
+        terminal,
+        (plot.column,) + tuple(args),
+        dict(kwargs),
+        name=name,
+        filename=None,  # the caller's filename names one file, not every gene's
+        dpi=dpi,
+    )
+
+
 def _default_gene_url() -> str:
     """The ``gene_url`` template pointing at what :func:`_default_gene_plot` writes.
 
@@ -711,6 +798,36 @@ def _default_gene_url() -> str:
     hangs off, so the link works from a copied result folder as well.
     """
     return f"{GENE_PLOT_TERMINAL}/{{gene}}_{GENE_PLOT_TERMINAL}.png"
+
+
+def _present_genes(tsv_path, genes: Sequence) -> list:
+    """The registered *genes* this dataset actually has, per the genes TSV.
+
+    A signature keeps plotting when some of its genes are missing (that is what
+    ``missing="warn"`` means), so its per-gene plots have to skip them too --
+    and whether a gene resolves is only known once something has looked into
+    the file.  The TSV is that look; the specs come from the recorded call, so
+    ``(source, gene)`` routing survives the round trip.
+    """
+    import pandas as pd
+
+    table = pd.read_csv(tsv_path, sep="\t")
+    present = {
+        str(gene) for gene, found in zip(table["gene"], table["present"]) if bool(found)
+    }
+    return [gene for gene in genes if _gene_key(gene) in present]
+
+
+def _generate_signature_gene_plots(tsv_path, genes, template: "Plot", hook) -> list:
+    """Replay *template* once per present gene, through *hook*."""
+    found = _present_genes(tsv_path, genes)
+    for gene in found:
+        plot = template._copy()
+        plot.column = gene
+        plot._jobs = ()
+        plot._job = None
+        hook(plot)
+    return found
 
 
 def _marker_genes(tsv_path) -> list:
@@ -859,6 +976,7 @@ class Plot(_Recorder):
         self._into: Tuple[str, ...] = Path(into).parts if into is not None else ()
         self._dpi = dpi
         self._jobs: Tuple[Any, ...] = ()
+        self._job: Any = None
         self.init_kwargs = self._init_kwargs_from(plotter_kwargs)
 
     # -- naming / layout ---------------------------------------------------
@@ -898,13 +1016,18 @@ class Plot(_Recorder):
 
     @property
     def job_(self):
-        """The job the most recent terminal created."""
-        if not self._jobs:
+        """The job for the file the most recent terminal named.
+
+        The extras a terminal may create along the way -- a signature's genes
+        TSV, the per-gene plots of ``plot_genes`` -- are in :attr:`jobs_`, not
+        here: ``depends_on(plot.job_)`` waits for *this* plot's file.
+        """
+        if self._job is None:
             raise AttributeError(
                 "no terminal has been called on this Plot yet, so there is no "
                 "job - call .scatter(), .violin(), ... first."
             )
-        return self._jobs[-1]
+        return self._job
 
     # -- job creation ------------------------------------------------------
 
@@ -944,10 +1067,23 @@ class Plot(_Recorder):
             terminal, tuple(args), dict(kwargs), name=name, filename=filename, dpi=dpi
         )
 
-    def _build(self, terminal, args, kwargs, *, name, filename, dpi) -> "Plot":
+    def _build(
+        self,
+        terminal,
+        args,
+        kwargs,
+        *,
+        name,
+        filename,
+        dpi,
+        plot_genes=None,
+        gene_args=(),
+    ) -> "Plot":
         label = _output_name_for(terminal)
         ppg, graph = _active_graph(f"{type(self).__name__}.{label}()")
         self._require_source(label)
+        signature = self._signature_call(self.column)
+        genes, from_signature = self._genes_to_plot(plot_genes, signature, label)
         target = self._target(name, filename)
         recipe = self._encode(ppg, graph, terminal, args, kwargs, target, dpi)
         _claim_output(
@@ -956,11 +1092,195 @@ class Plot(_Recorder):
             recipe.parameters,
             f"{self._describe()}.{label}() at {_caller_location()}",
         )
+        new = self._copy()
+        # the genes TSV first: it says what the score is made of, and it is the
+        # one file every terminal of this signature agrees on.
+        tsv_job = None
+        if signature is not None:
+            tsv_job = self._build_signature_tsv(ppg, graph, signature)
+            new._jobs = self._add_jobs(self._jobs, [tsv_job])
+        else:
+            new._jobs = self._jobs
         job = self._create_job(ppg, target, recipe)
         self._builder._session.record(graph, job)
-        new = self._copy()
-        new._jobs = self._jobs + (job,)
+        new._job = job
+        new._jobs = self._add_jobs(new._jobs, [job])
+        if genes is not None:
+            hook = (
+                plot_genes
+                if callable(plot_genes)  # True is not, so it takes the default
+                else functools.partial(
+                    _default_signature_gene_plot,
+                    terminal=terminal,
+                    args=gene_args,
+                    kwargs=kwargs,
+                    name=name,
+                    dpi=dpi,
+                    folder=self.stem,
+                )
+            )
+            if from_signature:
+                created = [
+                    self._create_signature_gene_job(
+                        ppg, graph, tsv_job, target, genes, hook
+                    )
+                ]
+            else:
+                created = self._plot_each_gene(graph, genes, hook)
+            new._jobs = self._add_jobs(new._jobs, created)
         return new
+
+    def _create_signature_gene_job(self, ppg, graph, tsv_job, target, genes, hook):
+        """A JobGeneratingJob that plots the genes of the signature this plot shows.
+
+        Which of them the data has is what the genes TSV answers, so the plots
+        can only be declared once it has run -- the same shape the interactive
+        exports use for their marker genes.  The template is this very plot --
+        builder script, plot script, ``into``, ``dpi`` -- with the column
+        swapped per gene.
+        """
+        template = self._copy()
+        template._jobs = ()
+        template._job = None
+        template._name = None  # each gene names its own files
+
+        def callback(genes=tuple(genes), hook=hook, template=template, tsv=tsv_job):
+            _generate_signature_gene_plots(Path(tsv.job_id), genes, template, hook)
+
+        job = ppg.JobGeneratingJob(
+            f"{target}::gene_plots", callback, depend_on_function=False
+        )
+        job.depends_on(tsv_job)
+        self._builder._session.record(graph, job)
+        return job
+
+    @staticmethod
+    def _add_jobs(jobs: tuple, new_jobs) -> tuple:
+        """Append *new_jobs*, skipping the ones already there.
+
+        A re-declaration hands back the very same job object (pypipegraph2
+        deduplicates by id), and a second terminal on the same plot re-declares
+        the signature's TSV -- which must not show up twice in ``jobs_``.
+        """
+        out = list(jobs)
+        for job in new_jobs:
+            if not any(known is job for known in out):
+                out.append(job)
+        return tuple(out)
+
+    # -- signatures --------------------------------------------------------
+
+    def _signature_call(self, column) -> Optional[_Call]:
+        """The recorded ``add_signature`` call defining *column*, if any.
+
+        Read off the script rather than out of the data: nothing may open the
+        h5ad while the graph is being declared.
+        """
+        if not isinstance(column, str):
+            return None
+        found = None
+        for call in self._builder._calls + self._calls:
+            if call.method != "add_signature":
+                continue
+            name = call.args[0] if call.args else call.kwargs.get("name")
+            if name == column:
+                found = call  # a later definition wins, as on replay
+        return found
+
+    @staticmethod
+    def _signature_genes(call: _Call) -> list:
+        genes = call.args[1] if len(call.args) > 1 else call.kwargs["genes"]
+        return list(dict.fromkeys(genes))
+
+    def _genes_to_plot(self, plot_genes, signature, label):
+        """``(genes, from_signature)`` -- or ``(None, False)`` for no fan-out.
+
+        Genes named explicitly are plotted as named (and a typo fails loudly);
+        a signature's genes are filtered by what the data has, which only its
+        genes TSV can say.
+        """
+        if plot_genes is None or plot_genes is False:
+            return None, False
+        if not (plot_genes is True or callable(plot_genes)):
+            if isinstance(plot_genes, (str, bytes)) or not isinstance(
+                plot_genes, (list, tuple)
+            ):
+                raise TypeError(
+                    f"{self._describe()}.{label}(): plot_genes must be True, a "
+                    "list of genes, or a callable taking the gene's Plot - got "
+                    f"{type(plot_genes).__name__}."
+                )
+            genes = list(dict.fromkeys(plot_genes))
+            if not genes:
+                raise ValueError(
+                    f"{self._describe()}.{label}(): plot_genes= is an empty list."
+                )
+            return genes, False
+        if signature is None:
+            raise TypeError(
+                f"{self._describe()}.{label}(): plot_genes= plots the genes of a "
+                f"signature, and {self.column!r} is not one (add_signature(...) "
+                "registers it). Pass the genes as a list to plot them anyway."
+            )
+        return self._signature_genes(signature), True
+
+    def _plot_each_gene(self, graph, genes: list, hook) -> list:
+        """Run *hook* once per gene, and collect the jobs it created.
+
+        The template is this plot -- builder script, plot script, ``into``,
+        ``dpi`` -- with only the column swapped, exactly as the exports do it.
+        """
+        session = self._builder._session
+        before = len(session.current(graph))
+        for gene in genes:
+            plot = self._copy()
+            plot.column = gene
+            plot._name = None  # each gene names its own files
+            plot._jobs = ()
+            plot._job = None
+            hook(plot)
+        return session.current(graph)[before:]
+
+    def _build_signature_tsv(self, ppg, graph, signature: _Call):
+        """The ``<stem>_genes.tsv`` job: which genes of the set this data has.
+
+        Declared by every terminal that plots the signature, so its recipe is
+        built from the gene-resolution calls alone -- two terminals of one
+        signature then declare the very same file with the very same recipe,
+        which is a no-op rather than a collision.
+        """
+        name = signature.args[0] if signature.args else signature.kwargs["name"]
+        target = self._target("genes", None, suffix=".tsv")
+        calls = []
+        for call in self._builder._calls + self._calls:
+            if call.method == "add_signature":
+                if call is signature:
+                    calls.append(call)
+                    break  # later signatures cannot change this one's genes
+                continue  # ... and neither can the other signatures
+            if call.method in GENE_RESOLUTION_METHODS:
+                calls.append(call)
+        walker = _Walker(str(target), _resolver(ppg), ppg)
+        encoded, resolved = walker.walk_calls(calls)
+        parameters = json.dumps({"calls": encoded, "signature": name}, sort_keys=True)
+        _claim_output(
+            graph,
+            target,
+            parameters,
+            f"{self._describe()} signature genes at {_caller_location()}",
+        )
+
+        def write(output_filename, calls=tuple(resolved), signature=name):
+            output_filename.parent.mkdir(parents=True, exist_ok=True)
+            _replay(calls, {}).signature_report(signature).to_csv(
+                output_filename, sep="\t", index=False
+            )
+
+        job = ppg.FileGeneratingJob(target, write, depend_on_function=False)
+        job.depends_on(list(walker.deps) + walker.function_invariants())
+        job.depends_on(ppg.ParameterInvariant(str(target) + "_config", parameters))
+        self._builder._session.record(graph, job)
+        return job
 
     def _target(self, name: str, filename: Optional[str], suffix=".png") -> Path:
         builder = self._builder
@@ -1100,6 +1420,7 @@ class Plot(_Recorder):
         job = self._create_export_job(ppg, outputs, recipe)
         self._builder._session.record(graph, job)
         new = self._copy()
+        new._job = job
         new._jobs = self._jobs + (job,)
         if plot_genes:
             hook = _default_gene_plot if plot_genes is True else plot_genes

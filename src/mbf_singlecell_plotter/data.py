@@ -1,6 +1,8 @@
 """Layer 1: data access (AnnData → DataFrames). No plotting."""
 
 import copy
+import functools
+import warnings
 from pathlib import Path
 from typing import Callable, Dict, NamedTuple, Optional, Union, Any
 
@@ -148,6 +150,90 @@ class DerivedSource(NamedTuple):
     columns: Dict[str, Callable[["EmbeddingData"], "pd.Series"]]
 
 
+SIGNATURE_METHODS = ("sum", "mean", "count_expressed", "fraction_expressed")
+
+
+class Signature(NamedTuple):
+    """A gene-set score registered on :class:`EmbeddingData`.
+
+    Created by :meth:`EmbeddingData.add_signature`.  The record is what makes a
+    signature more than a derived column: it keeps the gene set, the
+    aggregation and the label around, so plots can say what the values *mean*
+    and the pipegraph layer can plot every gene of the set alongside the score.
+
+    ``method`` is one of :data:`SIGNATURE_METHODS` or a callable receiving the
+    genes × cells :class:`pandas.DataFrame` (one column per resolved gene) and
+    returning a :class:`pandas.Series`.
+    """
+
+    name: str
+    genes: tuple
+    method: Union[str, Callable[["pd.DataFrame"], "pd.Series"]] = "mean"
+    threshold: float = 0.0
+    missing: str = "warn"
+    label: Optional[str] = None
+
+    def describe(self, n_used: int) -> str:
+        """The 'what am I looking at' half of the label, e.g. ``mean log2
+        expression, 10 of 12 genes``."""
+        n_total = len(self.genes)
+        genes = "gene" if n_total == 1 else "genes"
+        count = (
+            f"{n_total} {genes}"
+            if n_used == n_total
+            else f"{n_used} of {n_total} {genes}"
+        )
+        if callable(self.method):
+            what = getattr(self.method, "__name__", "custom")
+        elif self.method == "sum":
+            what = "\u03a3 log2 expression"
+        elif self.method == "mean":
+            what = "mean log2 expression"
+        elif self.method == "count_expressed":
+            what = "genes expressed"
+        else:
+            what = "fraction expressed"
+        return f"{what}, {count}"
+
+    def value_label(self, n_used: int) -> str:
+        """Full colourbar / value-axis label.  An explicit ``label=`` wins."""
+        if self.label is not None:
+            return self.label
+        return f"{self.name} signature\n{self.describe(n_used)}"
+
+
+def _signature_column(sig: "Signature", data: "EmbeddingData") -> pd.Series:
+    """The derived-column callable behind a registered signature."""
+    return data._signature_series(sig)
+
+
+def _spec_str(spec) -> str:
+    """A gene spec as it goes into a report table: ``LYZ`` / ``imputed:LYZ``."""
+    if isinstance(spec, tuple):
+        return f"{spec[0]}:{spec[1]}"
+    return str(spec)
+
+
+def _aggregate_signature(frame: pd.DataFrame, sig: Signature) -> pd.Series:
+    """Reduce the genes × cells *frame* to one value per cell."""
+    if callable(sig.method):
+        result = sig.method(frame)
+        if not isinstance(result, pd.Series):
+            raise TypeError(
+                f"Signature {sig.name!r}: method callable must return a pandas "
+                f"Series, got {type(result).__name__}"
+            )
+        return result
+    if sig.method == "sum":
+        return frame.sum(axis=1)
+    if sig.method == "mean":
+        return frame.mean(axis=1)
+    expressed = (frame > sig.threshold).sum(axis=1)
+    if sig.method == "count_expressed":
+        return expressed
+    return expressed / frame.shape[1]
+
+
 def computed_column(name: Optional[str] = None):
     """Decorator: register an :class:`EmbeddingData` method as a
     :meth:`get_column` fallback.
@@ -265,6 +351,7 @@ class EmbeddingData:
         self._derived_sources = self._normalize_derived_items(
             derived_sources or [], existing_names=alt_names
         )
+        self._signatures: tuple[Signature, ...] = ()
 
         self._embedding: Optional[str] = None
         self._embedding_cols: Optional[tuple[int, int]] = None
@@ -761,6 +848,186 @@ class EmbeddingData:
         )
         return new
 
+    # ── signatures ──────────────────────────────────────────────────────────
+
+    @property
+    def signatures(self) -> tuple:
+        """The registered :class:`Signature` records, in registration order."""
+        return self._signatures
+
+    def add_signature(
+        self,
+        name: str,
+        genes,
+        *,
+        method: Union[str, Callable[["pd.DataFrame"], "pd.Series"]] = "mean",
+        threshold: float = 0.0,
+        missing: str = "warn",
+        label: Optional[str] = None,
+    ) -> "EmbeddingData":
+        """Return a copy with a gene-set score registered under *name*.
+
+        The score becomes an ordinary column: ``get_column(name)`` and
+        ``plot(name)`` find it, the cell filter applies to it, and
+        :meth:`is_gene` reports ``False``.  Unlike a hand-rolled
+        :meth:`add_derived_source` column it also *remembers what it is* — the
+        gene set, the aggregation, the label — which is what lets plots label
+        the value axis sensibly and the pipegraph layer plot every gene of the
+        set next to the score.
+
+        Args:
+            name:      Column (and display) name.  Must not already resolve in
+                       any registered source.
+            genes:     The gene set.  Every entry is resolved with
+                       :meth:`get_column`, so alternative-id lookups and
+                       ``(source_name, gene)`` routing work; duplicates are
+                       dropped.
+            method:    ``"sum"``, ``"mean"``, ``"count_expressed"`` (genes with
+                       a value ``> threshold``), ``"fraction_expressed"`` (the
+                       same, divided by the number of genes used), or a
+                       callable receiving the genes × cells DataFrame and
+                       returning a Series.
+            threshold: Cutoff for the ``*_expressed`` methods (strict ``>``).
+            missing:   What to do about genes absent from every source —
+                       ``"raise"``, ``"warn"`` (drop them, warn once per
+                       computation, and say so in the label) or ``"ignore"``.
+                       Absent *every* gene is always an error.
+            label:     Replaces the generated value-axis / colourbar label.
+
+        Aggregation runs on the values :meth:`get_column` returns, i.e. after
+        this source's ``layer`` / ``transform`` — so ``"mean"`` over a log2
+        source is a mean of log2 values.  The instance is immutable; a new copy
+        is returned.
+        """
+        if not isinstance(name, str):
+            raise TypeError(f"Signature name must be a string, got {name!r}")
+        genes = tuple(dict.fromkeys(genes))
+        if not genes:
+            raise ValueError(f"Signature {name!r} has no genes")
+        if not callable(method) and method not in SIGNATURE_METHODS:
+            raise ValueError(
+                f"Signature {name!r}: unknown method {method!r}; use one of "
+                f"{list(SIGNATURE_METHODS)} or a callable"
+            )
+        if missing not in ("raise", "warn", "ignore"):
+            raise ValueError(
+                f"Signature {name!r}: missing must be 'raise', 'warn' or "
+                f"'ignore', got {missing!r}"
+            )
+        if any(s.name == name for s in self._signatures):
+            raise ValueError(f"Signature {name!r} is already registered")
+        clash = self._locate_column(name)
+        if clash is not None:
+            raise ValueError(
+                f"Signature {name!r} would shadow the {clash[1]} source's "
+                f"{clash[0]!r} — give the signature another name."
+            )
+        sig = Signature(name, genes, method, float(threshold), missing, label)
+        new = copy.copy(self)
+        new._signatures = self._signatures + (sig,)
+        new._derived_sources = self._derived_sources + [
+            DerivedSource(None, {name: functools.partial(_signature_column, sig)})
+        ]
+        return new
+
+    def signature_for(self, column) -> Optional[Signature]:
+        """The :class:`Signature` *column* names, or ``None``."""
+        if not isinstance(column, str):
+            return None
+        for sig in self._signatures:
+            if sig.name == column:
+                return sig
+        return None
+
+    def signature_genes(self, name: str) -> list:
+        """The gene set of the signature registered under *name*."""
+        return list(self._require_signature(name).genes)
+
+    def signature_label(self, column) -> Optional[str]:
+        """The value-axis / colourbar label for *column*, if it is a signature.
+
+        Reports how many of the gene set actually resolve, so a plot made
+        against a dataset missing two of the genes says so.
+        """
+        sig = self.signature_for(column)
+        if sig is None:
+            return None
+        return sig.value_label(self._signature_present(sig))
+
+    def signature_report(self, name: str) -> pd.DataFrame:
+        """Which genes of the signature *name* this data resolves, and where.
+
+        Columns: ``gene`` (as registered), ``present``, ``resolved_name`` (the
+        ``var`` entry / obs column it maps to) and ``source``.  Resolution
+        only — no expression values are read.
+        """
+        sig = self._require_signature(name)
+        rows = []
+        for spec in sig.genes:
+            found = self._locate_column(spec)
+            rows.append(
+                {
+                    "gene": _spec_str(spec),
+                    "present": found is not None,
+                    "resolved_name": found[0] if found is not None else "",
+                    "source": found[1] if found is not None else "",
+                }
+            )
+        return pd.DataFrame(
+            rows, columns=["gene", "present", "resolved_name", "source"]
+        )
+
+    def _require_signature(self, name: str) -> Signature:
+        sig = self.signature_for(name)
+        if sig is None:
+            raise KeyError(
+                f"No signature named {name!r}. Registered: "
+                f"{[s.name for s in self._signatures]!r}"
+            )
+        return sig
+
+    def _signature_present(self, sig: Signature) -> int:
+        return sum(1 for spec in sig.genes if self._locate_column(spec) is not None)
+
+    def _signature_series(self, sig: Signature) -> pd.Series:
+        """Compute the score of *sig* — the derived column behind its name.
+
+        Called through :meth:`_compute_derived`, i.e. on an unfiltered view, so
+        the cell filter is applied exactly once at the :meth:`get_column`
+        boundary.
+        """
+        columns, absent = {}, []
+        for spec in sig.genes:
+            try:
+                resolved = self.get_column(spec)
+            except KeyError:
+                absent.append(_spec_str(spec))
+                continue
+            series = resolved.series
+            if not pd.api.types.is_numeric_dtype(series):
+                raise TypeError(
+                    f"Signature {sig.name!r}: {_spec_str(spec)!r} is not numeric "
+                    f"({series.dtype}) — a signature needs expression values."
+                )
+            # kept at the source dtype: a mean over one gene set should read
+            # on the same scale as the single-gene plot next to it
+            columns[_spec_str(spec)] = series
+        if absent:
+            missing_str = ", ".join(absent)
+            if sig.missing == "raise" or not columns:
+                raise KeyError(
+                    f"Signature {sig.name!r}: {len(absent)} of {len(sig.genes)} "
+                    f"genes are in no registered source ({missing_str})"
+                )
+            if sig.missing == "warn":
+                warnings.warn(
+                    f"Signature {sig.name!r}: skipping {len(absent)} of "
+                    f"{len(sig.genes)} genes, absent from every source "
+                    f"({missing_str})",
+                    stacklevel=2,
+                )
+        return _aggregate_signature(pd.DataFrame(columns), sig)
+
     # ── viewport ────────────────────────────────────────────────────────────
 
     def focus_on(self, region) -> "EmbeddingData":
@@ -1202,28 +1469,77 @@ class EmbeddingData:
                     return val
         return None
 
-    def _classify_in(self, ad, name: str) -> Optional[bool]:
-        """Classify *name* against a single source without extracting data.
+    def _locate_in(self, ad, name: str) -> "Optional[tuple[str, bool]]":
+        """Resolve *name* against a single source without extracting data.
 
-        Mirrors :meth:`_resolve_column_from`'s resolution order.  Returns
-        ``True`` if *name* is a feature (``var`` row), ``False`` if it is an
-        ``obs`` column, or ``None`` if it is not found in this source.
+        Mirrors :meth:`_resolve_column_from`'s resolution order and returns
+        ``(resolved_name, is_gene)`` — the ``var`` entry (or ``obs`` column)
+        *name* maps to — or ``None`` if this source does not know it.
         """
         if name in ad.obs:
-            return False
+            return name, False
         if name in ad.var.index:
-            return True
+            return name, True
+
+        def _single(mask) -> Optional[str]:
+            hits = np.nonzero(np.asarray(mask))[0]
+            return str(ad.var.index[hits[0]]) if len(hits) == 1 else None
+
         if (
             self._alternative_id_column is not None
             and self._alternative_id_column in ad.var.columns
-            and bool((ad.var[self._alternative_id_column] == name).sum() == 1)
         ):
-            return True
+            resolved = _single(ad.var[self._alternative_id_column] == name)
+            if resolved is not None:
+                return resolved, True
         if ad.var.index.str.contains(" ").any():
-            if bool((ad.var.index.str.startswith(name + " ")).sum() == 1):
-                return True
-            if bool((ad.var.index.str.endswith(" " + name)).sum() == 1):
-                return True
+            for mask in (
+                ad.var.index.str.startswith(name + " "),
+                ad.var.index.str.endswith(" " + name),
+            ):
+                resolved = _single(mask)
+                if resolved is not None:
+                    return resolved, True
+        return None
+
+    def _classify_in(self, ad, name: str) -> Optional[bool]:
+        """``True`` if *name* is a feature of *ad*, ``False`` for an ``obs``
+        column, ``None`` if this source does not know it."""
+        found = self._locate_in(ad, name)
+        return None if found is None else found[1]
+
+    def _locate_column(self, spec) -> "Optional[tuple[str, str]]":
+        """Where *spec* resolves: ``(resolved_name, source_label)`` or ``None``.
+
+        Follows :meth:`get_column`'s resolution order — primary source, tagged
+        computed columns, derived sources, alternative sources — but reads no
+        data, so it can answer "is this gene in this dataset at all?" cheaply.
+        Accepts the same specs as :meth:`get_column`, tuples included.
+        """
+        if isinstance(spec, tuple):
+            if len(spec) != 2:
+                return None
+            src_name, col = spec
+            for derived in self._derived_sources:
+                if derived.name == src_name:
+                    return (col, src_name) if col in derived.columns else None
+            for alt in self._alternative_sources:
+                if alt.name == src_name:
+                    found = self._locate_in(alt.ad, col)
+                    return (found[0], src_name) if found is not None else None
+            return None
+        found = self._locate_in(self.ad, spec)
+        if found is not None:
+            return found[0], "primary"
+        if spec in self._computed_columns:
+            return spec, "computed"
+        for position, derived in enumerate(self._derived_sources):
+            if spec in derived.columns:
+                return spec, derived.name or f"derived[{position}]"
+        for position, alt in enumerate(self._alternative_sources):
+            found = self._locate_in(alt.ad, spec)
+            if found is not None:
+                return found[0], alt.name or f"alternative[{position}]"
         return None
 
     def is_gene(self, name: Union[str, tuple[str, str]]) -> bool:

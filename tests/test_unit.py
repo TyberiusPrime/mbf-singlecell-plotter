@@ -3781,3 +3781,289 @@ class TestInteractiveMarkers:
     def test_requires_source(self):
         with pytest.raises(RuntimeError, match="set_source"):
             ScatterPlotter().save_interactive_cluster_markers("leiden", "x.html")
+
+
+# ---------------------------------------------------------------------------
+# signatures
+# ---------------------------------------------------------------------------
+
+SIG_GENES = ["S100A8", "LST1", "CST3"]
+SIG_GENES_WITH_MISSING = SIG_GENES + ["__no_such_gene__"]
+
+
+def color_scale_name(p):
+    return next(s for s in p.scales if "color" in s.aesthetics).name
+
+
+class TestSignatureData:
+    """add_signature() on the data layer: the score, and what it knows."""
+
+    def test_sum_is_the_sum_of_its_genes(self, data):
+        sig = data.add_signature("Sig", SIG_GENES, method="sum")
+        expected = sum(data.get_column(g).series for g in SIG_GENES)
+        pd.testing.assert_series_equal(
+            sig.get_column("Sig").series, expected, check_names=False
+        )
+
+    def test_mean_is_the_mean_of_its_genes(self, data):
+        sig = data.add_signature("Sig", SIG_GENES, method="mean")
+        expected = sum(data.get_column(g).series for g in SIG_GENES) / len(SIG_GENES)
+        pd.testing.assert_series_equal(
+            sig.get_column("Sig").series, expected, check_names=False
+        )
+
+    def test_count_expressed_counts_genes_above_the_threshold(self, data):
+        sig = data.add_signature(
+            "Sig", SIG_GENES, method="count_expressed", threshold=0.5
+        )
+        expected = sum((data.get_column(g).series > 0.5).astype(int) for g in SIG_GENES)
+        result = sig.get_column("Sig").series
+        assert result.max() == 3
+        pd.testing.assert_series_equal(result.astype(int), expected, check_names=False)
+
+    def test_fraction_expressed_is_the_count_over_the_gene_number(self, data):
+        counts = data.add_signature("C", SIG_GENES, method="count_expressed")
+        fraction = data.add_signature("F", SIG_GENES, method="fraction_expressed")
+        pd.testing.assert_series_equal(
+            fraction.get_column("F").series,
+            counts.get_column("C").series / 3,
+            check_names=False,
+        )
+
+    def test_a_callable_method_gets_the_gene_frame(self, data):
+        seen = {}
+
+        def widest(frame):
+            seen["shape"] = frame.shape
+            return frame.max(axis=1)
+
+        sig = data.add_signature("Sig", SIG_GENES, method=widest)
+        result = sig.get_column("Sig").series
+        assert seen["shape"] == (data.ad.n_obs, 3)
+        pd.testing.assert_series_equal(
+            result,
+            pd.concat([data.get_column(g).series for g in SIG_GENES], axis=1).max(
+                axis=1
+            ),
+            check_names=False,
+        )
+
+    def test_a_signature_is_not_a_gene(self, data):
+        sig = data.add_signature("Sig", SIG_GENES)
+        assert sig.is_gene("Sig") is False
+
+    def test_duplicate_genes_are_dropped(self, data):
+        sig = data.add_signature("Sig", SIG_GENES + [SIG_GENES[0]], method="sum")
+        assert sig.signature_genes("Sig") == SIG_GENES
+        pd.testing.assert_series_equal(
+            sig.get_column("Sig").series,
+            data.add_signature("S2", SIG_GENES, method="sum").get_column("S2").series,
+            check_names=False,
+        )
+
+    def test_the_cell_filter_applies(self, data):
+        sig = data.add_signature("Sig", SIG_GENES)
+        filtered = sig.set_filter(lambda d: d.get_column(CAT_COL).series == "0")
+        assert 0 < len(filtered.get_column("Sig").series) < data.ad.n_obs
+
+    def test_genes_may_come_from_an_alternative_source(self, data, ad):
+        other = anndata.AnnData(
+            X=ad.X.copy(), obs=ad.obs.copy(), var=ad.var.copy(), obsm=ad.obsm.copy()
+        )
+        sig = data.add_alternative_source(other, name="other").add_signature(
+            "Sig", [("other", "S100A8")], method="sum"
+        )
+        pd.testing.assert_series_equal(
+            sig.get_column("Sig").series,
+            data.get_column("S100A8").series,
+            check_names=False,
+        )
+
+    def test_the_registration_is_immutable(self, data):
+        sig = data.add_signature("Sig", SIG_GENES)
+        assert sig.signatures[0].name == "Sig"
+        assert data.signatures == ()
+        with pytest.raises(KeyError):
+            data.get_column("Sig")
+
+
+class TestSignatureMissingGenes:
+    def test_absent_genes_are_dropped_with_a_warning(self, data):
+        sig = data.add_signature("Sig", SIG_GENES_WITH_MISSING, method="sum")
+        with pytest.warns(UserWarning, match="__no_such_gene__"):
+            result = sig.get_column("Sig").series
+        pd.testing.assert_series_equal(
+            result,
+            data.add_signature("S2", SIG_GENES, method="sum").get_column("S2").series,
+            check_names=False,
+        )
+
+    def test_missing_raise_refuses_to_compute(self, data):
+        sig = data.add_signature("Sig", SIG_GENES_WITH_MISSING, missing="raise")
+        with pytest.raises(KeyError, match="__no_such_gene__"):
+            sig.get_column("Sig")
+
+    def test_missing_ignore_is_quiet(self, data, recwarn):
+        sig = data.add_signature("Sig", SIG_GENES_WITH_MISSING, missing="ignore")
+        sig.get_column("Sig")
+        assert not [w for w in recwarn if "__no_such_gene__" in str(w.message)]
+
+    def test_all_genes_absent_is_always_an_error(self, data):
+        sig = data.add_signature("Sig", ["__nope_a__", "__nope_b__"], missing="ignore")
+        with pytest.raises(KeyError, match="no registered source"):
+            sig.get_column("Sig")
+
+
+class TestSignatureValidation:
+    def test_an_empty_gene_set_is_refused(self, data):
+        with pytest.raises(ValueError, match="no genes"):
+            data.add_signature("Sig", [])
+
+    def test_an_unknown_method_is_refused(self, data):
+        with pytest.raises(ValueError, match="unknown method"):
+            data.add_signature("Sig", SIG_GENES, method="median")
+
+    def test_an_unknown_missing_policy_is_refused(self, data):
+        with pytest.raises(ValueError, match="missing must be"):
+            data.add_signature("Sig", SIG_GENES, missing="whatever")
+
+    def test_a_name_that_shadows_a_gene_is_refused(self, data):
+        with pytest.raises(ValueError, match="shadow"):
+            data.add_signature("S100A8", SIG_GENES)
+
+    def test_a_name_that_shadows_an_obs_column_is_refused(self, data):
+        with pytest.raises(ValueError, match="shadow"):
+            data.add_signature(CAT_COL, SIG_GENES)
+
+    def test_registering_the_same_name_twice_is_refused(self, data):
+        sig = data.add_signature("Sig", SIG_GENES)
+        with pytest.raises(ValueError, match="already registered"):
+            sig.add_signature("Sig", SIG_GENES)
+
+    def test_a_non_numeric_gene_is_refused(self, data):
+        sig = data.add_signature("Sig", [CAT_COL], method="sum")
+        with pytest.raises(TypeError, match="not numeric"):
+            sig.get_column("Sig")
+
+    def test_an_unknown_signature_has_no_report(self, data):
+        with pytest.raises(KeyError, match="No signature named"):
+            data.signature_report("Sig")
+
+
+class TestSignatureReport:
+    def test_it_lists_every_gene_with_its_source(self, data):
+        sig = data.add_signature("Sig", SIG_GENES_WITH_MISSING)
+        report = sig.signature_report("Sig")
+        assert list(report.columns) == ["gene", "present", "resolved_name", "source"]
+        assert list(report["gene"]) == SIG_GENES_WITH_MISSING
+        assert list(report["present"]) == [True, True, True, False]
+        assert list(report["resolved_name"]) == SIG_GENES + [""]
+        assert set(report["source"]) == {"primary", ""}
+
+    def test_a_routed_gene_keeps_its_source(self, data, ad):
+        other = anndata.AnnData(
+            X=ad.X.copy(), obs=ad.obs.copy(), var=ad.var.copy(), obsm=ad.obsm.copy()
+        )
+        sig = data.add_alternative_source(other, name="other").add_signature(
+            "Sig", [("other", "S100A8")]
+        )
+        report = sig.signature_report("Sig")
+        assert list(report["gene"]) == ["other:S100A8"]
+        assert list(report["source"]) == ["other"]
+
+
+class TestSignatureLabels:
+    """A signature says what its numbers are, wherever they are drawn."""
+
+    @pytest.mark.parametrize(
+        "method,expected",
+        [
+            ("sum", "Sig signature\nΣ log2 expression, 3 genes"),
+            ("mean", "Sig signature\nmean log2 expression, 3 genes"),
+            ("count_expressed", "Sig signature\ngenes expressed, 3 genes"),
+            ("fraction_expressed", "Sig signature\nfraction expressed, 3 genes"),
+        ],
+    )
+    def test_the_colorbar_names_the_aggregation(
+        self, plotter_no_boundary, method, expected
+    ):
+        p = plotter_no_boundary.add_signature("Sig", SIG_GENES, method=method).plot(
+            "Sig"
+        )
+        assert color_scale_name(p) == expected
+
+    def test_dropped_genes_show_up_in_the_label(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature("Sig", SIG_GENES_WITH_MISSING).plot("Sig")
+        assert (
+            color_scale_name(p) == "Sig signature\nmean log2 expression, 3 of 4 genes"
+        )
+
+    def test_one_gene_is_not_pluralised(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature("Sig", ["S100A8"]).plot("Sig")
+        assert color_scale_name(p).endswith("1 gene")
+
+    def test_an_explicit_label_wins(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature("Sig", SIG_GENES, label="my score").plot(
+            "Sig"
+        )
+        assert color_scale_name(p) == "my score"
+
+    def test_the_colormap_title_still_wins(self, plotter_no_boundary):
+        p = (
+            plotter_no_boundary.add_signature("Sig", SIG_GENES, label="my score")
+            .colormap(title="the title")
+            .plot("Sig")
+        )
+        assert color_scale_name(p) == "the title"
+
+    def test_the_title_stays_the_bare_name(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature("Sig", SIG_GENES).plot("Sig")
+        assert p.labels.get("title", None) == "Sig"
+
+    def test_counted_genes_get_whole_number_breaks(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature(
+            "Sig", SIG_GENES, method="count_expressed"
+        ).plot("Sig")
+        breaks = next(s for s in p.scales if "color" in s.aesthetics).breaks
+        assert all(float(b).is_integer() for b in breaks)
+
+    def test_a_gene_keeps_its_own_label(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature("Sig", SIG_GENES).plot("S100A8")
+        assert color_scale_name(p) == "S100A8: log2 expression"
+
+    def test_the_violin_axis_is_labelled(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature("Sig", SIG_GENES).plot_violin(
+            "Sig", group_by=CAT_COL
+        )
+        assert p.labels.y == "Sig signature\nmean log2 expression, 3 genes"
+
+    def test_the_ridgeline_axis_is_labelled(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature("Sig", SIG_GENES).plot_ridgeline(
+            "Sig", group_by=CAT_COL
+        )
+        assert p.labels.x == "Sig signature\nmean log2 expression, 3 genes"
+
+    def test_the_histogram_axis_is_labelled(self, plotter_no_boundary):
+        p = plotter_no_boundary.add_signature("Sig", SIG_GENES).plot_histogram("Sig")
+        assert p.labels.x == "Sig signature\nmean log2 expression, 3 genes"
+
+
+class TestSignaturePlotter:
+    def test_it_needs_a_source(self):
+        with pytest.raises(RuntimeError, match="set_source"):
+            ScatterPlotter().add_signature("Sig", SIG_GENES)
+
+    def test_the_plotter_is_immutable(self, plotter_no_boundary):
+        plotter_no_boundary.add_signature("Sig", SIG_GENES)
+        with pytest.raises(KeyError):
+            plotter_no_boundary.get_column("Sig")
+
+    def test_the_report_is_reachable_from_the_plotter(self, plotter_no_boundary):
+        report = plotter_no_boundary.add_signature("Sig", SIG_GENES).signature_report(
+            "Sig"
+        )
+        assert list(report["present"]) == [True, True, True]
+
+    def test_the_report_needs_a_source(self):
+        with pytest.raises(RuntimeError, match="set_source"):
+            ScatterPlotter().signature_report("Sig")

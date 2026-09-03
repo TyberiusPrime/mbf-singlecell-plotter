@@ -1282,3 +1282,36 @@ class TestCategoricalLegendFit:
             .plot("cat14")
         )
         assert_image(p, width=5, height=4, dpi=300)
+
+
+# ---------------------------------------------------------------------------
+# signatures
+# ---------------------------------------------------------------------------
+
+
+class TestSignature:
+    """The score renders like a gene, but the colour bar says what it is."""
+
+    GENES = ["S100A8", "LST1", "CST3", "__no_such_gene__"]
+
+    def test_mean_signature(self, plotter_no_boundary, assert_image):
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .add_signature("Myeloid", self.GENES)
+            .plot("Myeloid")
+        )
+        assert_image(p)
+
+    def test_count_expressed_signature(self, plotter_no_boundary, assert_image):
+        p = (
+            plotter_no_boundary.style(dot_size=DOT_SIZE)
+            .add_signature("Myeloid", self.GENES, method="count_expressed")
+            .plot("Myeloid")
+        )
+        assert_image(p)
+
+    def test_signature_violin(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.add_signature("Myeloid", self.GENES).plot_violin(
+            "Myeloid", group_by=CAT_COL
+        )
+        assert_image(p)

@@ -193,6 +193,66 @@ Lookup order:
 are reindexed onto the primary `obs_names`. The plotter is immutable —
 `add_derived_source` returns a new copy.
 
+#### Signatures (gene-set scores)
+
+Score a whole gene set as one column:
+
+```python
+plotter = plotter.add_signature("Myeloid", ["LYZ", "S100A8", "CST3"], method="mean")
+plotter.plot("Myeloid")
+```
+
+The score behaves like any other numeric column — `get_column`, `plot`,
+`plot_violin`, filters and facets all work, and `is_gene("Myeloid")` is
+`False`. What sets it apart from a hand-written derived column is that it
+*remembers what it is*, so the colour bar (and the violin / ridgeline /
+histogram value axis) reads
+
+```
+Myeloid signature
+mean log2 expression, 12 genes
+```
+
+instead of a bare column name.
+
+```python
+plotter.add_signature(
+    name,               # column and display name; must not shadow a column or gene
+    genes,              # anything get_column accepts, ("source", "GENE") included
+    method="mean",      # see below
+    threshold=0.0,      # cutoff for the *_expressed methods (strict >)
+    missing="warn",     # "raise" | "warn" | "ignore"
+    label=None,         # replaces the generated value-axis label
+)
+```
+
+| `method` | value label |
+|---|---|
+| `"sum"` | `Σ log2 expression, 12 genes` |
+| `"mean"` | `mean log2 expression, 12 genes` |
+| `"count_expressed"` | `genes expressed, 12 genes` (whole-number colour-bar ticks) |
+| `"fraction_expressed"` | `fraction expressed, 12 genes` |
+| a callable | its `__name__`; it receives the genes × cells DataFrame and returns a Series |
+
+Aggregation runs on the values `get_column` returns, i.e. *after* the source's
+`layer` / `transform` — so `"mean"` over a log2 source is a mean of log2
+values. For a counts-based sum, point `layer=` at the counts matrix.
+
+Genes the dataset does not have are dropped with a warning, and the label says
+so (`3 of 4 genes`) — the plot documents its own gaps. `missing="raise"`
+refuses instead; all genes missing is always an error. `colormap(title=...)`
+still overrides everything.
+
+Which genes were found, and where:
+
+```python
+plotter.signature_report("Myeloid")
+#          gene  present resolved_name   source
+# 0        LYZ     True           LYZ  primary
+# 1     S100A8     True        S100A8  primary
+# 2       CST3    False
+```
+
 -
 
 ### Filters
@@ -847,6 +907,32 @@ data.grid_size   # int — cells per axis
 
 ---
 
+### Signatures
+
+```python
+data = data.add_signature("Myeloid", ["LYZ", "S100A8"], method="mean")
+data.get_column("Myeloid")          # the score, like any column
+data.signatures                     # → (Signature(...),)
+data.signature_for("Myeloid")       # → Signature, or None
+data.signature_genes("Myeloid")     # → ["LYZ", "S100A8"]
+data.signature_label("Myeloid")     # → "Myeloid signature\nmean log2 expression, 2 genes"
+data.signature_report("Myeloid")    # → DataFrame(gene, present, resolved_name, source)
+```
+
+A signature is registered as a derived column plus a `Signature` record, so it
+follows the derived-source rules exactly: computed on demand, evaluated over
+the unfiltered data with the cell filter applied at the `get_column` boundary,
+and reindexed onto the primary `obs_names`. `EmbeddingData` is immutable —
+`add_signature` returns a new copy.
+
+```python
+from mbf_singlecell_plotter import Signature  # NamedTuple
+
+Signature("Myeloid", ("LYZ",), "mean", 0.0, "warn", None).value_label(n_used=1)
+```
+
+---
+
 ### Analysis helpers
 
 ```python
@@ -875,6 +961,7 @@ from mbf_singlecell_plotter import (
     ColumnData,
     AlternativeSource,
     DerivedSource,
+    Signature,
     prepare_scatter_df,
     prepare_density_df,
     compute_boundaries,
