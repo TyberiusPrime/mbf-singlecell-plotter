@@ -990,6 +990,56 @@ class TestSignatures:
             f"{CELL_TYPE_COLUMN}_histogram.png"
         ]
 
+    def test_naming_the_signature_declares_the_tsv(self, h5ad, graph):
+        """No terminal yet -- but the subject already produces something."""
+        plot = signature(h5ad).plot("Myeloid")
+        assert [str(Path(job.job_id)) for job in plot.jobs_] == [
+            f"{RESULTS}/Myeloid/genes.tsv"
+        ]
+
+    def test_the_tsv_is_written_without_any_terminal(self, h5ad, workdir):
+        run(lambda: signature(h5ad).plot("Myeloid"))
+        report = pd.read_csv(workdir / RESULTS / "Myeloid" / "genes.tsv", sep="\t")
+        assert list(report["gene"]) == SIG_GENES
+        assert not list((workdir / RESULTS).glob("*.png"))
+
+    def test_a_plot_of_a_plain_column_declares_nothing(self, h5ad, graph):
+        assert source(h5ad).plot(CELL_TYPE_COLUMN).jobs_ == []
+
+    def test_into_at_creation_takes_the_tsv_along(self, h5ad, graph):
+        plot = signature(h5ad).plot("Myeloid", into="sub")
+        assert [str(Path(job.job_id)) for job in plot.jobs_] == [
+            f"{RESULTS}/sub/Myeloid/genes.tsv"
+        ]
+
+    def test_into_after_the_fact_is_refused(self, h5ad, graph):
+        """A declared output cannot move, so this has to be said out loud."""
+        plot = signature(h5ad).plot("Myeloid")
+        with pytest.raises(RuntimeError, match="cannot move"):
+            plot.into("sub")
+
+    def test_a_signature_registered_on_the_plot_still_gets_its_tsv(self, h5ad, workdir):
+        """Recorded after the Plot exists, so only the terminal can see it."""
+
+        def build():
+            plot = source(h5ad).plot("Myeloid")
+            assert plot.jobs_ == []
+            return plot.add_signature("Myeloid", SIG_GENES).scatter()
+
+        run(build)
+        assert (workdir / RESULTS / "Myeloid" / "genes.tsv").exists()
+        assert (workdir / RESULTS / "Myeloid_scatter.png").exists()
+
+    def test_a_plot_can_still_be_built_without_a_graph(self, h5ad):
+        ppg.global_pipegraph = None
+        try:
+            plot = signature(h5ad).plot("Myeloid")
+            assert plot.jobs_ == []
+            with pytest.raises(RuntimeError, match="needs an active"):
+                plot.scatter()
+        finally:
+            ppg.new(run_mode=ppg.RunMode.CONSOLE)
+
     def test_the_tsv_shares_the_folder_with_the_gene_plots(self, h5ad, workdir):
         run(lambda: signature(h5ad).plot("Myeloid", plot_genes=True).scatter())
         folder = workdir / RESULTS / "Myeloid"

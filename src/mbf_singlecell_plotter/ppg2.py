@@ -80,15 +80,17 @@ Signatures
 ----------
 ``add_signature`` is ordinary configuration, so the gene set travels in the
 job's ParameterInvariant: editing the list re-runs the plots that use it.
-Every terminal that plots a signature also writes ``<stem>/genes.tsv``, saying
-which of its genes this dataset actually has -- one job, declared identically by
-every terminal of that signature (its recipe covers the calls that decide gene
-resolution and nothing else), so styling one plot differently does not fork the
-file.  It shares the folder the per-gene plots go into, so everything the
-signature is made of sits together::
+Naming a signature as a plot's subject writes ``<stem>/genes.tsv``, saying which
+of its genes this dataset actually has.  It is declared by ``plot()`` itself --
+what a signature is made of has nothing to do with how it is drawn -- so a plot
+whose terminal was forgotten still produces that one file rather than nothing at
+all.  Its recipe covers the calls that decide gene resolution and nothing else,
+so styling a plot differently cannot fork the file.  It shares the folder the
+per-gene plots go into, so everything the signature is made of sits together::
 
     sig = builder.add_signature("Myeloid", genes, method="mean").plot("Myeloid")
-    sig.scatter()                  # Myeloid_scatter.png + Myeloid/genes.tsv
+    sig.jobs_                      # [Myeloid/genes.tsv], before any terminal
+    sig.scatter()                  # ... plus Myeloid_scatter.png
     sig.violin("leiden")           # ... and the very same TSV
 
 ``plot_genes`` is a property of the plot, not of one output: it fans *every*
@@ -721,10 +723,9 @@ def _make_terminal_method(terminal: str, fn):
         "\n        plot; the plot's column is supplied automatically. Returns a copy"
         "\n        of the plot with .job_ and .jobs_ set."
         "\n"
-        "\n        Plotting a registered signature also writes ``<stem>/genes.tsv``,"
-        "\n        listing which of its genes this data has, and -- when the plot"
-        "\n        was created with ``plot_genes=`` -- repeats this very plot for"
-        "\n        every gene of the set."
+        "\n        A plot of a registered signature repeats itself for every gene"
+        "\n        of the set when it was created with ``plot_genes=``; the genes"
+        "\n        TSV is declared by ``plot()``, not here."
     )
     return wrapper
 
@@ -829,6 +830,7 @@ def _generate_signature_gene_plots(tsv_path, genes, template: "Plot", hook) -> l
         plot.column = gene
         plot._jobs = ()
         plot._job = None
+        plot._tsv_job = None
         hook(plot)  # the template's own plot_genes was cleared before it got here
     return found
 
@@ -982,7 +984,9 @@ class Plot(_Recorder):
         self._dpi = dpi
         self._jobs: Tuple[Any, ...] = ()
         self._job: Any = None
+        self._tsv_job: Any = None
         self.init_kwargs = self._init_kwargs_from(plotter_kwargs)
+        self._declare_signature_tsv()
 
     # -- naming / layout ---------------------------------------------------
 
@@ -1002,6 +1006,13 @@ class Plot(_Recorder):
 
     def into(self, sub_directory: Union[str, Path]) -> "Plot":
         """Append a sub-directory below the builder's output directory."""
+        if self._tsv_job is not None:
+            raise RuntimeError(
+                f"{self._describe()}.into({str(sub_directory)!r}): this plot has "
+                f"already declared {self._tsv_job.job_id}, and a declared output "
+                "cannot move. Name the directory when the plot is made - "
+                f"plot({self.column!r}, into=...) - or on the builder."
+            )
         new = self._copy()
         new._into = self._into + Path(sub_directory).parts
         return new
@@ -1097,14 +1108,13 @@ class Plot(_Recorder):
             f"{self._describe()}.{label}() at {_caller_location()}",
         )
         new = self._copy()
-        # the genes TSV first: it says what the score is made of, and it is the
-        # one file every terminal of this signature agrees on.
-        tsv_job = None
-        if signature is not None:
-            tsv_job = self._build_signature_tsv(ppg, graph, signature)
-            new._jobs = self._add_jobs(self._jobs, [tsv_job])
-        else:
-            new._jobs = self._jobs
+        # the genes TSV comes first; normally it was declared when the plot was
+        # made, but a signature registered on the plot itself only becomes
+        # visible here.
+        tsv_job = self._tsv_job
+        if tsv_job is None and signature is not None:
+            tsv_job = new._declare_signature_tsv()
+        new._jobs = self._add_jobs(new._jobs, [tsv_job] if tsv_job else [])
         job = self._create_job(ppg, target, recipe)
         self._builder._session.record(graph, job)
         new._job = job
@@ -1148,6 +1158,7 @@ class Plot(_Recorder):
         template._job = None
         template._name = None  # each gene names its own files
         template._plot_genes = None  # ... and fans out no further
+        template._tsv_job = None  # ... and carries no signature of its own
 
         def callback(genes=tuple(genes), hook=hook, template=template, tsv=tsv_job):
             _generate_signature_gene_plots(Path(tsv.job_id), genes, template, hook)
@@ -1174,6 +1185,28 @@ class Plot(_Recorder):
         return tuple(out)
 
     # -- signatures --------------------------------------------------------
+
+    def _declare_signature_tsv(self):
+        """Create the genes TSV job if this plot's column is a signature.
+
+        Done when the subject is named rather than when a figure is asked for:
+        which genes a signature is made of has nothing to do with how it is
+        drawn, and a plot that produces *something* on its own makes a
+        forgotten terminal visible instead of silently yielding no files.
+
+        Silent when no signature, graph or source is in sight -- a Plot may
+        still be built outside a pipegraph, and a signature (or a source)
+        registered *on the plot* is only known once that call has been
+        recorded, which is why :meth:`_build` declares it too.
+        """
+        graph = _current_graph()
+        signature = self._signature_call(self.column)
+        if graph is None or signature is None or not self._has_source():
+            return None
+        ppg = _require_ppg()
+        self._tsv_job = self._build_signature_tsv(ppg, graph, signature)
+        self._jobs = self._add_jobs(self._jobs, [self._tsv_job])
+        return self._tsv_job
 
     def _signature_call(self, column) -> Optional[_Call]:
         """The recorded ``add_signature`` call defining *column*, if any.
@@ -1233,6 +1266,7 @@ class Plot(_Recorder):
             plot._plot_genes = None  # ... and fans out no further
             plot._jobs = ()
             plot._job = None
+            plot._tsv_job = None
             hook(plot)
         return session.current(graph)[before:]
 
@@ -1294,10 +1328,13 @@ class Plot(_Recorder):
     def _resolved_dpi(self) -> int:
         return self._dpi if self._dpi is not None else self._builder._dpi
 
-    def _require_source(self, label: str) -> None:
-        if not any(
+    def _has_source(self) -> bool:
+        return any(
             call.method == "set_source" for call in self._builder._calls + self._calls
-        ):
+        )
+
+    def _require_source(self, label: str) -> None:
+        if not self._has_source():
             raise ValueError(
                 f"{self._describe()}.{label}(): no data source - call "
                 "set_source() on the builder or on the plot first."
@@ -1552,8 +1589,10 @@ class PlotBuilder(_Recorder):
     ) -> Plot:
         """A :class:`Plot` for one column, carrying this builder's script.
 
-        Nothing is created yet -- a job appears when a terminal (``scatter``,
-        ``violin``, ...) is called on the result.
+        No *figure* is created yet -- that job appears when a terminal
+        (``scatter``, ``violin``, ...) is called on the result.  A signature
+        column does declare its ``<stem>/genes.tsv`` right here, since what the
+        score is made of does not depend on how it is drawn.
 
         ``plot_genes`` fans every terminal of this plot out over the genes
         behind its column -- the gene set of a registered signature, or a list
