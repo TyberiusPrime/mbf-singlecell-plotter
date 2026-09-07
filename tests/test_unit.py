@@ -757,7 +757,20 @@ class TestPlotBar:
         )
         assert stacked.data.equals(dodged.data)
 
-    def test_numeric_column_x_raises(self, plotter_no_boundary):
+    def test_x_labels_are_rotated_by_default(self, plotter_no_boundary):
+        """Category names on the x axis stand up, or they overlap."""
+        p = plotter_no_boundary.plot_bar(COARSE_COLUMN, CAT_COL)
+        element = p.theme.themeables["axis_text_x"].theme_element
+        assert element.properties["rotation"] == 90
+
+    def test_theme_turns_the_rotation_back(self, plotter_no_boundary):
+        p = plotter_no_boundary.theme(axis_text_x=p9.element_text(angle=0)).plot_bar(
+            COARSE_COLUMN, CAT_COL
+        )
+        element = p.theme.themeables["axis_text_x"].theme_element
+        assert element.properties["rotation"] == 0
+
+    def test_numeric_column_raises(self, plotter_no_boundary):
         with pytest.raises(ValueError, match="not categorical"):
             plotter_no_boundary.plot_bar(NUMERIC_COL, CAT_COL)
 

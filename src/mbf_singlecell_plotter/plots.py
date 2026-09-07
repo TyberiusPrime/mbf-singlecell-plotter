@@ -2818,14 +2818,17 @@ class ScatterPlotter:
 
     def plot_bar(
         self,
-        column_x: str,
+        column: str,
         column_fill: str,
         geom_col_args: Optional[dict] = None,
     ) -> p9.ggplot:
         """Build a stacked bar plot of cell counts.
 
         Args:
-            column_x:      Categorical obs column; one bar per value (x-axis).
+            column:        Categorical obs column; one bar per value (x-axis).
+                           Named ``column`` rather than ``column_x`` so the
+                           ppg2 layer supplies it from the plot's subject, as
+                           it does for :meth:`plot_violin` / :meth:`plot_ridgeline`.
             column_fill:   Categorical obs column; each bar is stacked by its
                            values, which is what the fill legend names.
             geom_col_args: Optional dict of ``geom_col`` keyword arguments
@@ -2837,7 +2840,7 @@ class ScatterPlotter:
 
         Where :meth:`plot_histogram` counts one categorical column, this counts
         the *cross* of two: the height of a bar is the number of cells with
-        that *column_x* value, split into a segment per *column_fill* value.
+        that *column* value, split into a segment per *column_fill* value.
 
         Honours the plotter's faceting (:meth:`facet` / :meth:`facet_2d`,
         counting per facet group), :meth:`title`, :meth:`panel_size` and
@@ -2845,6 +2848,10 @@ class ScatterPlotter:
 
         The discrete fill palette is taken from :meth:`colormap_discrete`
         (the *column_fill* palette, when one is configured per column).
+
+        The x tick labels are rotated 90° by default, since they are category
+        names and collide as soon as they are longer than a character or two;
+        ``.theme(axis_text_x=p9.element_text(angle=0))`` turns them back.
 
         Raises:
             RuntimeError: if no data source has been set.
@@ -2854,11 +2861,11 @@ class ScatterPlotter:
             raise RuntimeError("call .set_source() before .plot_bar()")
 
         data = self._data
-        x_expr, x_name = data.get_column(column_x)
+        x_expr, x_name = data.get_column(column)
         fill_expr, fill_name = data.get_column(column_fill)
         fill_expr = fill_expr.reindex(x_expr.index)
 
-        for expr, spec in ((x_expr, column_x), (fill_expr, column_fill)):
+        for expr, spec in ((x_expr, column), (fill_expr, column_fill)):
             if (
                 expr.dtype != "object"
                 and expr.dtype != "category"
@@ -2954,6 +2961,12 @@ class ScatterPlotter:
                 panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
                 panel_grid_minor=p9.element_blank(),
                 axis_text=p9.element_text(color=self._tick_color),
+                # Category names on the x axis are as long as the categories
+                # are named, so they stand up by default; .theme(axis_text_x=...)
+                # turns them back.
+                axis_text_x=p9.element_text(
+                    color=self._tick_color, angle=90, ha="right", va="center"
+                ),
                 axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
                 axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
             )

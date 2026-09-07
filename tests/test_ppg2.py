@@ -193,6 +193,28 @@ class TestOutputPaths:
         run(lambda: source(h5ad).plot("S100A8").violin(CELL_TYPE_COLUMN))
         assert (workdir / RESULTS / "S100A8_violin_leiden.png").exists()
 
+    def test_the_column_is_the_bar_x_axis(self, h5ad, workdir):
+        """A bar needs (column, column_fill) — the plot's subject is the x axis.
+
+        The example file has exactly one categorical column, so it fills itself
+        here; what matters is that injection puts the subject in the x slot.
+        """
+        run(lambda: source(h5ad).plot(CELL_TYPE_COLUMN).bar(CELL_TYPE_COLUMN))
+        assert (
+            workdir / RESULTS / f"{CELL_TYPE_COLUMN}_bar_{CELL_TYPE_COLUMN}.png"
+        ).exists()
+
+    def test_a_named_plot_may_spell_both_bar_columns_out(self, h5ad, workdir):
+        """Neither column is the subject: name the plot, pass both explicitly."""
+        run(
+            lambda: (
+                source(h5ad)
+                .plot(name="composition")
+                .bar(column=CELL_TYPE_COLUMN, column_fill=CELL_TYPE_COLUMN)
+            )
+        )
+        assert (workdir / RESULTS / "composition_bar.png").exists()
+
 
 class TestCollisions:
     """Two different plots may not claim one file -- but see TestRedeclaration."""
