@@ -627,6 +627,150 @@ class TestPlotHistogram:
 
 
 # ---------------------------------------------------------------------------
+# plot_bar — stacked counts of two categorical columns
+# ---------------------------------------------------------------------------
+
+
+class TestPlotBar:
+    def test_returns_ggplot_and_default_title(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot_bar(COARSE_COLUMN, CAT_COL)
+        assert isinstance(p, p9.ggplot)
+        assert p.labels.get("title", None) == COARSE_COLUMN
+
+    def test_title_override(self, plotter_no_boundary):
+        p = plotter_no_boundary.title("counts!").plot_bar(COARSE_COLUMN, CAT_COL)
+        assert p.labels.get("title", None) == "counts!"
+
+    def test_counts_match_crosstab(self, plotter_no_boundary, ad):
+        p = plotter_no_boundary.plot_bar(COARSE_COLUMN, CAT_COL)
+        truth = (
+            ad.obs.groupby(COARSE_COLUMN, observed=True)[CAT_COL]
+            .value_counts()
+            .reset_index(name="count")
+        )
+        truth.columns = ["category", "fill", "count"]
+        truth = truth[truth["count"] > 0]
+        merged = p.data.astype({"category": str, "fill": str}).merge(
+            truth.astype({"category": str, "fill": str}), on=["category", "fill"]
+        )
+        assert len(merged) == len(truth)
+        assert merged["count_x"].equals(merged["count_y"])
+        assert p.data["count"].sum() == ad.n_obs
+
+    def test_fill_legend_is_shown_and_named(self, plotter_no_boundary):
+        """Unlike plot_histogram, the fill is a second column — it needs a legend."""
+        p = plotter_no_boundary.plot_bar(COARSE_COLUMN, CAT_COL)
+        scale = next(s for s in p.scales if "fill" in s.aesthetics)
+        assert scale.guide is not None
+        assert scale.name == CAT_COL
+
+    def test_legend_title_override(self, plotter_no_boundary):
+        p = plotter_no_boundary.colormap_discrete(title="clusters").plot_bar(
+            COARSE_COLUMN, CAT_COL
+        )
+        scale = next(s for s in p.scales if "fill" in s.aesthetics)
+        assert scale.name == "clusters"
+
+    def test_natsorted_category_order(self, plotter_no_boundary):
+        """Both axes of the cross use the same ordering as every other plot."""
+        p = plotter_no_boundary.plot_bar(MULTI_DIGIT_COLUMN, MULTI_DIGIT_COLUMN)
+        assert list(p.data["category"].cat.categories) == ["1", "2", "3", "10"]
+        assert list(p.data["fill"].cat.categories) == ["1", "2", "3", "10"]
+
+    def test_uses_configured_colors(self, plotter_no_boundary):
+        """Rendered bars must use the colormap_discrete palette of column_fill."""
+        import matplotlib.colors as mc
+        from matplotlib.collections import PolyCollection
+
+        colors = ["#ff0000", "#00ff00", "#0000ff"]
+        p = plotter_no_boundary.colormap_discrete(colors).plot_bar(
+            CAT_COL, COARSE_COLUMN
+        )
+        ax = p.draw().axes[0]
+        fcs = set()
+        for pc in ax.collections:
+            if isinstance(pc, PolyCollection):
+                fcs.update(mc.to_hex(rgba) for rgba in pc.get_facecolors())
+        assert fcs, "no bars drawn"
+        assert fcs.issubset(set(colors))
+
+    def test_facet_counts_partition_cells(self, plotter_no_boundary, ad):
+        p = plotter_no_boundary.facet("bool").plot_bar(COARSE_COLUMN, CAT_COL)
+        assert "facet" in p.data.columns
+        assert p.data["count"].sum() == ad.n_obs
+        truth = (
+            ad.obs.groupby(["bool", COARSE_COLUMN], observed=True)[CAT_COL]
+            .value_counts()
+            .reset_index(name="count")
+        )
+        truth.columns = ["facet", "category", "fill", "count"]
+        truth = truth[truth["count"] > 0]
+        merged = p.data.astype({"facet": str, "category": str, "fill": str}).merge(
+            truth.astype({"facet": str, "category": str, "fill": str}),
+            on=["facet", "category", "fill"],
+        )
+        assert len(merged) == len(truth)
+        assert merged["count_x"].equals(merged["count_y"])
+
+    def test_facet_2d_counts_partition_cells(self, plotter_no_boundary, ad):
+        p = plotter_no_boundary.facet_2d("bool", COARSE_COLUMN).plot_bar(
+            CAT_COL, "bool"
+        )
+        assert {"facet_row", "facet_col"}.issubset(p.data.columns)
+        assert p.data["count"].sum() == ad.n_obs
+
+    def test_default_position_is_stack(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot_bar(COARSE_COLUMN, CAT_COL)
+        assert type(p.layers[0].position) is p9.positions.position_stack
+        assert p.labels.get("y", None) == "count"
+
+    def test_geom_col_args_set_the_position(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot_bar(COARSE_COLUMN, CAT_COL, {"position": "dodge"})
+        assert type(p.layers[0].position) is p9.positions.position_dodge
+        # dodged bars are still counts
+        assert p.labels.get("y", None) == "count"
+
+    def test_geom_col_args_are_forwarded(self, plotter_no_boundary):
+        """Anything else in the dict reaches the layer too, not just position."""
+        p = plotter_no_boundary.plot_bar(
+            COARSE_COLUMN, CAT_COL, {"width": 0.4, "alpha": 0.5}
+        )
+        assert p.layers[0].geom.params["width"] == 0.4
+        assert p.layers[0].geom.aes_params["alpha"] == 0.5
+
+    def test_position_fill_relabels_the_y_axis(self, plotter_no_boundary):
+        """position="fill" plots shares, not counts — the label must follow."""
+        p = plotter_no_boundary.plot_bar(COARSE_COLUMN, CAT_COL, {"position": "fill"})
+        assert p.labels.get("y", None) == "fraction"
+
+    def test_position_fill_object_relabels_the_y_axis(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot_bar(
+            COARSE_COLUMN, CAT_COL, {"position": p9.position_fill()}
+        )
+        assert p.labels.get("y", None) == "fraction"
+
+    def test_counts_are_unchanged_by_the_position(self, plotter_no_boundary):
+        """The position is a layer concern; the counted data stays the same."""
+        stacked = plotter_no_boundary.plot_bar(COARSE_COLUMN, CAT_COL)
+        dodged = plotter_no_boundary.plot_bar(
+            COARSE_COLUMN, CAT_COL, {"position": "dodge"}
+        )
+        assert stacked.data.equals(dodged.data)
+
+    def test_numeric_column_x_raises(self, plotter_no_boundary):
+        with pytest.raises(ValueError, match="not categorical"):
+            plotter_no_boundary.plot_bar(NUMERIC_COL, CAT_COL)
+
+    def test_numeric_column_fill_raises(self, plotter_no_boundary):
+        with pytest.raises(ValueError, match="not categorical"):
+            plotter_no_boundary.plot_bar(CAT_COL, NUMERIC_COL)
+
+    def test_without_source_raises(self):
+        with pytest.raises(RuntimeError, match="set_source"):
+            ScatterPlotter().plot_bar(CAT_COL, COARSE_COLUMN)
+
+
+# ---------------------------------------------------------------------------
 # Categorical color/category ordering — .plot() vs .plot_histogram() parity
 # ---------------------------------------------------------------------------
 
@@ -738,11 +882,13 @@ class TestPerColumnDiscreteColors:
         ridgeline = _scale_values(
             sp.plot_ridgeline(NUMERIC_COL, group_by=COARSE_COLUMN), "fill"
         )
+        bar = _scale_values(sp.plot_bar(CAT_COL, COARSE_COLUMN), "fill")
         expected = {"L": "#ff0000", "M": "#00ff00", "H": "#0000ff"}
         assert scatter == expected
         assert histogram == expected
         assert violin == expected
         assert ridgeline == expected
+        assert bar == expected
 
     def test_different_columns_get_different_palettes(self, plotter_no_boundary):
         sp = self._plotter(plotter_no_boundary)
@@ -3406,6 +3552,7 @@ class TestThemeOverwritesReachEveryPlot:
     # theme call site.
     CALLS = [
         ("plot", ("S100A8",)),
+        ("plot_bar", (CAT_COL, COARSE_COLUMN)),
         ("plot_density", ()),
         ("plot_embedding_color", ("pca",)),
         ("plot_grid_histogram", (CAT_COL,)),
@@ -3449,15 +3596,22 @@ class TestThemeOverwritesReachEveryPlot:
     @pytest.mark.parametrize(
         "method,args",
         [
+            ("plot_bar", (CAT_COL, COARSE_COLUMN)),
             ("plot_histogram", (CAT_COL,)),
             ("plot_histogram", (NUMERIC_COL,)),
             ("plot_ridgeline", ("S100A8", CAT_COL)),
             ("plot_violin", ("S100A8",)),
         ],
-        ids=["histogram-categorical", "histogram-numeric", "ridgeline", "violin"],
+        ids=[
+            "bar",
+            "histogram-categorical",
+            "histogram-numeric",
+            "ridgeline",
+            "violin",
+        ],
     )
     def test_element_override_wins(self, plotter_no_boundary, method, args):
-        """These four also set ``panel_background`` themselves."""
+        """These five also set ``panel_background`` themselves."""
         sp = plotter_no_boundary.theme(
             panel_background=p9.element_rect(fill="#123456", color=None)
         )

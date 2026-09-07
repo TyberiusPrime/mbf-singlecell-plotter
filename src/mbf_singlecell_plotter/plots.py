@@ -2816,6 +2816,153 @@ class ScatterPlotter:
 
         return p
 
+    def plot_bar(
+        self,
+        column_x: str,
+        column_fill: str,
+        geom_col_args: Optional[dict] = None,
+    ) -> p9.ggplot:
+        """Build a stacked bar plot of cell counts.
+
+        Args:
+            column_x:      Categorical obs column; one bar per value (x-axis).
+            column_fill:   Categorical obs column; each bar is stacked by its
+                           values, which is what the fill legend names.
+            geom_col_args: Optional dict of ``geom_col`` keyword arguments
+                           (e.g. ``position``, ``width``, ``alpha``,
+                           ``color``), forwarded to the layer.  Pass
+                           ``{"position": "dodge"}`` for bars side by side,
+                           or ``{"position": "fill"}`` for per-bar fractions;
+                           the default is plotnine's ``"stack"``.
+
+        Where :meth:`plot_histogram` counts one categorical column, this counts
+        the *cross* of two: the height of a bar is the number of cells with
+        that *column_x* value, split into a segment per *column_fill* value.
+
+        Honours the plotter's faceting (:meth:`facet` / :meth:`facet_2d`,
+        counting per facet group), :meth:`title`, :meth:`panel_size` and
+        :meth:`theme` configuration, mirroring the other ``plot_*`` methods.
+
+        The discrete fill palette is taken from :meth:`colormap_discrete`
+        (the *column_fill* palette, when one is configured per column).
+
+        Raises:
+            RuntimeError: if no data source has been set.
+            ValueError:   if either column is numeric.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .plot_bar()")
+
+        data = self._data
+        x_expr, x_name = data.get_column(column_x)
+        fill_expr, fill_name = data.get_column(column_fill)
+        fill_expr = fill_expr.reindex(x_expr.index)
+
+        for expr, spec in ((x_expr, column_x), (fill_expr, column_fill)):
+            if (
+                expr.dtype != "object"
+                and expr.dtype != "category"
+                and expr.dtype != "bool"
+            ):
+                raise ValueError(
+                    f"plot_bar() is for categorical columns; {spec!r} is not "
+                    "categorical"
+                )
+
+        x_cats = [str(c) for c in _ordered_categories(x_expr)]
+        fill_cats = [str(c) for c in _ordered_categories(fill_expr)]
+
+        keep = x_expr.notna() & fill_expr.notna()
+        x_clean = x_expr[keep]
+        df = pd.DataFrame(
+            {
+                "category": pd.Categorical(x_clean.astype(str), categories=x_cats),
+                "fill": pd.Categorical(
+                    fill_expr[keep].astype(str), categories=fill_cats
+                ),
+            }
+        )
+
+        facet_cols = []
+        if self._facet_variable is not None:
+            fv, _ = data.get_column(self._facet_variable)
+            df["facet"] = pd.Categorical(fv.reindex(x_clean.index).astype(str))
+            facet_cols.append("facet")
+        if self._facet_row_variable is not None:
+            rv, _ = data.get_column(self._facet_row_variable)
+            df["facet_row"] = pd.Categorical(rv.reindex(x_clean.index).astype(str))
+            facet_cols.append("facet_row")
+        if self._facet_col_variable is not None:
+            cv, _ = data.get_column(self._facet_col_variable)
+            df["facet_col"] = pd.Categorical(cv.reindex(x_clean.index).astype(str))
+            facet_cols.append("facet_col")
+
+        counts = (
+            df.groupby(facet_cols + ["category", "fill"], observed=True, sort=False)
+            .size()
+            .reset_index(name="count")
+        )
+        # groupby() hands the keys back as plain values; the category order is
+        # what puts the bars (and their segments) in place, so restore it.
+        counts["category"] = pd.Categorical(counts["category"], categories=x_cats)
+        counts["fill"] = pd.Categorical(counts["fill"], categories=fill_cats)
+
+        colors = self._colors_as_list(
+            fill_cats, column=column_fill, resolved_name=fill_name
+        )
+        color_values = {c: colors[i % len(colors)] for i, c in enumerate(fill_cats)}
+        legend_title = (
+            self._cat_colors_title if self._cat_colors_title is not None else fill_name
+        )
+
+        # position="fill" turns the stack into per-bar shares, so the y axis is
+        # no longer a count and must not claim to be one.
+        position = (geom_col_args or {}).get("position")
+        stacks_to_one = position == "fill" or isinstance(position, p9.position_fill)
+
+        p = (
+            p9.ggplot(counts, p9.aes(x="category", y="count", fill="fill"))
+            + p9.geom_col(**(geom_col_args or {}))
+            + p9.scale_fill_manual(values=color_values, name=legend_title)
+            + p9.labs(x=x_name, y="fraction" if stacks_to_one else "count")
+        )
+
+        p = self._apply_facet_layer(p)
+
+        if self._title_override is not _UNSET:
+            p = p + p9.labs(title=self._title_override)
+        else:
+            p = p + p9.labs(title=x_name)
+
+        if self.fig_size is None:
+            if self._is_faceted():
+                n_col, n_row = self._facet_grid_dims(counts)
+                fig_size = (6 * n_col, 5 * n_row)
+            else:
+                fig_size = (6, 5)
+        else:
+            fig_size = self.fig_size
+
+        p = p + p9.theme_minimal(base_size=self.base_size)
+        p = p + p9.theme(
+            **self._theme_kwargs(
+                figure_size=fig_size,
+                panel_background=p9.element_rect(fill=self._bg_color, color=None),
+                panel_border=p9.element_rect(
+                    color=self._spine_color, size=0.5, fill=None
+                ),
+                panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
+                panel_grid_minor=p9.element_blank(),
+                axis_text=p9.element_text(color=self._tick_color),
+                axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
+                axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
+            )
+        )
+
+        p = self._register_fixed_panel(p)
+
+        return p
+
     def plot_violin(
         self,
         column: str,
@@ -3969,6 +4116,17 @@ class _UnsetType:
 
 
 _UNSET = _UnsetType()
+
+
+def _ordered_categories(expr: pd.Series) -> list:
+    """The categories of *expr*, in the order the plots put them in.
+
+    A pandas categorical keeps the order it was built with; anything else is
+    natural-sorted (so "10" follows "9"), with missing values dropped.
+    """
+    if expr.dtype == "category":
+        return list(expr.cat.categories)
+    return natsorted([c for c in expr.unique() if not pd.isna(c)])
 
 
 def _normalize_counts(counts_df, factor):

@@ -735,6 +735,56 @@ class TestPlotHistogramNumeric:
 
 
 # ---------------------------------------------------------------------------
+# plot_bar — stacked counts of two categorical columns
+# ---------------------------------------------------------------------------
+
+
+class TestPlotBar:
+    def test_basic(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.plot_bar("coarse", CAT_COL)
+        assert_image(p)
+
+    def test_custom_colors(self, plotter_no_boundary, assert_image):
+        colors = [
+            "#FF0000",
+            "#00FF00",
+            "#0000FF",
+            "#FFFF00",
+            "#FF00FF",
+            "#00FFFF",
+            "#000000",
+            "#FFFFFF",
+            "#888888",
+        ]
+        p = plotter_no_boundary.colormap_discrete(colors).plot_bar("coarse", CAT_COL)
+        assert_image(p)
+
+    def test_long_labels(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.plot_bar("coarse", CELL_TYPE_LABEL_COLUMN)
+        assert_image(p)
+
+    def test_position_dodge(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.plot_bar("coarse", CAT_COL, {"position": "dodge"})
+        assert_image(p)
+
+    def test_position_fill(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.plot_bar("coarse", CAT_COL, {"position": "fill"})
+        assert_image(p)
+
+    def test_facet(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.facet("bool").plot_bar("coarse", CAT_COL)
+        assert_image(p)
+
+    def test_facet_2d(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.facet_2d("bool", "coarse").plot_bar(CAT_COL, "bool")
+        assert_image(p)
+
+    def test_fixed_panel(self, plotter_no_boundary, assert_image):
+        p = plotter_no_boundary.panel_size(3, 3).plot_bar("coarse", CAT_COL)
+        assert_image(p)
+
+
+# ---------------------------------------------------------------------------
 # plot_violin — numeric distribution plots
 # ---------------------------------------------------------------------------
 

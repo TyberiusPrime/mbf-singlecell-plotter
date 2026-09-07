@@ -536,6 +536,13 @@ p = plotter.plot_density(bins=200, quantile=0.99)
 # Grid-local category frequency histogram
 p = plotter.plot_grid_histogram("leiden", min_cell_count=10)
 
+# Stacked bar plot — cell counts per category, split by a second one
+p = plotter.plot_bar("coarse", "leiden")
+
+# geom_col arguments pass through: bars side by side, or per-bar fractions
+p = plotter.plot_bar("coarse", "leiden", {"position": "dodge"})
+p = plotter.plot_bar("coarse", "leiden", {"position": "fill"})
+
 ```
 
 All terminal methods return a `plotnine.ggplot` object; call `.save()` on it or
