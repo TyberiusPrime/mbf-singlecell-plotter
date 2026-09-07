@@ -865,8 +865,8 @@ class TestPlotRidgeline:
         assert_image(p)
 
     def test_row_height(self, plotter_no_boundary, assert_image):
-        """A smaller row_height packs the rows tighter."""
-        p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL, row_height=0.3)
+        """A larger row_height gives each row more vertical room."""
+        p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL, row_height=0.6)
         assert_image(p)
 
     def test_custom_colors(self, plotter_no_boundary, assert_image):

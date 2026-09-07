@@ -245,6 +245,9 @@ _patch_composition_post_draw()
 
 _EMBEDDING_COLOR_DEFAULTS = ("#FF4444", "#4444FF", "#FFCC00", "#44BB44")
 
+# Ceiling (inches) for the auto-computed plot_ridgeline() figure height.
+_RIDGELINE_MAX_HEIGHT = 10.0
+
 
 def _make_2d_color_image(corner_colors, size: int = 64) -> np.ndarray:
     """Return an (H, W, 3) float32 gradient image for the 2D legend.
@@ -3135,7 +3138,7 @@ class ScatterPlotter:
         bw: Optional[float] = None,
         trim: bool = True,
         alpha: float = 0.9,
-        row_height: float = 0.5,
+        row_height: float = 0.3,
         scales: str = "free_y",
     ) -> p9.ggplot:
         """Build a compact, one-row-per-category density plot.
@@ -3148,7 +3151,10 @@ class ScatterPlotter:
                         ``bw``); ``None`` uses the plotnine default.
             trim:       Trim each density curve to its group's observed range.
             alpha:      Fill transparency for the density curves.
-            row_height: Height (inches) of each stacked row.
+            row_height: Height (inches) of each stacked row.  The total figure
+                        height is capped at 10in, so a column with dozens of
+                        categories compresses its rows instead of growing an
+                        unreadably tall figure; pass ``fig_size`` to override.
             scales:     Passed to ``facet_grid`` — ``"free_y"`` (default) lets
                         each row's peak fill its own panel height (shared
                         across facet columns within a row); ``"fixed"``
@@ -3250,7 +3256,12 @@ class ScatterPlotter:
 
         if self.fig_size is None:
             n_col = len(facet_cats_str) if has_col_facet else 1
-            fig_size = (6 * n_col, row_height * len(cats_str) + 1.2)
+            # +1.2 is the chrome (title, x tick labels, x axis label); the cap
+            # keeps a 40-cell-type column from rendering a 3000px-tall strip.
+            fig_size = (
+                6 * n_col,
+                min(row_height * len(cats_str) + 1.2, _RIDGELINE_MAX_HEIGHT),
+            )
         else:
             fig_size = self.fig_size
 

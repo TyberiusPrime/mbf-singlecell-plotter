@@ -20,6 +20,7 @@ from mbf_singlecell_plotter import (
     map_to_integers,
     unmap,
 )
+from mbf_singlecell_plotter.plots import _RIDGELINE_MAX_HEIGHT
 from conftest import CELL_TYPE_COLUMN, COARSE_COLUMN, MULTI_DIGIT_COLUMN
 
 # The categorical obs column in the example data
@@ -3692,6 +3693,44 @@ class TestThemeOverwritesReachEveryPlot:
         assert (
             p.theme.themeables["strip_text_y"].theme_element.properties["rotation"] == 0
         )
+
+
+# ---------------------------------------------------------------------------
+# plot_ridgeline figure height
+# ---------------------------------------------------------------------------
+
+
+class TestRidgelineFigureHeight:
+    """Height scales with the row count, but only up to a ceiling.
+
+    Every other terminal is a flat 6x5; ridgeline grows a row per category, so
+    without the cap a 40-cell-type column rendered a multi-thousand-pixel strip.
+    """
+
+    @staticmethod
+    def _figure_size(p):
+        return p.theme.themeables["figure_size"].properties["value"]
+
+    def test_height_scales_with_row_count(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL)
+        n_rows = len(plotter_no_boundary._data.get_column(CAT_COL)[0].unique())
+        width, height = self._figure_size(p)
+        assert width == 6
+        assert height == pytest.approx(0.3 * n_rows + 1.2)
+
+    def test_height_is_capped(self, plotter_no_boundary):
+        """A row_height that would overflow the ceiling compresses instead."""
+        p = plotter_no_boundary.plot_ridgeline("S100A8", CAT_COL, row_height=2.0)
+        assert self._figure_size(p)[1] == pytest.approx(_RIDGELINE_MAX_HEIGHT)
+
+    def test_the_cap_leaves_the_width_alone(self, plotter_no_boundary):
+        """Only the height is capped -- facet columns still widen the figure."""
+        p = plotter_no_boundary.facet("bool").plot_ridgeline(
+            "S100A8", CAT_COL, row_height=2.0
+        )
+        width, height = self._figure_size(p)
+        assert width == 12
+        assert height == pytest.approx(_RIDGELINE_MAX_HEIGHT)
 
 
 # ---------------------------------------------------------------------------
