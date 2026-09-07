@@ -1318,6 +1318,41 @@ class TestPanelSize:
             f"stacked image height {img.size[1]}px too small for 2×3in panels"
         )
 
+    def test_ridgeline_panel_size_covers_the_whole_stack(self, plotter_no_boundary):
+        """For ridgeline the fixed height is the stack, not one row.
+
+        ``_apply_fixed_panel`` sizes every facet panel to the requested height,
+        which for a 9-group ridgeline meant nine 4in rows -- a 43in figure.
+        The rows are strips of one plot, so the 4in is divided across them.
+        """
+        import io
+        from PIL import Image
+        from mbf_singlecell_plotter.plots import _first_panel_axes
+
+        n_rows = len(plotter_no_boundary._data.get_column(CAT_COL)[0].unique())
+        p = plotter_no_boundary.panel_size(5, 4).plot_ridgeline("S100A8", CAT_COL)
+
+        buf = io.BytesIO()
+        p.save(buf, format="png", dpi=100, verbose=False)
+        buf.seek(0)
+        height_in = Image.open(buf).size[1] / 100
+        # The stack is 4in; the rest is title / x axis / labels, well under 3in.
+        assert 4.0 <= height_in < 7.0, (
+            f"figure {height_in:.2f}in tall for a 4in stack of {n_rows} rows"
+        )
+
+        fig = p.draw()
+        for fn in p._post_draw_fns:
+            fn(fig)
+        ax = _first_panel_axes(fig)
+        row_in = ax.get_position().height * fig.get_size_inches()[1]
+        assert abs(row_in - 4.0 / n_rows) < 0.05, (
+            f"row is {row_in:.2f}in, expected {4.0 / n_rows:.2f}in"
+        )
+        assert (
+            abs(ax.get_position().width * fig.get_size_inches()[0] - 5.0) < 0.05
+        ), "width is per-column and must stay at the requested 5in"
+
 
 class TestFacet2D:
     """facet_2d() API and its mutual exclusivity with facet()."""

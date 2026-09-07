@@ -3294,7 +3294,7 @@ class ScatterPlotter:
             )
         )
 
-        p = self._register_fixed_panel(p)
+        p = self._register_fixed_panel(p, stacked_rows=len(cats_str))
 
         return p
 
@@ -3483,13 +3483,21 @@ class ScatterPlotter:
 
     # ── internals ────────────────────────────────────────────────────────────
 
-    def _register_fixed_panel(self, p: p9.ggplot) -> p9.ggplot:
+    def _register_fixed_panel(self, p: p9.ggplot, *, stacked_rows: int = 1) -> p9.ggplot:
         """Register a post-draw hook pinning the panel to ``_fixed_panel_size``.
+
+        ``_apply_fixed_panel`` sizes *every* panel of a facet grid to the
+        requested height, which is what the user wants when the rows are
+        independent facets.  ``plot_ridgeline`` is the exception: its rows are
+        strips of one composite plot, so the fixed height describes the whole
+        stack and *stacked_rows* divides it across them.  Without that a
+        ``panel_size(5, 4)`` ridgeline of 9 groups rendered 43 inches tall.
 
         No-op when no fixed size is configured.
         """
         if self._fixed_panel_size is not None:
             w, h = self._fixed_panel_size
+            h = h / max(1, stacked_rows)
             p = _ensure_post_draw(p)
             p._post_draw_fns.append(
                 lambda fig, _w=w, _h=h: _apply_fixed_panel(fig, _w, _h)
