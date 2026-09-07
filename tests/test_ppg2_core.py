@@ -399,6 +399,23 @@ class TestReplay:
         assert _replay(script(b, p, data), {})._facet_variable
         assert _replay(script(b, p.unfacet(), data), {})._facet_variable is None
 
+    def test_theme_is_ordinary_configuration(self, data):
+        """.theme() is recorded like any other config call, on either recorder."""
+        b = builder().theme(figure_size=(3, 2))
+        p = b.plot("leiden").theme(axis_text_x=p9.element_text(angle=0))
+        plotter = _replay(script(b, p, data), {})
+        assert plotter._theme_overwrites["figure_size"] == (3, 2)
+        assert plotter._theme_overwrites["axis_text_x"].properties["rotation"] == 0
+
+    def test_a_recorded_theme_reaches_the_figure(self, data):
+        """... and beats the plot's own default once the script is replayed."""
+        b = builder()
+        p = b.plot("leiden").theme(axis_text_x=p9.element_text(angle=0))
+        plotter = _replay(script(b, p, data), {})
+        figure = plotter.plot_bar("leiden", "coarse")
+        element = figure.theme.themeables["axis_text_x"].theme_element
+        assert element.properties["rotation"] == 0
+
     def test_a_recorded_script_renders(self, data):
         """Everything recorded is genuinely callable on a ScatterPlotter."""
         b = builder().style(dot_size=2)

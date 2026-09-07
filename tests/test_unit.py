@@ -579,6 +579,25 @@ class TestPlotHistogram:
         scale = next(s for s in p.scales if "fill" in s.aesthetics)
         assert scale.guide is None
 
+    def test_categorical_x_labels_are_rotated(self, plotter_no_boundary):
+        """Category names on the x axis stand up, as in plot_bar."""
+        p = plotter_no_boundary.plot_histogram(CAT_COL)
+        element = p.theme.themeables["axis_text_x"].theme_element
+        assert element.properties["rotation"] == 90
+
+    def test_numeric_x_labels_are_not_rotated(self, plotter_no_boundary):
+        """Bin edges are short numbers on a continuous axis — they stay flat."""
+        p = plotter_no_boundary.plot_histogram(NUMERIC_COL)
+        element = p.theme.themeables["axis_text_x"].theme_element
+        assert "rotation" not in element.properties
+
+    def test_theme_turns_the_rotation_back(self, plotter_no_boundary):
+        p = plotter_no_boundary.theme(
+            axis_text_x=p9.element_text(angle=0)
+        ).plot_histogram(CAT_COL)
+        element = p.theme.themeables["axis_text_x"].theme_element
+        assert element.properties["rotation"] == 0
+
     def test_facet_counts_partition_cells(self, plotter_no_boundary, ad):
         p = plotter_no_boundary.facet("coarse", n_col=3).plot_histogram(CAT_COL)
         assert "facet" in p.data.columns

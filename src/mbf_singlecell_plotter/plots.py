@@ -2577,6 +2577,11 @@ class ScatterPlotter:
         :meth:`panel_size` and :meth:`theme` configuration, mirroring the
         other ``plot_*`` methods.  Returns the plotnine ``ggplot`` object.
 
+        A categorical column's x tick labels are rotated 90°, since they are
+        category names and collide as soon as they are longer than a character
+        or two; ``.theme(axis_text_x=p9.element_text(angle=0))`` turns them
+        back.  A numeric column's x axis keeps its horizontal bin labels.
+
         Raises:
             RuntimeError: if no data source has been set.
 
@@ -2734,6 +2739,11 @@ class ScatterPlotter:
                 panel_grid_major=p9.element_line(color="#E0E0E0", size=0.3),
                 panel_grid_minor=p9.element_blank(),
                 axis_text=p9.element_text(color=self._tick_color),
+                # As in plot_bar: the x labels are category names, so they
+                # stand up rather than collide.  .theme(axis_text_x=...) wins.
+                axis_text_x=p9.element_text(
+                    color=self._tick_color, angle=90, ha="right", va="center"
+                ),
                 axis_ticks_major_x=p9.element_line(color=self._tick_color, size=0.5),
                 axis_ticks_major_y=p9.element_line(color=self._tick_color, size=0.5),
             )

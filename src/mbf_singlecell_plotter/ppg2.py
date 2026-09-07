@@ -112,6 +112,33 @@ waiting for it.  Genes named explicitly instead
 (``plot("leiden", plot_genes=["LYZ", "CST3"])``, which works for any column) are
 declared right away and plotted as named.
 
+Theming and other styling
+-------------------------
+There is no separate theming API here: ``theme``, ``style``, ``panel_size``,
+``colormap_discrete`` and friends return a ScatterPlotter, so they are
+*configuration* and both recorders carry them unchanged.  Put a theme on the
+builder to style everything it makes, or on one plot to style just that one --
+what reaches the figure is the merge, plot last::
+
+    import plotnine as p9
+
+    builder = (
+        PlotBuilder(output_folder="results/plots")
+        .set_source(Path("analysis.h5ad"), embedding="umap")
+        .theme(axis_text_x=p9.element_text(angle=45, ha="right"))   # every plot
+    )
+
+    builder.plot("coarse").bar("leiden")                            # 45 degrees
+    builder.plot("coarse").theme(figure_size=(8, 4)).bar("leiden")  # ... and wider
+
+The plotnine elements travel in the job's ParameterInvariant like any other
+argument, so editing a theme re-runs exactly the plots that use it.  The one
+rule to remember is the general one below: configuration must come *before*
+the terminal, since the terminal builds the job on the spot.  A theme is an
+override, not a replacement -- each plot keeps its own defaults for everything
+the theme does not name (this is how ``bar``/``histogram`` let you undo their
+rotated x labels with ``theme(axis_text_x=p9.element_text(angle=0))``).
+
 Semantics
 ---------
 Replay order is ``builder calls -> plot calls``, exactly as if you had made
