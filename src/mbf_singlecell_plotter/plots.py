@@ -2294,6 +2294,113 @@ class ScatterPlotter:
 
         return out
 
+    # ── interactive exports: the cacheable half ──────────────────────────────
+    #
+    # An interactive export is an expensive computation with a cheap HTML file
+    # on top of it.  These three methods are the expensive half, split so that
+    # each can be cached under its own key: the figure depends on the plot and
+    # the dpi, the scoring depends on the data and its thresholds, and neither
+    # depends on anything the viewer shows.  ``mbf_singlecell_plotter.ppg2``
+    # gives each one its own job; :meth:`save_interactive_moran_grid` and
+    # :meth:`save_interactive_cluster_markers` run them back to back into a
+    # scratch directory for callers not using a pipegraph.
+
+    def cache_interactive_figure(
+        self,
+        column: str,
+        output_prefix,
+        dpi: int = 150,
+        legend_boxes: bool = False,
+    ) -> None:
+        """Render *column* and cache the PNG plus its CSS geometry.
+
+        Writes ``<output_prefix>.figure.png`` and ``<output_prefix>.figure.json``;
+        the latter carries the axes bounding box and data limits an overlay
+        needs, so nothing downstream has to redraw or hold on to the figure.
+
+        Args:
+            column:        Gene or obs column to draw, as for :meth:`plot`.
+            output_prefix: Path prefix the cache files hang off.
+            dpi:           PNG resolution (default 150).  Display size is always
+                           96 dpi CSS pixels regardless of this value.
+            legend_boxes:  Also record the on-screen box of every legend key, for
+                           exports whose legend entries are hotspots (default
+                           ``False``).
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .cache_interactive_figure()")
+        from .interactive import write_figure_cache
+
+        write_figure_cache(
+            self, column, output_prefix, dpi=dpi, legend_boxes=legend_boxes
+        )
+
+    def cache_cluster_markers(
+        self,
+        column: str,
+        output_prefix,
+        layer: str | None = None,
+        min_cells_per_group: int = 10,
+    ) -> None:
+        """Cache the pseudobulk one-vs-rest marker scoring for *column*.
+
+        Writes the full marker table, the gene display names, the per-bin cell
+        and category counts, and the grid geometry.  ``k`` and ``min_score``
+        are deliberately absent: they filter this table rather than produce it,
+        so they belong to the HTML step and cost nothing to change.
+
+        Args:
+            column:              Categorical obs column with cluster labels.
+            output_prefix:       Path prefix the cache files hang off.
+            layer:               Expression layer for marker computation
+                                 (``None`` = the source's configured layer).
+            min_cells_per_group: Categories with fewer cells are skipped
+                                 (default 10).
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .cache_cluster_markers()")
+        from .interactive import write_cluster_markers_cache
+
+        write_cluster_markers_cache(
+            self,
+            column,
+            output_prefix,
+            layer=layer,
+            min_cells_per_group=min_cells_per_group,
+        )
+
+    def cache_moran_grid(
+        self,
+        column: str,
+        output_prefix,
+        min_cells: int = 3,
+        var_score_column: str | None = None,
+    ) -> None:
+        """Cache the Moran's I gene scoring behind a moran-grid export.
+
+        Writes the full per-gene score table with each gene's top bin, the gene
+        display names, the per-bin cell counts and the grid geometry.  ``k`` and
+        ``min_moran`` filter that table and so belong to the HTML step.
+
+        Args:
+            column:           Gene or obs column the scatter is coloured by.
+            output_prefix:    Path prefix the cache files hang off.
+            min_cells:        Minimum cells per bin (default 3).
+            var_score_column: Column in ``adata.var`` to use as the gene score
+                              instead of computing Moran's I on the fly.
+        """
+        if self._data is None:
+            raise RuntimeError("call .set_source() before .cache_moran_grid()")
+        from .interactive import write_moran_grid_cache
+
+        write_moran_grid_cache(
+            self,
+            column,
+            output_prefix,
+            min_cells=min_cells,
+            var_score_column=var_score_column,
+        )
+
     def save_interactive_moran_grid(
         self,
         column: str,
@@ -2306,7 +2413,7 @@ class ScatterPlotter:
         debug: bool = False,
         gene_url: str | Callable[[str, str | None], str] | None = None,
         gene_url_inline: bool = True,
-        save_tsv: bool = False,
+        save_tsv: bool = True,
     ) -> None:
         """Save an interactive HTML scatter plot with per-bin marker gene tooltips.
 
@@ -2357,7 +2464,7 @@ class ScatterPlotter:
                               ``grid_cell, gene, _display_name, moran_i, rank``
                               (plus an ``alternative_id`` column when an
                               alternative id column is configured; default
-                              ``False``).
+                              ``True``).
         """
         if self._data is None:
             raise RuntimeError(
@@ -2393,7 +2500,7 @@ class ScatterPlotter:
         debug: bool = False,
         gene_url: str | Callable[[str, str | None], str] | None = None,
         gene_url_inline: bool = True,
-        save_tsv: bool = False,
+        save_tsv: bool = True,
     ) -> None:
         """Save an interactive HTML view of per-cluster pseudobulk marker genes.
 
@@ -2444,7 +2551,7 @@ class ScatterPlotter:
                                  ``cluster, gene, _display_name, delta, rank``
                                  (plus an ``alternative_id`` column when an
                                  alternative id column is configured; default
-                                 ``False``).
+                                 ``True``).
         """
         if self._data is None:
             raise RuntimeError(

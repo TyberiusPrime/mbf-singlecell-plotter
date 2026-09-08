@@ -53,11 +53,27 @@ Interactive HTML exports
 their own file rather than returning a figure, so they are neither
 configuration nor a terminal.  They are recognised as *exports* and appear on
 :class:`Plot` without the ``save_`` prefix; the output path is the job's output
-file, and ``save_tsv=True`` simply makes the TSV a second output of the same
-job::
+file, and the marker TSV is a second output of the same job (``save_tsv=False``
+turns it off)::
 
     p = builder.plot("leiden")
-    p.interactive_cluster_markers(save_tsv=True)   # .html + .tsv, one job
+    p.interactive_cluster_markers()                # .html + .tsv
+
+Each export becomes *three* jobs, because it is an expensive computation with a
+cheap HTML file on top of it.  Drawing the figure and scoring the genes each
+get a cache job below ``cache/``, mirroring the output's own path, and the HTML
+job reads those caches -- so re-tuning what the viewer shows costs one small
+file and no recomputation::
+
+    results/leiden_interactive_cluster_markers.html         # the HTML job
+    cache/results/leiden_interactive_cluster_markers.figure.png    # + .json
+    cache/results/leiden_interactive_cluster_markers.markers.parquet  # + ...
+
+Which stage an argument belongs to is what ``STAGED_EXPORTS`` records: ``dpi``
+draws, ``layer`` and ``min_cells_per_group`` score, and ``k``, ``min_score``,
+``gene_url`` and friends only ever filter or label what is already there, so
+they key the HTML alone.  Changing one of those rewrites the HTML; changing
+``dpi`` redraws the figure without rescoring; changing the data re-runs both.
 
 ``plot_genes`` additionally declares a :class:`pypipegraph2.JobGeneratingJob`
 that waits for the export, reads the marker genes back out of the TSV (which it
@@ -190,6 +206,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from . import interactive
 from .data import _spec_str as _gene_key  # the TSV's spelling of a gene spec
 from .plots import ScatterPlotter
 
@@ -240,26 +257,99 @@ def _active_graph(what: str):
 # change here.
 
 
-def _classify(cls) -> Tuple[dict, dict, dict]:
-    config, terminal, export = {}, {}, {}
+def _classify(cls) -> Tuple[dict, dict, dict, dict]:
+    config, terminal, export, cache = {}, {}, {}, {}
     for name, fn in inspect.getmembers(cls, inspect.isfunction):
         if name.startswith("_"):
             continue
         signature = inspect.signature(fn)
         annotation = str(signature.return_annotation)
+        head = list(signature.parameters)[1:3]
         if cls.__name__ in annotation:
             config[name] = fn
         elif "ggplot" in annotation:
             terminal[name] = fn
-        elif annotation == "None" and list(signature.parameters)[1:3] == [
-            "column",
-            "output_path",
-        ]:
+        elif annotation == "None" and head == ["column", "output_path"]:
             export[name] = fn
-    return config, terminal, export
+        # a cache stage: half of an export, writing a set of files below a
+        # prefix rather than one named output.  Reached through STAGED_EXPORTS,
+        # not installed on Plot -- nobody asks for half an export by hand.
+        elif annotation == "None" and head == ["column", "output_prefix"]:
+            cache[name] = fn
+    return config, terminal, export, cache
 
 
-CONFIG_METHODS, TERMINAL_METHODS, EXPORT_METHODS = _classify(ScatterPlotter)
+CONFIG_METHODS, TERMINAL_METHODS, EXPORT_METHODS, CACHE_METHODS = _classify(
+    ScatterPlotter
+)
+
+
+@dataclass(frozen=True)
+class _Stages:
+    """How one export splits into a figure cache, an analysis cache and an HTML.
+
+    An interactive export is an expensive computation with a cheap HTML file on
+    top.  Declared as one job, re-tuning anything the *viewer* shows -- ``k``, a
+    threshold, where a gene links to -- re-runs the scoring and redraws the
+    figure for a file that is written in milliseconds.  So it is declared as
+    three, and the arguments are routed to the stage that actually consumes
+    them.
+
+    ``figure_params`` / ``analysis_params`` / ``render_params`` must between
+    them account for every argument of the export, minus ``column`` and
+    ``output_path``; ``test_every_export_argument_is_routed`` holds us to it, so
+    a new argument cannot quietly end up in no fingerprint at all.
+    """
+
+    figure_method: str
+    figure_kwargs: dict
+    figure_params: tuple
+    analysis_method: str
+    analysis_params: tuple
+    analysis_files: tuple
+    render_function: str
+    render_params: tuple
+
+
+STAGED_EXPORTS = {
+    "save_interactive_cluster_markers": _Stages(
+        figure_method="cache_interactive_figure",
+        # the legend keys are hotspots in this view, so their boxes are read
+        # off the rendered figure and travel in the figure cache.
+        figure_kwargs={"legend_boxes": True},
+        figure_params=("dpi",),
+        analysis_method="cache_cluster_markers",
+        analysis_params=("layer", "min_cells_per_group"),
+        analysis_files=interactive.CLUSTER_MARKERS_CACHE_FILES,
+        render_function="render_interactive_cluster_markers",
+        render_params=(
+            "k",
+            "min_score",
+            "min_cluster_cells",
+            "debug",
+            "gene_url",
+            "gene_url_inline",
+            "save_tsv",
+        ),
+    ),
+    "save_interactive_moran_grid": _Stages(
+        figure_method="cache_interactive_figure",
+        figure_kwargs={"legend_boxes": False},
+        figure_params=("dpi",),
+        analysis_method="cache_moran_grid",
+        analysis_params=("min_cells", "var_score_column"),
+        analysis_files=interactive.MORAN_GRID_CACHE_FILES,
+        render_function="render_interactive_moran_grid",
+        render_params=(
+            "k",
+            "min_moran",
+            "debug",
+            "gene_url",
+            "gene_url_inline",
+            "save_tsv",
+        ),
+    ),
+}
 
 # Terminal-level keywords that shadow nothing in any terminal signature; see
 # test_ppg2_core.py::test_reserved_output_kwargs_do_not_shadow_terminals.
@@ -310,6 +400,50 @@ def _first_param_is_column(fn) -> bool:
 
 _SELF = object()  # placeholder for the bound `self` during signature checks
 _OUTPUT = object()  # ... and for an export's output_path, which we supply
+
+
+def _cache_prefix(target: Path) -> Path:
+    """Where a staged export's caches live: ``cache/`` over the output's path.
+
+    ``results/plots/leiden_markers.html`` caches under
+    ``cache/results/plots/leiden_markers.*`` -- the output tree mirrored one
+    level down, so a cache is easy to find from the file it feeds and the whole
+    lot is easy to throw away.
+
+    An output outside the working directory has no path to mirror, so its cache
+    sits in a ``cache/`` beside it instead.
+    """
+    relative = target
+    if target.is_absolute():
+        try:
+            relative = target.relative_to(Path.cwd())
+        except ValueError:
+            return target.parent / "cache" / target.stem
+    return Path("cache") / relative.with_suffix("")
+
+
+def _unsupplied_defaults(fn, positional: tuple, kwargs: dict) -> dict:
+    """The parameters of *fn* the caller left at their default value.
+
+    A fingerprint has to cover the *effective* configuration rather than the
+    arguments that happened to be typed out.  Without this, passing
+    ``gene_url_inline=False`` -- the function's own default -- invalidates an
+    output and recomputes it into the very same bytes, and so does deleting the
+    argument again afterwards.
+
+    Returns ``{}`` when the arguments do not bind: the caller validates them
+    itself, with a message that names the method.
+    """
+    signature = inspect.signature(fn)
+    try:
+        bound = signature.bind(*positional, **kwargs)
+    except TypeError:
+        return {}
+    supplied = set(bound.arguments)
+    bound.apply_defaults()
+    return {
+        name: value for name, value in bound.arguments.items() if name not in supplied
+    }
 
 
 # ── recorded calls ───────────────────────────────────────────────────────────
@@ -1137,7 +1271,18 @@ class Plot(_Recorder):
         signature = self._signature_call(self.column)
         genes, from_signature = self._genes_to_plot(signature, label, gene_args)
         target = self._target(name, filename)
-        recipe = self._encode(ppg, graph, terminal, args, kwargs, target, dpi)
+        recipe = self._encode(
+            ppg,
+            graph,
+            terminal,
+            args,
+            kwargs,
+            target,
+            dpi,
+            defaults=_unsupplied_defaults(
+                TERMINAL_METHODS[terminal], (_SELF,) + tuple(args), kwargs
+            ),
+        )
         _claim_output(
             graph,
             target,
@@ -1377,22 +1522,50 @@ class Plot(_Recorder):
                 "set_source() on the builder or on the plot first."
             )
 
-    def _encode(self, ppg, graph, terminal, args, kwargs, target: Path, dpi):
+    def _encode(
+        self,
+        ppg,
+        graph,
+        terminal,
+        args,
+        kwargs,
+        target: Path,
+        dpi,
+        *,
+        defaults: Optional[dict] = None,
+        include_script: bool = True,
+    ):
         """Everything this file needs, and the fingerprint it hashes to.
 
         Kept separate from job creation so the fingerprint is available before
         the output path is claimed -- a re-declaration is only a collision when
         the recipe actually differs.
+
+        *defaults* are the arguments the caller left alone (see
+        :func:`_unsupplied_defaults`).  They join the fingerprint but not the
+        call, so what an output hashes to is its *effective* configuration:
+        spelling a default out, or dropping it again, no longer re-runs a job
+        that would write the very same bytes.
+
+        With *include_script* false the fingerprint covers the arguments alone.
+        That is for a job that replays nothing -- the HTML half of a staged
+        export reads its inputs from cache files, so the script reaches it
+        through those files' jobs instead, and a script change that leaves both
+        caches identical has genuinely not changed the HTML.
         """
         builder = self._builder
         job_id = str(target)
 
-        builder_encoded, builder_calls, builder_deps = builder._walk(ppg, graph)
         walker = _Walker(job_id, _resolver(ppg), ppg)
-        plot_encoded, plot_calls = walker.walk_calls(self._calls)
-
-        init_kwargs = {**builder.init_kwargs, **self.init_kwargs}
-        init_encoded, _ = walker.walk(init_kwargs, f"{job_id} ScatterPlotter()")
+        if include_script:
+            builder_encoded, builder_calls, builder_deps = builder._walk(ppg, graph)
+            plot_encoded, plot_calls = walker.walk_calls(self._calls)
+            init_kwargs = {**builder.init_kwargs, **self.init_kwargs}
+            init_encoded, _ = walker.walk(init_kwargs, f"{job_id} ScatterPlotter()")
+        else:
+            builder_encoded, builder_calls, builder_deps = None, (), []
+            plot_encoded, plot_calls = None, ()
+            init_kwargs, init_encoded = {}, None
 
         args_encoded, args_resolved = [], []
         for position, value in enumerate(args):
@@ -1404,23 +1577,29 @@ class Plot(_Recorder):
             enc, res = walker.walk(kwargs[key], f"{job_id}: {key}=...")
             kwargs_encoded[key] = enc
             kwargs_resolved[key] = res
+        for key in sorted(defaults or {}):
+            enc, _ = walker.walk((defaults or {})[key], f"{job_id}: {key}= (default)")
+            kwargs_encoded[key] = enc
 
-        if dpi is None:
-            dpi = self._dpi if self._dpi is not None else builder._dpi
+        parameters = {
+            "terminal": terminal,
+            "args": args_encoded,
+            "kwargs": kwargs_encoded,
+        }
+        if include_script:
+            if dpi is None:
+                dpi = self._dpi if self._dpi is not None else builder._dpi
+            parameters.update(
+                builder=builder_encoded,
+                init=init_encoded,
+                plot=plot_encoded,
+                dpi=dpi,
+            )
+        # a script-free fingerprint leaves `dpi` out too: it is the figure
+        # cache's business, and that cache is a dependency, not a parameter.
 
         return _Recipe(
-            parameters=json.dumps(
-                {
-                    "builder": builder_encoded,
-                    "init": init_encoded,
-                    "plot": plot_encoded,
-                    "terminal": terminal,
-                    "args": args_encoded,
-                    "kwargs": kwargs_encoded,
-                    "dpi": dpi,
-                },
-                sort_keys=True,
-            ),
+            parameters=json.dumps(parameters, sort_keys=True),
             calls=tuple(builder_calls) + tuple(plot_calls),
             init_kwargs=init_kwargs,
             terminal=terminal,
@@ -1466,10 +1645,19 @@ class Plot(_Recorder):
     # -- exports -----------------------------------------------------------
 
     def _build_export(self, export, column, kwargs, *, name, filename, plot_genes):
-        """One HTML export (plus its TSV), and optionally its per-gene plots."""
+        """One HTML export -- as three jobs -- and optionally its per-gene plots.
+
+        The expensive halves (drawing the figure, scoring the genes) each get a
+        cache job under ``cache/`` keyed on the arguments that actually feed
+        them; the HTML job reads those caches and is keyed on the viewer
+        settings alone.  So changing ``k``, a ``gene_url`` or a threshold
+        rewrites one small file and touches neither computation, and changing
+        ``dpi`` redraws the figure without rescoring the genes.
+        """
         label = _export_name_for(export)
         ppg, graph = _active_graph(f"{type(self).__name__}.{label}()")
         self._require_source(label)
+        stages = STAGED_EXPORTS[export]
         target = self._target(name, filename, suffix=".html")
         kwargs.setdefault("dpi", self._resolved_dpi())
         if plot_genes:
@@ -1488,18 +1676,64 @@ class Plot(_Recorder):
                 f"{self._describe()}.{label}(): save_tsv writes {tsv}, which is "
                 "the HTML file itself - give the output a non-.tsv filename."
             )
-        recipe = self._encode(
-            ppg, graph, export, (column,), kwargs, target, kwargs["dpi"]
-        )
-        outputs = [target] + ([tsv] if kwargs.get("save_tsv") else [])
         description = f"{self._describe()}.{label}() at {_caller_location()}"
+        prefix = _cache_prefix(target)
+
+        figure_job = self._build_cache_stage(
+            ppg,
+            graph,
+            column,
+            prefix,
+            stages.figure_method,
+            {key: kwargs[key] for key in stages.figure_params if key in kwargs},
+            stages.figure_kwargs,
+            interactive.FIGURE_CACHE_FILES,
+            description,
+        )
+        analysis_job = self._build_cache_stage(
+            ppg,
+            graph,
+            column,
+            prefix,
+            stages.analysis_method,
+            {key: kwargs[key] for key in stages.analysis_params if key in kwargs},
+            {},
+            stages.analysis_files,
+            description,
+        )
+
+        render_kwargs = {
+            key: kwargs[key] for key in stages.render_params if key in kwargs
+        }
+        render = getattr(interactive, stages.render_function)
+        recipe = self._encode(
+            ppg,
+            graph,
+            stages.render_function,
+            (),
+            render_kwargs,
+            target,
+            None,
+            defaults=_unsupplied_defaults(
+                render, (_OUTPUT, _OUTPUT, _OUTPUT), render_kwargs
+            ),
+            # the HTML replays nothing: the plotter's script reaches it through
+            # the two cache jobs it depends on, not through its own fingerprint.
+            include_script=False,
+        )
+        outputs = [target] + ([tsv] if render_kwargs.get("save_tsv", True) else [])
         for output in outputs:
             _claim_output(graph, output, recipe.parameters, description)
-        job = self._create_export_job(ppg, outputs, recipe)
+        job = self._create_render_job(
+            ppg, outputs, recipe, prefix, stages.render_function
+        )
+        job.depends_on(figure_job)
+        job.depends_on(analysis_job)
         self._builder._session.record(graph, job)
+
         new = self._copy()
         new._job = job
-        new._jobs = self._jobs + (job,)
+        new._jobs = self._jobs + (figure_job, analysis_job, job)
         if plot_genes:
             hook = _default_gene_plot if plot_genes is True else plot_genes
             genes_job = self._create_gene_job(ppg, tsv, hook, job)
@@ -1507,10 +1741,48 @@ class Plot(_Recorder):
             new._jobs = new._jobs + (genes_job,)
         return new
 
-    def _create_export_job(self, ppg, outputs: list, recipe: "_Recipe"):
+    def _build_cache_stage(
+        self,
+        ppg,
+        graph,
+        column,
+        prefix: Path,
+        method: str,
+        kwargs: dict,
+        constants: dict,
+        suffixes,
+        description: str,
+    ):
+        """One cache job: a ScatterPlotter ``cache_*`` method over a file set.
+
+        *constants* are settings the export fixes rather than exposes (whether
+        the legend keys are hotspots, say); they join the fingerprint like any
+        other argument, so flipping one in a later version rebuilds the cache.
+        """
+        outputs = interactive.cache_paths(prefix, suffixes)
+        stage_kwargs = {**kwargs, **constants}
+        recipe = self._encode(
+            ppg,
+            graph,
+            method,
+            (column,),
+            stage_kwargs,
+            outputs[0],
+            stage_kwargs.get("dpi"),
+            defaults=_unsupplied_defaults(
+                CACHE_METHODS[method], (_SELF, column, _OUTPUT), stage_kwargs
+            ),
+        )
+        for output in outputs:
+            _claim_output(graph, output, recipe.parameters, description)
+        job = self._create_cache_job(ppg, outputs, recipe, prefix)
+        self._builder._session.record(graph, job)
+        return job
+
+    def _create_cache_job(self, ppg, outputs: list, recipe: "_Recipe", prefix: Path):
         calls = recipe.calls
         init_kwargs = recipe.init_kwargs
-        export = recipe.terminal
+        method = recipe.terminal
         args_resolved = recipe.args
         kwargs_resolved = recipe.kwargs
 
@@ -1519,17 +1791,44 @@ class Plot(_Recorder):
             output_filenames,
             args_resolved=args_resolved,
             calls=calls,
-            export=export,
             init_kwargs=init_kwargs,
             kwargs_resolved=kwargs_resolved,
+            method=method,
+            prefix=prefix,
         ):
-            target = Path(output_filenames[0])
-            target.parent.mkdir(parents=True, exist_ok=True)
+            Path(output_filenames[0]).parent.mkdir(parents=True, exist_ok=True)
             plotter = _replay(calls, init_kwargs)
-            getattr(plotter, export)(*args_resolved, target, **kwargs_resolved)
+            getattr(plotter, method)(*args_resolved, prefix, **kwargs_resolved)
 
         job = ppg.MultiFileGeneratingJob(outputs, generate, depend_on_function=False)
         job.depends_on(recipe.builder_deps)
+        job.depends_on(list(recipe.walker.deps) + recipe.walker.function_invariants())
+        job.depends_on(
+            ppg.ParameterInvariant(str(outputs[0]) + "_config", recipe.parameters)
+        )
+        return job
+
+    def _create_render_job(
+        self, ppg, outputs: list, recipe: "_Recipe", prefix: Path, render_function: str
+    ):
+        """The HTML job: caches in, one small file out, no plotter in sight."""
+        kwargs_resolved = recipe.kwargs
+
+        def generate(
+            output_filenames,
+            kwargs_resolved=kwargs_resolved,
+            prefix=prefix,
+            render_function=render_function,
+        ):
+            from . import interactive
+
+            target = Path(output_filenames[0])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            getattr(interactive, render_function)(
+                prefix, prefix, target, **kwargs_resolved
+            )
+
+        job = ppg.MultiFileGeneratingJob(outputs, generate, depend_on_function=False)
         job.depends_on(list(recipe.walker.deps) + recipe.walker.function_invariants())
         job.depends_on(
             ppg.ParameterInvariant(str(outputs[0]) + "_config", recipe.parameters)

@@ -7,6 +7,22 @@ Two flavours share the same figure/overlay/panel machinery:
 * :func:`save_interactive_cluster_markers` — marker genes per *category* of a
   categorical column, ranked by a pseudobulk one-vs-rest score; a hovered grid
   cell is mapped to its predominant category and shows that cluster's markers.
+
+Each of the two is really three steps, and they are available separately
+because the first two are expensive and the third is not:
+
+1. ``write_figure_cache`` — draw the scatter once, keep the PNG and the CSS
+   geometry an overlay needs.
+2. ``write_cluster_markers_cache`` / ``write_moran_grid_cache`` — score every
+   gene, and record the per-bin counts, *unfiltered*.
+3. ``render_interactive_*`` — build the HTML from those files alone.  It opens
+   no h5ad and holds no plotter, so every threshold it applies (``k``,
+   ``min_score``, ``min_moran``, ``min_cluster_cells``) and everything it
+   labels (``gene_url``, ``debug``) is free to change.
+
+``mbf_singlecell_plotter.ppg2`` gives each step its own job; the ``save_*``
+functions run all three back to back through a scratch directory, so a direct
+call and a pipegraph run cannot drift apart.
 """
 
 import base64
@@ -28,14 +44,17 @@ GeneUrlTemplate = str
 
 # ── shared figure / geometry / binning helpers ───────────────────────────────
 def _prepare_figure(plotter, column, dpi, *, legend_boxes: bool = False):
-    """Render *column* to a base64 PNG and return CSS geometry + data→CSS mappers.
+    """Render *column* to a PNG and return it with its CSS geometry.
 
-    Returns ``(img_b64, css_w, css_h, dx, dy, geom)`` where ``dx``/``dy`` map
-    data coordinates to CSS pixels and ``geom`` carries the axes bounding box
-    (used by the debug overlay).  The panel defaults to 5×5in unless the plotter
-    already has a fixed panel size.
+    Returns ``(png_bytes, css_w, css_h, geom)``.  ``geom`` carries the axes
+    bounding box and the data limits -- everything :func:`_mappers` needs to
+    rebuild the data→CSS mappers, and everything the debug overlay reads -- so
+    the whole return value is JSON-serializable apart from the PNG itself.
+    That is what lets the expensive half of an export be cached: nothing here
+    is a closure over the figure or over the data.
 
-    With *legend_boxes* the figure is drawn once more up front so
+    The panel defaults to 5×5in unless the plotter already has a fixed panel
+    size.  With *legend_boxes* the figure is drawn once more up front so
     ``geom["legend_blocks"]`` can carry the on-screen box of every legend key.
     """
     from .plots import _PlotWithPostDraw
@@ -80,6 +99,38 @@ def _prepare_figure(plotter, column, dpi, *, legend_boxes: bool = False):
     ax_top = (1.0 - ax_pos.y1) * css_h
     ax_bottom = (1.0 - ax_pos.y0) * css_h
 
+    legend_blocks = _legend_entry_boxes(fig) if legend_boxes else []
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi)
+    plt.close(fig)
+
+    geom = {
+        "legend_blocks": legend_blocks,
+        "ax_left": ax_left,
+        "ax_right": ax_right,
+        "ax_top": ax_top,
+        "ax_bottom": ax_bottom,
+        "xlim": [float(xlim[0]), float(xlim[1])],
+        "ylim": [float(ylim[0]), float(ylim[1])],
+    }
+    return buf.getvalue(), css_w, css_h, geom
+
+
+def _mappers(geom: dict):
+    """The ``(dx, dy)`` data→CSS pixel mappers of a *geom* dict.
+
+    Both are affine in the axes bbox and the data limits, so they can be
+    rebuilt from :func:`_prepare_figure`'s serializable output alone -- the
+    rendering half of an export never has to hold on to the figure.
+    """
+    ax_left = geom["ax_left"]
+    ax_right = geom["ax_right"]
+    ax_top = geom["ax_top"]
+    ax_bottom = geom["ax_bottom"]
+    xlim = geom["xlim"]
+    ylim = geom["ylim"]
+
     def _dx(x):
         return ax_left + (x - xlim[0]) / (xlim[1] - xlim[0]) * (ax_right - ax_left)
 
@@ -88,23 +139,7 @@ def _prepare_figure(plotter, column, dpi, *, legend_boxes: bool = False):
         frac = (y - ylim[0]) / (ylim[1] - ylim[0])
         return ax_bottom + frac * (ax_top - ax_bottom)
 
-    legend_blocks = _legend_entry_boxes(fig) if legend_boxes else []
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi)
-    plt.close(fig)
-    img_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-
-    geom = {
-        "legend_blocks": legend_blocks,
-        "ax_left": ax_left,
-        "ax_right": ax_right,
-        "ax_top": ax_top,
-        "ax_bottom": ax_bottom,
-        "xlim": xlim,
-        "ylim": ylim,
-    }
-    return img_b64, css_w, css_h, _dx, _dy, geom
+    return _dx, _dy
 
 
 # Legend keys end tight against their label text; a little breathing room on
@@ -236,6 +271,49 @@ def _grid_binning(data):
     }
 
 
+#: The keys of :func:`_grid_binning`'s result that are plain numbers, and so
+#: survive a round trip through the analysis cache.  Everything the rendering
+#: half needs -- :func:`_cell_geometry`, :func:`_build_debug_svg`,
+#: :func:`_bin_labeller` -- reads only these, never ``data_full`` or the
+#: per-cell arrays.
+_GRID_KEYS = (
+    "gs",
+    "glv",
+    "x_min_d",
+    "x_max_d",
+    "y_min_d",
+    "y_max_d",
+    "cell_w",
+    "cell_h",
+)
+
+
+def _grid_geometry(b: dict) -> dict:
+    """The serializable subset of a :func:`_grid_binning` result.
+
+    ``gs`` stays an ``int`` (it is a bin count, and ``range(gs)`` draws the
+    debug overlay); the bounds stay floats.
+    """
+    cast = {"gs": int, "glv": bool}
+    return {key: cast.get(key, float)(b[key]) for key in _GRID_KEYS}
+
+
+def _bin_labeller(grid: dict):
+    """Rebuild :func:`_grid_binning`'s ``bin_to_label`` from a *grid* dict."""
+    from .data import _LETTERS
+
+    gs = int(grid["gs"])
+    glv = grid["glv"]
+
+    def _bin_to_label(xi: int, yi: int) -> str:
+        row_from_top = gs - 1 - yi  # yi=0 is bottom → last row from top
+        if glv:
+            return f"{_LETTERS[row_from_top]}{xi + 1}"
+        return f"{_LETTERS[xi]}{row_from_top + 1}"
+
+    return _bin_to_label
+
+
 def _cell_geometry(xi: int, yi: int, b: dict, _dx, _dy) -> dict:
     """Return the CSS-pixel ``{x, y, w, h}`` rect for grid bin ``(xi, yi)``."""
     gs = b["gs"]
@@ -349,6 +427,390 @@ def _resolve_gene_url(gene_url, data):
     return gene_url_templates, has_gene_urls, _resolve
 
 
+# ── the two-stage cache ──────────────────────────────────────────────────────
+#
+# An interactive export is one cheap HTML file sitting on top of two expensive
+# computations: drawing the figure, and scoring the genes.  Re-tuning what the
+# viewer shows -- k, a threshold, where a gene links to -- has to touch neither.
+#
+# So each half writes a small set of files under a *prefix*, and the renderer
+# builds the HTML from those files alone: it never opens the h5ad, never
+# replays the plotter, and holds no closure over either.  The thresholds live
+# in the renderer on purpose (``k`` and ``min_score`` are pure post-filters on
+# the cached table), which is what makes re-tuning them free.
+
+#: Files each cache writes, relative to its prefix.  The ppg2 wrapper declares
+#: these as the outputs of its cache jobs, so they have to be exact.
+FIGURE_CACHE_FILES = (".figure.png", ".figure.json")
+CLUSTER_MARKERS_CACHE_FILES = (
+    ".markers.parquet",
+    ".genes.parquet",
+    ".bins.parquet",
+    ".bin_categories.parquet",
+    ".grid.json",
+)
+MORAN_GRID_CACHE_FILES = (
+    ".moran.parquet",
+    ".genes.parquet",
+    ".bins.parquet",
+    ".grid.json",
+)
+
+
+def cache_paths(prefix, suffixes: Sequence[str]) -> list:
+    """The files a cache with this *prefix* writes, in declaration order."""
+    prefix = Path(prefix)
+    return [prefix.with_name(prefix.name + suffix) for suffix in suffixes]
+
+
+def _cache_file(prefix, suffix: str) -> Path:
+    prefix = Path(prefix)
+    return prefix.with_name(prefix.name + suffix)
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=1, sort_keys=True), encoding="utf-8")
+
+
+def _write_parquet(path: Path, frame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(path, index=False)
+
+
+# -- figure cache -------------------------------------------------------------
+
+
+def write_figure_cache(
+    plotter, column: str, prefix, *, dpi: int = 150, legend_boxes: bool = False
+) -> None:
+    """Render *column* once and cache the PNG plus its CSS geometry.
+
+    Keyed (by the caller) on the plotter's configuration, *column* and *dpi*
+    alone -- nothing a viewer setting can reach -- so changing ``k`` or a
+    ``gene_url`` never redraws the figure.
+    """
+    png, css_w, css_h, geom = _prepare_figure(
+        plotter, column, dpi, legend_boxes=legend_boxes
+    )
+    _cache_file(prefix, ".figure.png").parent.mkdir(parents=True, exist_ok=True)
+    _cache_file(prefix, ".figure.png").write_bytes(png)
+    _write_json(
+        _cache_file(prefix, ".figure.json"),
+        {"css_w": css_w, "css_h": css_h, "geom": geom},
+    )
+
+
+def read_figure_cache(prefix) -> tuple[str, int, int, dict]:
+    """``(img_b64, css_w, css_h, geom)`` from a :func:`write_figure_cache` prefix."""
+    png = _cache_file(prefix, ".figure.png").read_bytes()
+    meta = json.loads(_cache_file(prefix, ".figure.json").read_text(encoding="utf-8"))
+    return (
+        base64.b64encode(png).decode("ascii"),
+        meta["css_w"],
+        meta["css_h"],
+        meta["geom"],
+    )
+
+
+# -- gene identity ------------------------------------------------------------
+
+
+def _alt_id_values(data, genes: Sequence[str]):
+    """:meth:`EmbeddingData.alternative_id_for` for many genes at once.
+
+    The per-gene method walks every source for every call, which is fine for
+    the handful of genes an export used to display but not for the whole
+    ``var`` index -- and the cache has to cover the whole index, because which
+    genes survive ``k``/``min_score`` is only decided when the HTML is built.
+    This resolves source by source instead, filling in the genes still missing,
+    which is the same first-source-that-has-it order the method uses.
+    """
+    import pandas as pd
+
+    genes = list(genes)
+    out = np.array([None] * len(genes), dtype=object)
+    if data._alternative_id_column is None:
+        return out
+    col = data._alternative_id_column
+    index = pd.Index(genes)
+    for ad in [data.ad, *(s.ad for s in data._alternative_sources)]:
+        if col not in ad.var.columns:
+            continue
+        todo = np.array([value is None for value in out])
+        if not todo.any():
+            break
+        # duplicate gene symbols: the per-gene method takes the first row
+        series = ad.var[col]
+        series = series[~series.index.duplicated(keep="first")].dropna()
+        found = series.reindex(index[todo]).to_numpy(dtype=object)
+        out[todo] = [
+            None if value is None or pd.isna(value) else value for value in found
+        ]
+    return out
+
+
+def _gene_table(plotter, data, genes: Sequence[str]):
+    """One row per gene: how it is displayed, and its alternative ids.
+
+    Two alternative-id columns, because the two existing readers disagree and
+    a cache is the wrong place to quietly settle that: ``alternative_id`` is
+    the primary source's ``var`` value, which is what the marker TSV has always
+    written (see :func:`_alt_id_lookup`), while ``url_alternative_id`` is the
+    all-sources lookup that :meth:`ScatterPlotter._display_name` and a
+    ``gene_url`` callable see.
+    """
+    import pandas as pd
+
+    genes = list(genes)
+    url_alt = _alt_id_values(data, genes)
+    display = [
+        gene if alt is None else f"{alt} ({gene})" for gene, alt in zip(genes, url_alt)
+    ]
+    if data._alternative_id_column is not None:
+        primary = data.ad.var[data._alternative_id_column]
+        primary = primary[~primary.index.duplicated(keep="first")]
+        alternative_id = primary.reindex(pd.Index(genes)).to_numpy(dtype=object)
+    else:
+        alternative_id = np.array([None] * len(genes), dtype=object)
+    return pd.DataFrame(
+        {
+            "gene": genes,
+            "display_name": display,
+            "alternative_id": alternative_id,
+            "url_alternative_id": url_alt,
+        }
+    ).astype(
+        {
+            "display_name": "string",
+            "alternative_id": "string",
+            "url_alternative_id": "string",
+        }
+    )
+
+
+class _CachedAltIds:
+    """The ``alternative_id_for`` half of an EmbeddingData, read off the cache.
+
+    :func:`_resolve_gene_url` invokes a ``gene_url`` callable with the gene's
+    alternative id; the renderer has no data source to ask, so it asks this.
+    """
+
+    def __init__(self, mapping: dict):
+        self._mapping = mapping
+
+    def alternative_id_for(self, gene_name: str):
+        return self._mapping.get(gene_name)
+
+
+def _gene_lookups(genes_frame) -> tuple[dict, dict, dict]:
+    """``(display_name, alternative_id, url_alternative_id)`` maps of a gene table."""
+    import pandas as pd
+
+    def _map(column):
+        return {
+            gene: (None if value is None or value is pd.NA else value)
+            for gene, value in zip(genes_frame["gene"], genes_frame[column])
+        }
+
+    return _map("display_name"), _map("alternative_id"), _map("url_alternative_id")
+
+
+# -- analysis caches ----------------------------------------------------------
+
+
+def _bin_tables(b: dict, column: str | None):
+    """The per-bin tables of a binning: cell counts, and category counts.
+
+    Both are stored *unfiltered* -- ``min_cluster_cells`` is a post-filter on
+    the counts, so leaving it to the renderer costs nothing here and makes it
+    free to change there.  ``rank`` records the descending-count order
+    ``value_counts`` produced, so the renderer reproduces it exactly rather
+    than re-deriving an order that ties differently.
+    """
+    import pandas as pd
+
+    counts = pd.DataFrame(
+        {
+            "xi": np.asarray(b["xi_all"], dtype=int),
+            "yi": np.asarray(b["yi_all"], dtype=int),
+        }
+    )
+    bins = (
+        counts.groupby(["xi", "yi"], observed=True)
+        .size()
+        .reset_index(name="n_cells")
+        .sort_values(["xi", "yi"], kind="stable")
+        .reset_index(drop=True)
+    )
+    if column is None:
+        return bins, None
+
+    cat_series = b["data_full"].get_column(column).series.reindex(b["all_coords"].index)
+    bin_df = pd.DataFrame(
+        {"xi": b["xi_all"], "yi": b["yi_all"], "cat": cat_series.values}
+    )
+    bin_df = bin_df[pd.notna(bin_df["cat"])]
+    rows = []
+    for (xi, yi), group in bin_df.groupby(["xi", "yi"], observed=True):
+        # value_counts() is descending by count; keep that order as a rank so
+        # the renderer does not have to re-break the ties.
+        for rank, (cat, n) in enumerate(group["cat"].value_counts().items()):
+            rows.append(
+                {
+                    "xi": int(xi),
+                    "yi": int(yi),
+                    "cat": str(cat),
+                    "n": int(n),
+                    "rank": rank,
+                }
+            )
+    bin_categories = pd.DataFrame(
+        rows, columns=["xi", "yi", "cat", "n", "rank"]
+    ).astype({"xi": int, "yi": int, "cat": "string", "n": int, "rank": int})
+    return bins, bin_categories
+
+
+def write_cluster_markers_cache(
+    plotter,
+    column: str,
+    prefix,
+    *,
+    layer: str | None = None,
+    min_cells_per_group: int = 10,
+) -> None:
+    """Cache the pseudobulk one-vs-rest scoring behind a cluster-markers export.
+
+    Everything here is keyed on the plotter's configuration, *column*, *layer*
+    and *min_cells_per_group* -- the arguments that reach
+    :func:`~mbf_singlecell_plotter.transforms.compute_cluster_markers`.  ``k``
+    and ``min_score`` deliberately stay out: they filter the table this writes,
+    so the renderer applies them and re-tuning them never lands here.
+
+    Category labels are canonicalised to ``str`` so the marker table and the
+    per-bin table can be joined on them after a round trip through parquet.
+    """
+    from .transforms import compute_cluster_markers
+
+    data = plotter._data
+    b = _grid_binning(data)
+    bins, bin_categories = _bin_tables(b, column)
+
+    marker_df = compute_cluster_markers(
+        data, column, layer=layer, min_cells_per_group=min_cells_per_group
+    )
+    marker_df = marker_df.assign(category=marker_df["category"].astype(str))
+
+    _write_parquet(_cache_file(prefix, ".markers.parquet"), marker_df)
+    _write_parquet(
+        _cache_file(prefix, ".genes.parquet"),
+        _gene_table(plotter, data, list(dict.fromkeys(marker_df["gene"]))),
+    )
+    _write_parquet(_cache_file(prefix, ".bins.parquet"), bins)
+    _write_parquet(_cache_file(prefix, ".bin_categories.parquet"), bin_categories)
+    _write_json(
+        _cache_file(prefix, ".grid.json"),
+        {
+            "column": column,
+            "grid": _grid_geometry(b),
+            "has_alt": data._alternative_id_column is not None,
+        },
+    )
+
+
+def write_moran_grid_cache(
+    plotter,
+    column: str,
+    prefix,
+    *,
+    min_cells: int = 3,
+    var_score_column: str | None = None,
+) -> None:
+    """Cache the Moran's I scoring behind a moran-grid export.
+
+    Keyed on the plotter's configuration, *column*, *min_cells* and
+    *var_score_column*; ``k`` and ``min_moran`` filter the cached table and so
+    belong to the renderer, exactly as for the cluster view.
+    """
+    from .transforms import compute_grid_moran
+
+    data = plotter._data
+    b = _grid_binning(data)
+    bins, _ = _bin_tables(b, None)
+
+    gene_df = compute_grid_moran(
+        data, n_bins=b["gs"], min_cells=min_cells, var_score_column=var_score_column
+    )
+    # `top_bin` is an (xi, yi) tuple; parquet wants columns, and the renderer
+    # puts the tuple back together before handing it to marker_genes_by_region.
+    gene_df = gene_df.assign(
+        top_bin_xi=[int(t[0]) for t in gene_df["top_bin"]],
+        top_bin_yi=[int(t[1]) for t in gene_df["top_bin"]],
+    ).drop(columns=["top_bin"])
+
+    _write_parquet(_cache_file(prefix, ".moran.parquet"), gene_df)
+    _write_parquet(
+        _cache_file(prefix, ".genes.parquet"),
+        _gene_table(plotter, data, list(dict.fromkeys(gene_df["gene"]))),
+    )
+    _write_parquet(_cache_file(prefix, ".bins.parquet"), bins)
+    _write_json(
+        _cache_file(prefix, ".grid.json"),
+        {
+            "column": column,
+            "grid": _grid_geometry(b),
+            "has_alt": data._alternative_id_column is not None,
+        },
+    )
+
+
+def _read_analysis_cache(prefix, table: str) -> dict:
+    """The parquet/JSON files of an analysis cache, as frames and dicts."""
+    import pandas as pd
+
+    meta = json.loads(_cache_file(prefix, ".grid.json").read_text(encoding="utf-8"))
+    out = {
+        "column": meta["column"],
+        "grid": meta["grid"],
+        "has_alt": meta["has_alt"],
+        "table": pd.read_parquet(_cache_file(prefix, f".{table}.parquet")),
+        "genes": pd.read_parquet(_cache_file(prefix, ".genes.parquet")),
+        "bins": pd.read_parquet(_cache_file(prefix, ".bins.parquet")),
+    }
+    categories = _cache_file(prefix, ".bin_categories.parquet")
+    if categories.exists():
+        out["bin_categories"] = pd.read_parquet(categories)
+    return out
+
+
+def _one_shot(
+    write_analysis,
+    render_html,
+    plotter,
+    column,
+    output_path,
+    *,
+    analysis,
+    figure,
+    render,
+) -> None:
+    """Run both cache stages into a scratch directory and render from them.
+
+    This is what ``save_interactive_*`` is now: the same two stages the ppg2
+    wrapper declares as separate jobs, minus the caching.  Sharing the code
+    path is the point -- a direct call and a pipegraph run cannot drift apart,
+    and the caches are not left behind for a caller who never asked for them.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="mbf-scp-") as scratch:
+        # one prefix for both caches: their file suffixes do not overlap.
+        prefix = Path(scratch) / "cache"
+        write_figure_cache(plotter, column, prefix, **figure)
+        write_analysis(plotter, column, prefix, **analysis)
+        render_html(prefix, prefix, output_path, **render)
+
+
 # ── grid view: markers per spatial bin (Moran's I) ───────────────────────────
 def save_interactive_moran_grid(
     plotter,
@@ -361,9 +823,12 @@ def save_interactive_moran_grid(
     var_score_column: str | None = None,
     dpi: int = 150,
     debug: bool = False,
-    gene_url: GeneUrlTemplate | Sequence[GeneUrlTemplate] | Callable[[str, str | None], str] | None = None,
+    gene_url: GeneUrlTemplate
+    | Sequence[GeneUrlTemplate]
+    | Callable[[str, str | None], str]
+    | None = None,
     gene_url_inline: bool = False,
-    save_tsv: bool = False,
+    save_tsv: bool = True,
 ) -> None:
     """Save an interactive HTML scatter plot with Moran's I marker gene tooltips.
 
@@ -403,22 +868,63 @@ def save_interactive_moran_grid(
                           suffix), one row per (grid cell, gene) with columns
                           ``grid_cell, gene, _display_name, moran_i, rank`` (plus
                           an ``alternative_id`` column when an alternative id
-                          column is configured; default ``False``).
+                          column is configured; default ``True``).
     """
-    from .transforms import compute_grid_moran, marker_genes_by_region
-    from collections import defaultdict, Counter
+    _one_shot(
+        write_moran_grid_cache,
+        render_interactive_moran_grid,
+        plotter,
+        column,
+        output_path,
+        analysis=dict(min_cells=min_cells, var_score_column=var_score_column),
+        figure=dict(dpi=dpi, legend_boxes=False),
+        render=dict(
+            k=k,
+            min_moran=min_moran,
+            debug=debug,
+            gene_url=gene_url,
+            gene_url_inline=gene_url_inline,
+            save_tsv=save_tsv,
+        ),
+    )
 
-    data = plotter._data
 
-    img_b64, css_w, css_h, _dx, _dy, geom = _prepare_figure(plotter, column, dpi)
-    b = _grid_binning(data)
-    gs = b["gs"]
+def render_interactive_moran_grid(
+    figure_prefix,
+    analysis_prefix,
+    output_path,
+    *,
+    k: int = 20,
+    min_moran: float = 0.2,
+    debug: bool = False,
+    gene_url: GeneUrlTemplate
+    | Sequence[GeneUrlTemplate]
+    | Callable[[str, str | None], str]
+    | None = None,
+    gene_url_inline: bool = False,
+    save_tsv: bool = True,
+) -> None:
+    """Build the moran-grid HTML from a figure cache and an analysis cache.
 
-    bin_cell_counts = Counter(zip(b["xi_all"].tolist(), b["yi_all"].tolist()))
+    Touches neither the h5ad nor the plotter: every argument here is a viewer
+    setting, and every one of them is cheap to change.  ``k`` and *min_moran*
+    filter :func:`write_moran_grid_cache`'s table rather than the data, so
+    re-tuning them costs one HTML rewrite.
+    """
+    from .transforms import marker_genes_by_region
+    from collections import defaultdict
 
-    # ── Compute marker genes per bin ──────────────────────────────────────────
-    gene_df = compute_grid_moran(
-        data, n_bins=gs, min_cells=min_cells, var_score_column=var_score_column
+    img_b64, css_w, css_h, geom = read_figure_cache(figure_prefix)
+    _dx, _dy = _mappers(geom)
+    cache = _read_analysis_cache(analysis_prefix, "moran")
+    grid = cache["grid"]
+    bin_to_label = _bin_labeller(grid)
+    display, alternative_id, url_alternative_id = _gene_lookups(cache["genes"])
+
+    # ── Marker genes per bin ─────────────────────────────────────────────────
+    gene_df = cache["table"]
+    gene_df = gene_df.assign(
+        top_bin=list(zip(gene_df["top_bin_xi"], gene_df["top_bin_yi"]))
     )
     markers = marker_genes_by_region(gene_df, k=k, min_moran=min_moran)
     gene_moran = dict(zip(gene_df["gene"], gene_df["moran_i"]))
@@ -430,11 +936,14 @@ def save_interactive_moran_grid(
                 (g, float(gene_moran.get(g, 0.0)))
             )
 
-    gene_url_templates, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
+    gene_url_templates, has_gene_urls, _gene_url = _resolve_gene_url(
+        gene_url, _CachedAltIds(url_alternative_id)
+    )
 
     # ── Build overlay cells for ALL occupied bins ─────────────────────────────
     cells = []
-    for (xi, yi), n_cells in sorted(bin_cell_counts.items()):
+    for row in cache["bins"].itertuples(index=False):
+        xi, yi, n_cells = int(row.xi), int(row.yi), int(row.n_cells)
         gene_list = grid_cell_genes.get((xi, yi), [])
         seen = set()
         deduped = []
@@ -443,7 +952,7 @@ def save_interactive_moran_grid(
                 seen.add(gene)
                 deduped.append(
                     {
-                        "name": plotter._display_name(data, gene),
+                        "name": display.get(gene, gene),
                         "gene": gene,
                         "url": _gene_url(gene),
                         "mi": round(mi, 3),
@@ -451,34 +960,35 @@ def save_interactive_moran_grid(
                 )
         deduped = deduped[:k]
 
-        cell = _cell_geometry(xi, yi, b, _dx, _dy)
+        cell = _cell_geometry(xi, yi, grid, _dx, _dy)
         cell.update(
             {
-                "label": b["bin_to_label"](xi, yi),
+                "label": bin_to_label(xi, yi),
                 "genes": deduped,
                 "n_cells": n_cells,
             }
         )
         cells.append(cell)
 
-    debug_svg = _build_debug_svg(geom, b, _dx, _dy) if debug else ""
+    debug_svg = _build_debug_svg(geom, grid, _dx, _dy) if debug else ""
 
     html = _build_html(
         img_b64,
         css_w,
         css_h,
         cells,
-        column,
+        cache["column"],
         debug_svg,
         gene_url_templates=gene_url_templates,
         has_gene_urls=has_gene_urls,
         gene_url_inline=gene_url_inline,
         score_label="I",
     )
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(html, encoding="utf-8")
 
     if save_tsv:
-        alt_ids, has_alt = _alt_id_lookup(data)
+        has_alt = cache["has_alt"]
         columns = ["grid_cell", "gene", "_display_name"]
         if has_alt:
             columns.append("alternative_id")
@@ -494,7 +1004,7 @@ def save_interactive_moran_grid(
                     "rank": rank,
                 }
                 if has_alt:
-                    row["alternative_id"] = alt_ids.get(g["gene"])
+                    row["alternative_id"] = alternative_id.get(g["gene"])
                 rows.append(row)
         _write_marker_tsv(rows, output_path, columns)
 
@@ -534,9 +1044,12 @@ def save_interactive_cluster_markers(
     layer: str | None = None,
     dpi: int = 150,
     debug: bool = False,
-    gene_url: GeneUrlTemplate | Sequence[GeneUrlTemplate] | Callable[[str, str | None], str] | None = None,
+    gene_url: GeneUrlTemplate
+    | Sequence[GeneUrlTemplate]
+    | Callable[[str, str | None], str]
+    | None = None,
     gene_url_inline: bool = False,
-    save_tsv: bool = False,
+    save_tsv: bool = True,
 ) -> None:
     """Save an interactive HTML view of per-cluster pseudobulk marker genes.
 
@@ -585,48 +1098,89 @@ def save_interactive_cluster_markers(
                              suffix), one row per (cluster, gene) with columns
                              ``cluster, gene, _display_name, delta, rank`` (plus
                              an ``alternative_id`` column when an alternative id
-                             column is configured; default ``False``).
+                             column is configured; default ``True``).
     """
-    from .transforms import compute_cluster_markers, marker_genes_by_category
-    from collections import Counter
-    import pandas as pd
-
-    data = plotter._data
-
-    img_b64, css_w, css_h, _dx, _dy, geom = _prepare_figure(
-        plotter, column, dpi, legend_boxes=True
+    _one_shot(
+        write_cluster_markers_cache,
+        render_interactive_cluster_markers,
+        plotter,
+        column,
+        output_path,
+        analysis=dict(layer=layer, min_cells_per_group=min_cells_per_group),
+        figure=dict(dpi=dpi, legend_boxes=True),
+        render=dict(
+            k=k,
+            min_score=min_score,
+            min_cluster_cells=min_cluster_cells,
+            debug=debug,
+            gene_url=gene_url,
+            gene_url_inline=gene_url_inline,
+            save_tsv=save_tsv,
+        ),
     )
-    b = _grid_binning(data)
 
-    bin_cell_counts = Counter(zip(b["xi_all"].tolist(), b["yi_all"].tolist()))
+
+def render_interactive_cluster_markers(
+    figure_prefix,
+    analysis_prefix,
+    output_path,
+    *,
+    k: int = 20,
+    min_score: float = 0.0,
+    min_cluster_cells: int = 1,
+    debug: bool = False,
+    gene_url: GeneUrlTemplate
+    | Sequence[GeneUrlTemplate]
+    | Callable[[str, str | None], str]
+    | None = None,
+    gene_url_inline: bool = False,
+    save_tsv: bool = True,
+) -> None:
+    """Build the cluster-markers HTML from a figure cache and an analysis cache.
+
+    Touches neither the h5ad nor the plotter.  ``k``, *min_score* and
+    *min_cluster_cells* are post-filters on
+    :func:`write_cluster_markers_cache`'s tables, so re-tuning any of them --
+    or a ``gene_url``, or the debug overlay -- costs one HTML rewrite and no
+    recomputation.
+
+    Category labels come back from parquet as ``str`` (that is how the cache
+    stores them, so the marker table and the per-bin table can be joined); the
+    HTML always rendered them through ``str`` anyway.
+    """
+    from .transforms import marker_genes_by_category
+
+    img_b64, css_w, css_h, geom = read_figure_cache(figure_prefix)
+    _dx, _dy = _mappers(geom)
+    cache = _read_analysis_cache(analysis_prefix, "markers")
+    grid = cache["grid"]
+    column = cache["column"]
+    bin_to_label = _bin_labeller(grid)
+    display, alternative_id, url_alternative_id = _gene_lookups(cache["genes"])
 
     # ── Categories present per occupied bin (largest first) ───────────────────
-    cat_series = b["data_full"].get_column(column).series.reindex(b["all_coords"].index)
-    bin_df = pd.DataFrame(
-        {"xi": b["xi_all"], "yi": b["yi_all"], "cat": cat_series.values}
-    )
-    bin_df = bin_df[pd.notna(bin_df["cat"])]
+    # `rank` is the order value_counts() produced when the cache was written.
+    present = cache["bin_categories"]
+    present = present[present["n"] >= min_cluster_cells]
     bin_categories: dict[tuple[int, int], list[tuple[Any, int]]] = {}
-    for (xi, yi), grp in bin_df.groupby(["xi", "yi"], observed=True):
-        vc = grp["cat"].value_counts()  # descending by count
-        bin_categories[(int(xi), int(yi))] = [
-            (cat, int(n)) for cat, n in vc.items() if n >= min_cluster_cells
-        ]
+    for row in present.sort_values("rank", kind="stable").itertuples(index=False):
+        bin_categories.setdefault((int(row.xi), int(row.yi)), []).append(
+            (str(row.cat), int(row.n))
+        )
 
     # ── Marker genes per category ─────────────────────────────────────────────
-    marker_df = compute_cluster_markers(
-        data, column, layer=layer, min_cells_per_group=min_cells_per_group
-    )
-    markers = marker_genes_by_category(marker_df, k=k, min_score=min_score)
+    markers = marker_genes_by_category(cache["table"], k=k, min_score=min_score)
 
-    gene_url_templates, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
+    gene_url_templates, has_gene_urls, _gene_url = _resolve_gene_url(
+        gene_url, _CachedAltIds(url_alternative_id)
+    )
 
     # Build each category's gene chips once (identical across every bin it hits).
     cat_genes: dict[Any, list[dict]] = {}
     for cat, recs in markers.items():
-        cat_genes[cat] = [
+        cat_genes[str(cat)] = [
             {
-                "name": plotter._display_name(data, r["gene"]),
+                "name": display.get(r["gene"], r["gene"]),
                 "gene": r["gene"],
                 "url": _gene_url(r["gene"]),
                 "mi": round(float(r["delta"]), 3),
@@ -636,7 +1190,8 @@ def save_interactive_cluster_markers(
 
     # ── Build overlay cells for ALL occupied bins ─────────────────────────────
     cells = []
-    for (xi, yi), n_cells in sorted(bin_cell_counts.items()):
+    for row in cache["bins"].itertuples(index=False):
+        xi, yi, n_cells = int(row.xi), int(row.yi), int(row.n_cells)
         clusters = [
             {
                 "name": f"cluster {cat}",
@@ -646,10 +1201,10 @@ def save_interactive_cluster_markers(
             for cat, n in bin_categories.get((xi, yi), [])
         ]
 
-        cell = _cell_geometry(xi, yi, b, _dx, _dy)
+        cell = _cell_geometry(xi, yi, grid, _dx, _dy)
         cell.update(
             {
-                "label": b["bin_to_label"](xi, yi),
+                "label": bin_to_label(xi, yi),
                 "clusters": clusters,
                 "n_cells": n_cells,
             }
@@ -657,9 +1212,12 @@ def save_interactive_cluster_markers(
         cells.append(cell)
 
     # ── Legend hotspots: one clickable box per legend key ─────────────────────
-    total_per_cat = bin_df["cat"].value_counts()
+    # Totals are the unfiltered per-bin counts summed back up, which is the
+    # whole-embedding count min_cluster_cells was never meant to touch.
+    totals = cache["bin_categories"].groupby("cat", observed=True)["n"].sum()
+    total_per_cat = {str(cat): int(n) for cat, n in totals.items()}
     legend_items = []
-    for entry, cat in _match_legend_entries(geom["legend_blocks"], total_per_cat.index):
+    for entry, cat in _match_legend_entries(geom["legend_blocks"], total_per_cat):
         width = min(entry["w"] + _LEGEND_PAD_RIGHT, css_w - entry["x"])
         legend_items.append(
             {
@@ -669,12 +1227,12 @@ def save_interactive_cluster_markers(
                 "h": entry["h"],
                 "label": entry["label"],
                 "title": f"Cluster {cat}",
-                "n_cells": int(total_per_cat[cat]),
+                "n_cells": total_per_cat[cat],
                 "genes": cat_genes.get(cat, []),
             }
         )
 
-    debug_svg = _build_debug_svg(geom, b, _dx, _dy) if debug else ""
+    debug_svg = _build_debug_svg(geom, grid, _dx, _dy) if debug else ""
 
     html = _build_html(
         img_b64,
@@ -689,10 +1247,11 @@ def save_interactive_cluster_markers(
         score_label="Δ",
         legend_items=legend_items,
     )
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(html, encoding="utf-8")
 
     if save_tsv:
-        alt_ids, has_alt = _alt_id_lookup(data)
+        has_alt = cache["has_alt"]
         columns = ["cluster", "gene", "_display_name"]
         if has_alt:
             columns.append("alternative_id")
@@ -708,7 +1267,7 @@ def save_interactive_cluster_markers(
                     "rank": rank,
                 }
                 if has_alt:
-                    row["alternative_id"] = alt_ids.get(g["gene"])
+                    row["alternative_id"] = alternative_id.get(g["gene"])
                 rows.append(row)
         _write_marker_tsv(rows, output_path, columns)
 

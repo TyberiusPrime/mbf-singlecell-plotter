@@ -3985,9 +3985,18 @@ class TestInteractiveMarkers:
             assert len(grp) <= 5
             assert list(grp["rank"]) == list(range(1, len(grp) + 1))
 
-    def test_save_tsv_defaults_off(self, plotter_no_boundary, tmp_path):
+    def test_save_tsv_defaults_on(self, plotter_no_boundary, tmp_path):
+        """The markers are cached to get the HTML built, so writing them out
+        costs nothing -- and they are what a reader wants next."""
         out = tmp_path / "markers.html"
         plotter_no_boundary.save_interactive_cluster_markers(CAT_COL, out)
+        assert out.with_suffix(".tsv").exists()
+
+    def test_save_tsv_can_be_turned_off(self, plotter_no_boundary, tmp_path):
+        out = tmp_path / "markers.html"
+        plotter_no_boundary.save_interactive_cluster_markers(
+            CAT_COL, out, save_tsv=False
+        )
         assert not out.with_suffix(".tsv").exists()
 
     def test_save_tsv_moran_grid(self, plotter_no_boundary, tmp_path):

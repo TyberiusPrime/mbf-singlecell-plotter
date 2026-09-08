@@ -674,25 +674,64 @@ def genes_of(tsv: Path) -> list:
     return list(dict.fromkeys(pd.read_csv(tsv, sep="\t")["gene"]))
 
 
+def html_of(plot):
+    """The file name of the HTML an export named."""
+    return Path(plot.job_.files[0]).name
+
+
 class TestExports:
-    def test_an_export_creates_its_job(self, h5ad, graph):
+    def test_an_export_creates_three_jobs(self, h5ad, graph):
+        """Two caches and the HTML that reads them; `.job_` is still the HTML."""
         plot = source(h5ad).plot(CELL_TYPE_COLUMN)
         plot = plot.interactive_cluster_markers(**CLUSTER_MARKERS)
-        assert len(plot.jobs_) == 1
-        assert plot.job_.job_id.endswith(
-            f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.html"
-        )
+        assert len(plot.jobs_) == 3
+        assert plot.job_ is plot.jobs_[-1]
+        assert html_of(plot) == f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.html"
+
+    def test_the_caches_live_under_cache(self, h5ad, graph):
+        plot = source(h5ad).plot(CELL_TYPE_COLUMN)
+        plot = plot.interactive_cluster_markers(**CLUSTER_MARKERS)
+        figure, analysis, _html = plot.jobs_
+        stem = f"cache/{RESULTS}/{CELL_TYPE_COLUMN}_interactive_cluster_markers"
+        assert sorted(str(f) for f in figure.files) == [
+            f"{stem}.figure.json",
+            f"{stem}.figure.png",
+        ]
+        assert sorted(str(f) for f in analysis.files) == [
+            f"{stem}.bin_categories.parquet",
+            f"{stem}.bins.parquet",
+            f"{stem}.genes.parquet",
+            f"{stem}.grid.json",
+            f"{stem}.markers.parquet",
+        ]
+
+    def test_the_moran_cache_holds_its_own_tables(self, h5ad, graph):
+        plot = source(h5ad).plot("S100A8").interactive_moran_grid(**MORAN_GRID)
+        _figure, analysis, _html = plot.jobs_
+        assert sorted(Path(f).suffixes[-2] for f in analysis.files) == [
+            ".bins",
+            ".genes",
+            ".grid",
+            ".moran",
+        ]
 
     def test_the_tsv_is_a_second_output_of_the_same_job(self, h5ad, graph):
         plot = source(h5ad).plot("S100A8")
-        plot = plot.interactive_moran_grid(save_tsv=True, **MORAN_GRID)
+        plot = plot.interactive_moran_grid(**MORAN_GRID)
         assert [str(f) for f in plot.job_.files] == [
             f"{RESULTS}/S100A8_interactive_moran_grid.html",
             f"{RESULTS}/S100A8_interactive_moran_grid.tsv",
         ]
 
-    def test_without_save_tsv_only_the_html_is_declared(self, h5ad, graph):
+    def test_the_tsv_is_written_by_default(self, h5ad, graph):
+        """The markers are cached to build the HTML at all, so writing them
+        out costs nothing beyond the file."""
         plot = source(h5ad).plot("S100A8").interactive_moran_grid(**MORAN_GRID)
+        assert [Path(f).suffix for f in plot.job_.files] == [".html", ".tsv"]
+
+    def test_save_tsv_off_declares_only_the_html(self, h5ad, graph):
+        plot = source(h5ad).plot("S100A8")
+        plot = plot.interactive_moran_grid(save_tsv=False, **MORAN_GRID)
         assert len(plot.job_.files) == 1
 
     def test_an_export_writes_its_files(self, h5ad, workdir):
@@ -709,16 +748,16 @@ class TestExports:
 
     def test_name_and_filename_are_honoured(self, h5ad, graph):
         plot = source(h5ad).plot("S100A8")
-        assert names(
-            plot.interactive_moran_grid(name="markers", **MORAN_GRID),
-            plot.interactive_moran_grid(filename="explore.html", **MORAN_GRID),
-        ) == ["S100A8_markers.html", "explore.html"]
+        assert [
+            html_of(plot.interactive_moran_grid(name="markers", **MORAN_GRID)),
+            html_of(plot.interactive_moran_grid(filename="explore.html", **MORAN_GRID)),
+        ] == ["S100A8_markers.html", "explore.html"]
 
     def test_an_explicit_column_stays_out_of_the_name(self, h5ad, graph):
         """As for terminals: the file is named after the plot, not the argument."""
         plot = source(h5ad).plot("S100A8")
         plot = plot.interactive_cluster_markers(CELL_TYPE_COLUMN, **CLUSTER_MARKERS)
-        assert names(plot) == ["S100A8_interactive_cluster_markers.html"]
+        assert html_of(plot) == "S100A8_interactive_cluster_markers.html"
 
     def test_the_builder_and_plot_configuration_reaches_the_export(self, h5ad, workdir):
         run(
@@ -778,13 +817,183 @@ class TestExports:
         assert mtimes(target) != before
 
 
+class TestExportStaging:
+    """What the three-job split buys: re-tuning the view recomputes nothing.
+
+    Asserted through mtimes, as everywhere else here -- a cache file's mtime
+    only moves when the job that writes it actually re-ran.
+    """
+
+    @pytest.fixture
+    def files(self, workdir):
+        stem = f"{CELL_TYPE_COLUMN}_interactive_cluster_markers"
+        cache = workdir / "cache" / RESULTS / stem
+        return {
+            "html": workdir / RESULTS / f"{stem}.html",
+            "figure": cache.with_suffix(".figure.png"),
+            "markers": cache.with_suffix(".markers.parquet"),
+        }
+
+    def graph(self, h5ad, **kwargs):
+        settings = {**CLUSTER_MARKERS, **kwargs}
+
+        def build():
+            return (
+                source(h5ad)
+                .plot(CELL_TYPE_COLUMN)
+                .interactive_cluster_markers(**settings)
+            )
+
+        return build
+
+    def test_the_caches_are_written(self, h5ad, files):
+        run(self.graph(h5ad))
+        for path in files.values():
+            assert path.exists(), path
+
+    def test_a_changed_k_rewrites_only_the_html(self, h5ad, files):
+        run(self.graph(h5ad, k=2))
+        before = mtimes(*files.values())
+        run(self.graph(h5ad, k=3))
+        after = mtimes(*files.values())
+        assert after[0] != before[0]  # html
+        assert after[1:] == before[1:]  # both caches untouched
+
+    def test_a_changed_gene_url_rewrites_only_the_html(self, h5ad, files):
+        run(self.graph(h5ad))
+        before = mtimes(*files.values())
+        run(self.graph(h5ad, gene_url="scatter/{gene}.png"))
+        after = mtimes(*files.values())
+        assert after[0] != before[0]
+        assert after[1:] == before[1:]
+
+    def test_a_changed_dpi_redraws_the_figure_but_does_not_rescore(self, h5ad, files):
+        run(self.graph(h5ad, dpi=100))
+        before = mtimes(*files.values())
+        run(self.graph(h5ad, dpi=120))
+        after = mtimes(*files.values())
+        assert after[0] != before[0]  # html: the PNG it embeds changed
+        assert after[1] != before[1]  # figure redrawn
+        assert after[2] == before[2]  # markers not rescored
+
+    def test_a_changed_scoring_argument_rescores(self, h5ad, files):
+        run(self.graph(h5ad, min_cells_per_group=1))
+        before = mtimes(*files.values())
+        run(self.graph(h5ad, min_cells_per_group=2))
+        after = mtimes(*files.values())
+        assert after[2] != before[2]  # markers rescored
+        assert after[1] == before[1]  # ... without redrawing the figure
+
+    def test_a_changed_source_reruns_both_caches(self, h5ad, files):
+        run(self.graph(h5ad))
+        before = mtimes(*files.values())
+        modified = anndata.read_h5ad(h5ad)
+        modified.obsm["X_umap"] = modified.obsm["X_umap"] + 100.0
+        modified.write_h5ad(h5ad)
+        run(self.graph(h5ad))
+        assert mtimes(*files.values()) != before
+        for index in (1, 2):
+            assert mtimes(*files.values())[index] != before[index]
+
+    def test_a_style_change_reaches_the_html_through_the_figure(self, h5ad, files):
+        """The HTML's own fingerprint no longer covers the plotter script, so a
+        styling change has to arrive through the figure cache instead -- and it
+        does.
+
+        It also rescores the genes, which it need not: both cache stages are
+        keyed on the *whole* recorded script, and nothing yet tells them that
+        ``dot_size`` cannot move a marker gene.  Splitting the config methods
+        into the ones that shape the data and the ones that only shape the
+        picture would fix it; until then this records what actually happens.
+        """
+
+        def graph(dot_size):
+            def build():
+                return (
+                    source(h5ad)
+                    .style(dot_size=dot_size)
+                    .plot(CELL_TYPE_COLUMN)
+                    .interactive_cluster_markers(**CLUSTER_MARKERS)
+                )
+
+            return build
+
+        run(graph(1))
+        before = mtimes(*files.values())
+        run(graph(4))
+        after = mtimes(*files.values())
+        assert after[1] != before[1]  # figure redrawn ...
+        assert after[0] != before[0]  # ... and the HTML embedding it rebuilt
+        assert after[2] != before[2]  # markers rescored too -- see the docstring
+
+    def test_a_gene_url_callable_still_works(self, h5ad, workdir):
+        """The callable used to be handed the EmbeddingData for a gene's
+        alternative id; the HTML step has no data source any more, so it now
+        gets the ids the analysis cache recorded.  Asserted through the file,
+        since the callable runs inside the job."""
+
+        def gene_url(gene, alt_id=None):
+            return f"plots/{gene}-{alt_id}.png"
+
+        run(
+            lambda: (
+                source(h5ad)
+                .plot(CELL_TYPE_COLUMN)
+                .interactive_cluster_markers(gene_url=gene_url, **CLUSTER_MARKERS)
+            )
+        )
+        html = (
+            workdir / RESULTS / f"{CELL_TYPE_COLUMN}_interactive_cluster_markers.html"
+        ).read_text()
+        # no alternative id column is configured on this source, so every gene
+        # resolves with a None alt id -- but it resolves.
+        assert "plots/" in html and "-None.png" in html
+
+    def test_an_unchanged_graph_reruns_nothing(self, h5ad, files):
+        run(self.graph(h5ad))
+        before = mtimes(*files.values())
+        run(self.graph(h5ad))
+        assert mtimes(*files.values()) == before
+
+    def test_spelling_out_a_default_reruns_nothing(self, h5ad, files):
+        """The fingerprint covers the effective configuration, not the typing.
+
+        ``gene_url_inline=False`` *is* the default, so passing it -- or dropping
+        it again -- cannot change a single byte of any output.
+        """
+        run(self.graph(h5ad))
+        before = mtimes(*files.values())
+        run(self.graph(h5ad, gene_url_inline=False))
+        assert mtimes(*files.values()) == before
+
+    def test_a_moran_export_stages_the_same_way(self, h5ad, workdir):
+        stem = "S100A8_interactive_moran_grid"
+        cache = workdir / "cache" / RESULTS / stem
+        html = workdir / RESULTS / f"{stem}.html"
+        moran = cache.with_suffix(".moran.parquet")
+        figure = cache.with_suffix(".figure.png")
+
+        def build(**kwargs):
+            settings = {**MORAN_GRID, **kwargs}
+            return lambda: (
+                source(h5ad).plot("S100A8").interactive_moran_grid(**settings)
+            )
+
+        run(build())
+        before = mtimes(html, figure, moran)
+        run(build(k=3))
+        after = mtimes(html, figure, moran)
+        assert after[0] != before[0]
+        assert after[1:] == before[1:]
+
+
 class TestPlotGenes:
     """The job-generating job that plots an export's marker genes."""
 
     def test_the_gene_job_is_declared_next_to_the_export(self, h5ad, graph):
         plot = source(h5ad).plot(CELL_TYPE_COLUMN)
         plot = plot.interactive_cluster_markers(plot_genes=True, **CLUSTER_MARKERS)
-        export, genes = plot.jobs_
+        _figure, _analysis, export, genes = plot.jobs_
         assert isinstance(genes, ppg.JobGeneratingJob)
         assert plot.job_ is export  # .job_ is the file this call named
         assert export.job_id.endswith(".html:::" + str(export.files[1]))
@@ -792,8 +1001,10 @@ class TestPlotGenes:
     def test_plot_genes_turns_the_tsv_on(self, h5ad, graph):
         """The genes are read back from it, so it is not optional."""
         plot = source(h5ad).plot("S100A8")
-        plot = plot.interactive_moran_grid(plot_genes=True, **MORAN_GRID)
-        assert [f.suffix for f in plot.jobs_[0].files] == [".html", ".tsv"]
+        plot = plot.interactive_moran_grid(
+            plot_genes=True, save_tsv=False, **MORAN_GRID
+        )
+        assert [f.suffix for f in plot.job_.files] == [".html", ".tsv"]
 
     def test_every_marker_gene_is_plotted(self, h5ad, workdir):
         run(

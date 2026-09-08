@@ -15,7 +15,7 @@ import numpy as np
 import plotnine as p9
 import pytest
 
-from mbf_singlecell_plotter import ppg2
+from mbf_singlecell_plotter import interactive, ppg2
 from mbf_singlecell_plotter.plots import ScatterPlotter
 from mbf_singlecell_plotter.ppg2 import (
     Plot,
@@ -75,6 +75,7 @@ class TestIntrospection:
             set(ppg2.CONFIG_METHODS)
             | set(ppg2.TERMINAL_METHODS)
             | set(ppg2.EXPORT_METHODS)
+            | set(ppg2.CACHE_METHODS)
         )
         assert public - classified - NON_PLOT_METHODS == set()
 
@@ -89,6 +90,58 @@ class TestIntrospection:
         }
         assert not set(ppg2.EXPORT_METHODS) & set(ppg2.CONFIG_METHODS)
         assert not set(ppg2.EXPORT_METHODS) & set(ppg2.TERMINAL_METHODS)
+
+    def test_cache_stages_are_their_own_category(self):
+        """Half an export writes a file *set* below a prefix, not one output."""
+        assert set(ppg2.CACHE_METHODS) == {
+            "cache_interactive_figure",
+            "cache_cluster_markers",
+            "cache_moran_grid",
+        }
+        for other in (ppg2.CONFIG_METHODS, ppg2.TERMINAL_METHODS, ppg2.EXPORT_METHODS):
+            assert not set(ppg2.CACHE_METHODS) & set(other)
+
+    def test_cache_stages_are_not_installed_on_plot(self):
+        """Nobody asks for half an export by hand -- STAGED_EXPORTS wires them."""
+        for name in ppg2.CACHE_METHODS:
+            assert not hasattr(Plot, name), name
+
+    def test_every_export_is_staged(self):
+        assert set(ppg2.STAGED_EXPORTS) == set(ppg2.EXPORT_METHODS)
+
+    def test_every_export_argument_is_routed_to_a_stage(self):
+        """No argument may fall between the three stages.
+
+        An argument in none of them would reach no fingerprint at all, so
+        changing it would silently leave every output stale.
+        """
+        for export, stages in ppg2.STAGED_EXPORTS.items():
+            arguments = set(inspect.signature(ppg2.EXPORT_METHODS[export]).parameters)
+            arguments -= {"self", "column", "output_path"}
+            routed = (
+                set(stages.figure_params)
+                | set(stages.analysis_params)
+                | set(stages.render_params)
+            )
+            assert routed == arguments, export
+
+    def test_every_stage_argument_exists_on_its_stage(self):
+        for export, stages in ppg2.STAGED_EXPORTS.items():
+            figure = set(
+                inspect.signature(ppg2.CACHE_METHODS[stages.figure_method]).parameters
+            )
+            assert set(stages.figure_params) <= figure, export
+            assert set(stages.figure_kwargs) <= figure, export
+            analysis = set(
+                inspect.signature(ppg2.CACHE_METHODS[stages.analysis_method]).parameters
+            )
+            assert set(stages.analysis_params) <= analysis, export
+            render = set(
+                inspect.signature(
+                    getattr(interactive, stages.render_function)
+                ).parameters
+            )
+            assert set(stages.render_params) <= render, export
 
     @pytest.mark.parametrize("cls", [PlotBuilder, Plot])
     def test_config_methods_are_installed(self, cls):
