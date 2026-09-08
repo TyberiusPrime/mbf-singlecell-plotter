@@ -2305,7 +2305,7 @@ class ScatterPlotter:
         dpi: int = 150,
         debug: bool = False,
         gene_url: str | Callable[[str, str | None], str] | None = None,
-        gene_url_inline: bool = False,
+        gene_url_inline: bool = True,
         save_tsv: bool = False,
     ) -> None:
         """Save an interactive HTML scatter plot with per-bin marker gene tooltips.
@@ -2350,7 +2350,7 @@ class ScatterPlotter:
                               (default) genes are plain text.
             gene_url_inline:  If ``True`` the linked resource is displayed in
                               an ``<img>`` panel below rather than opened in a
-                              new browser tab (default ``False``).
+                              new browser tab (default ``True``).
             save_tsv:         If ``True`` also write a tidy ``.tsv`` of the marker
                               genes next to the HTML (same path with a ``.tsv``
                               suffix), one row per (grid cell, gene) with columns
@@ -2392,7 +2392,7 @@ class ScatterPlotter:
         dpi: int = 150,
         debug: bool = False,
         gene_url: str | Callable[[str, str | None], str] | None = None,
-        gene_url_inline: bool = False,
+        gene_url_inline: bool = True,
         save_tsv: bool = False,
     ) -> None:
         """Save an interactive HTML view of per-cluster pseudobulk marker genes.
@@ -2436,7 +2436,7 @@ class ScatterPlotter:
                                  When ``None`` (default) genes are plain text.
             gene_url_inline:     If ``True`` the linked resource is displayed
                                  inline in an ``<img>`` panel rather than a new
-                                 browser tab (default ``False``).
+                                 browser tab (default ``True``).
             save_tsv:            If ``True`` also write a tidy ``.tsv`` of the
                                  marker genes next to the HTML (same path with a
                                  ``.tsv`` suffix), one row per (cluster, gene)
