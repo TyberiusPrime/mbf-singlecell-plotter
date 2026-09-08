@@ -13,10 +13,17 @@ import base64
 import io
 import json
 from typing import Any
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
+
+
+#: A per-gene URL template: a ``str`` carrying a ``{gene}`` placeholder, filled
+#: in by the viewer.  Every ``gene_url=`` takes one, a sequence of them, or a
+#: ``gene_url(gene_id, alt_gene_id) -> str | None`` callable for the one case a
+#: template cannot express.
+GeneUrlTemplate = str
 
 
 # ── shared figure / geometry / binning helpers ───────────────────────────────
@@ -306,23 +313,40 @@ def _build_debug_svg(geom: dict, b: dict, _dx, _dy) -> str:
 
 
 def _resolve_gene_url(gene_url, data):
-    """Normalise the ``gene_url`` argument into a per-gene resolver.
+    """Normalise the ``gene_url`` argument into templates plus a per-gene resolver.
 
-    Returns ``(gene_url_template, has_gene_urls, resolve)`` where ``resolve(g)``
-    yields a precomputed URL for callables (invoked once per gene with the bare
-    ``var_index`` and the alternative id) or ``None`` for string templates
-    (substituted client-side) / when no URL strategy was given.
+    *gene_url* is a ``str`` template carrying a ``{gene}`` placeholder, a
+    sequence of such templates -- a gene may have several plots, and the viewer
+    shows one image per template -- or a callable, invoked here once per gene
+    with the bare ``var_index`` and the alternative id, for the one case a
+    template cannot express.
+
+    Returns ``(gene_url_templates, has_gene_urls, resolve)``.  The templates are
+    handed to the viewer as written and expanded there, so a gene costs one name
+    in the HTML rather than one URL per template; ``resolve(g)`` is the
+    callable's single URL, or ``None`` when there is no callable.
     """
     _cb = gene_url if callable(gene_url) else None
-    gene_url_template = gene_url if isinstance(gene_url, str) else ""
-    has_gene_urls = gene_url is not None
+    if gene_url is None or _cb is not None:
+        gene_url_templates = []
+    elif isinstance(gene_url, str):
+        gene_url_templates = [gene_url]
+    else:
+        gene_url_templates = list(gene_url)
+        for template in gene_url_templates:
+            if not isinstance(template, str):
+                raise TypeError(
+                    "gene_url: a sequence must hold '{gene}' templates - got "
+                    f"{type(template).__name__}."
+                )
+    has_gene_urls = bool(gene_url_templates) or _cb is not None
 
     def _resolve(g: str):
         if _cb is not None:
             return _cb(g, data.alternative_id_for(g))  # ty: ignore
         return None
 
-    return gene_url_template, has_gene_urls, _resolve
+    return gene_url_templates, has_gene_urls, _resolve
 
 
 # ── grid view: markers per spatial bin (Moran's I) ───────────────────────────
@@ -337,7 +361,7 @@ def save_interactive_moran_grid(
     var_score_column: str | None = None,
     dpi: int = 150,
     debug: bool = False,
-    gene_url: str | Callable[[str, str | None], str] | None = None,
+    gene_url: GeneUrlTemplate | Sequence[GeneUrlTemplate] | Callable[[str, str | None], str] | None = None,
     gene_url_inline: bool = False,
     save_tsv: bool = False,
 ) -> None:
@@ -363,13 +387,17 @@ def save_interactive_moran_grid(
                           (default), Moran's I is computed from the embedding.
         dpi:              PNG resolution (default 150).  Display size is always
                           fixed at 96 dpi CSS pixels regardless of this value.
-        gene_url:         URL template (a ``str`` with a ``{gene}`` placeholder)
-                          **or** a callable ``gene_url(gene_id, alt_gene_id=None)``
-                          returning a URL ``str`` (or ``None`` to skip a gene).
-                          When ``None`` (default) genes are plain text.
-        gene_url_inline:  If ``True`` the linked resource is displayed in an
-                          ``<img>`` panel below rather than opened in a new
-                          browser tab (default ``False``).
+        gene_url:         URL template (a ``str`` with a ``{gene}`` placeholder),
+                          **or a sequence of templates** to point one gene at
+                          several files -- the viewer then shows one image per
+                          template, in the order given.  A callable
+                          ``gene_url(gene_id, alt_gene_id=None)`` returning a URL
+                          ``str`` (or ``None`` to skip a gene) still works for the
+                          one case a template cannot express, and yields a single
+                          URL.  When ``None`` (default) genes are plain text.
+        gene_url_inline:  If ``True`` the linked resources are displayed in an
+                          ``<img>`` panel below rather than opened in new
+                          browser tabs (default ``False``).
         save_tsv:         If ``True`` also write a tidy ``.tsv`` of the marker
                           genes next to the HTML (same path with a ``.tsv``
                           suffix), one row per (grid cell, gene) with columns
@@ -402,7 +430,7 @@ def save_interactive_moran_grid(
                 (g, float(gene_moran.get(g, 0.0)))
             )
 
-    gene_url_template, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
+    gene_url_templates, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
 
     # ── Build overlay cells for ALL occupied bins ─────────────────────────────
     cells = []
@@ -442,7 +470,7 @@ def save_interactive_moran_grid(
         cells,
         column,
         debug_svg,
-        gene_url_template=gene_url_template,
+        gene_url_templates=gene_url_templates,
         has_gene_urls=has_gene_urls,
         gene_url_inline=gene_url_inline,
         score_label="I",
@@ -506,7 +534,7 @@ def save_interactive_cluster_markers(
     layer: str | None = None,
     dpi: int = 150,
     debug: bool = False,
-    gene_url: str | Callable[[str, str | None], str] | None = None,
+    gene_url: GeneUrlTemplate | Sequence[GeneUrlTemplate] | Callable[[str, str | None], str] | None = None,
     gene_url_inline: bool = False,
     save_tsv: bool = False,
 ) -> None:
@@ -544,10 +572,14 @@ def save_interactive_cluster_markers(
                              log-normalized layer key to score on that instead).
         dpi:                 PNG resolution (default 150).
         gene_url:            URL template with a ``{gene}`` placeholder, or a
-                             callable ``gene_url(gene_id, alt_gene_id=None)``.
-                             When ``None`` (default) genes are plain text.
-        gene_url_inline:     If ``True`` the linked resource is shown inline in an
-                             ``<img>`` panel rather than a new tab (default False).
+                             sequence of templates to point one gene at several
+                             files -- the viewer then shows one image per
+                             template, in the order given.  A callable
+                             ``gene_url(gene_id, alt_gene_id=None)`` still works
+                             and yields a single URL.  When ``None`` (default)
+                             genes are plain text.
+        gene_url_inline:     If ``True`` the linked resources are shown inline in
+                             an ``<img>`` panel rather than new tabs (default False).
         save_tsv:            If ``True`` also write a tidy ``.tsv`` of the marker
                              genes next to the HTML (same path with a ``.tsv``
                              suffix), one row per (cluster, gene) with columns
@@ -587,7 +619,7 @@ def save_interactive_cluster_markers(
     )
     markers = marker_genes_by_category(marker_df, k=k, min_score=min_score)
 
-    gene_url_template, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
+    gene_url_templates, has_gene_urls, _gene_url = _resolve_gene_url(gene_url, data)
 
     # Build each category's gene chips once (identical across every bin it hits).
     cat_genes: dict[Any, list[dict]] = {}
@@ -651,7 +683,7 @@ def save_interactive_cluster_markers(
         cells,
         column,
         debug_svg,
-        gene_url_template=gene_url_template,
+        gene_url_templates=gene_url_templates,
         has_gene_urls=has_gene_urls,
         gene_url_inline=gene_url_inline,
         score_label="Δ",
@@ -689,7 +721,7 @@ def _build_html(
     column: str,
     debug_svg: str = "",
     *,
-    gene_url_template: str = "",
+    gene_url_templates: list[str] | None = None,
     has_gene_urls: bool = False,
     gene_url_inline: bool = False,
     score_label: str = "I",
@@ -698,7 +730,7 @@ def _build_html(
     legend_items = legend_items or []
     cells_json = json.dumps(cells, separators=(",", ":"))
     legend_json = json.dumps(legend_items, separators=(",", ":"))
-    gene_url_js = json.dumps(gene_url_template)
+    gene_urls_js = json.dumps(gene_url_templates or [], separators=(",", ":"))
     gene_url_inline_js = "true" if (has_gene_urls and gene_url_inline) else "false"
     score_label_js = json.dumps(score_label)
 
@@ -872,12 +904,19 @@ h1 {{
 }}
 #img-wrap {{
   margin-top: 10px;
-  display: none;
+  display: none;      /* shown as flex once a gene with URLs is clicked */
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-start;
 }}
 #img-wrap img {{
   max-width: 100%;
   border: 1px solid #ddd;
   border-radius: 4px;
+}}
+/* two or more images share the row instead of stacking full-width */
+#img-wrap.multi img {{
+  max-width: calc(50% - 5px);
 }}
 </style>
 </head>
@@ -892,7 +931,7 @@ h1 {{
   </svg>
 </div>
 <div id="panel"><span class="ph">{placeholder}</span></div>
-<div id="img-wrap"><img id="img-el" src="" alt="gene image"></div>
+<div id="img-wrap"></div>
 
 <script>
 (function () {{
@@ -900,17 +939,31 @@ h1 {{
   const LEGEND = {legend_json};
   const ITEMS = CELLS.concat(LEGEND);
   const PLACEHOLDER = {placeholder_js};
-  const GENE_URL = {gene_url_js};
+  const GENE_URLS = {gene_urls_js};
   const GENE_URL_INLINE = {gene_url_inline_js};
   const SCORE_LABEL = {score_label_js};
   const panel = document.getElementById('panel');
   const imgWrap = document.getElementById('img-wrap');
-  const imgEl  = document.getElementById('img-el');
   const rects = [...document.querySelectorAll('#overlay .gc')];
   let active = null;   // index into rects / ITEMS, or null
 
-  function geneUrl(name, precomputed) {{
-    return precomputed || (GENE_URL ? GENE_URL.replace('{{gene}}', encodeURIComponent(name)) : null);
+  // Every URL of one gene: the templates with {{gene}} filled in, or the single
+  // URL a gene_url callable already produced for it.
+  function geneUrls(name, precomputed) {{
+    if (precomputed) return [precomputed];
+    return GENE_URLS.map(t => t.split('{{gene}}').join(encodeURIComponent(name)));
+  }}
+
+  function showImages(urls) {{
+    imgWrap.innerHTML = '';
+    urls.forEach((u) => {{
+      const im = document.createElement('img');
+      im.src = u;
+      im.alt = 'gene image';
+      imgWrap.appendChild(im);
+    }});
+    imgWrap.classList.toggle('multi', urls.length > 1);
+    imgWrap.style.display = urls.length ? 'flex' : 'none';
   }}
 
   function flashBtn(btn) {{
@@ -922,9 +975,9 @@ h1 {{
 
   function chipsHtml(genes) {{
     return `<div class="chips">${{genes.map(g => {{
-        const url = geneUrl(g.gene, g.url);
-        const cls = url ? 'chip link' : 'chip';
-        const da = url ? ` data-gene="${{g.gene}}" data-url="${{url}}"` : '';
+        const urls = geneUrls(g.gene, g.url);
+        const cls = urls.length ? 'chip link' : 'chip';
+        const da = urls.length ? ` data-gene="${{g.gene}}" data-url="${{g.url || ''}}"` : '';
         return `<span class="${{cls}}"${{da}}><span>${{g.name}}</span>` +
                `<span class="mi">${{SCORE_LABEL}} = ${{g.mi.toFixed(3)}}</span></span>`;
       }}).join('')}}</div>`;
@@ -1000,20 +1053,19 @@ h1 {{
 
   function clearPanel() {{
     panel.innerHTML = `<span class="ph">${{PLACEHOLDER}}</span>`;
-    imgWrap.style.display = 'none';
+    showImages([]);
   }}
 
   // Gene chip clicks (event delegation on panel)
   panel.addEventListener('click', (e) => {{
     const chip = e.target.closest('.chip.link');
     if (!chip) return;
-    const url = chip.dataset.url;
-    if (!url) return;
+    const urls = geneUrls(chip.dataset.gene, chip.dataset.url || null);
+    if (!urls.length) return;
     if (GENE_URL_INLINE) {{
-      imgEl.src = url;
-      imgWrap.style.display = 'block';
+      showImages(urls);
     }} else {{
-      window.open(url, '_blank', 'noopener,noreferrer');
+      urls.forEach((u) => window.open(u, '_blank', 'noopener,noreferrer'));
     }}
   }});
 

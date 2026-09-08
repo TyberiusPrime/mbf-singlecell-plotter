@@ -73,8 +73,16 @@ once the export has run, which is exactly what a job-generating job is for::
 ``plot_genes=True`` puts those scatters into a ``scatter/`` sub-directory of the
 export's own directory -- the HTML stays visible instead of drowning in PNGs --
 and points the export's ``gene_url`` at them, so clicking a gene in the HTML
-shows its plot inline.  Pass ``gene_url=`` yourself to link somewhere else; a
-callable ``plot_genes`` names its own files, so it links nowhere by default.
+shows its plot inline.  A callable ``plot_genes`` names its own files, so it
+links nowhere by default: name them with ``gene_url=`` yourself, passing a list
+when the callable draws more than one plot per gene -- the viewer shows one
+image per entry::
+
+    p.interactive_cluster_markers(
+        plot_genes=lambda gene: gene.into("genes").scatter().ridgeline("leiden"),
+        gene_url=["genes/{gene}_scatter.png", "genes/{gene}_ridgeline_leiden.png"],
+        gene_url_inline=True,
+    )
 
 Signatures
 ----------
@@ -959,10 +967,12 @@ def _make_export_method(export: str, fn):
         "\n        gene in a ``scatter/`` sub-directory and links the HTML's genes"
         "\n        to them (unless you pass your own ``gene_url``); a callable"
         "\n        receives each gene's Plot, may call any terminals on it, and"
-        "\n        sets no links::"
+        "\n        sets no links -- point ``gene_url`` at the files it writes,"
+        "\n        as a list when there is more than one per gene::"
         "\n"
         "\n            p.interactive_cluster_markers("
-        "\n                plot_genes=lambda gene: gene.into('genes').scatter()"
+        "\n                plot_genes=lambda gene: gene.into('genes').scatter(),"
+        "\n                gene_url='genes/{gene}_scatter.png',"
         "\n            )"
         "\n"
         "\n        Returns a copy of the plot with .job_ and .jobs_ set."

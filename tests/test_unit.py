@@ -4494,3 +4494,86 @@ class TestGeneNameItalics:
         (_l0, (w0, _h0), x0, y0), (_l1, _wh1, x1, y1) = info
         assert w0 > 0 and x0 == x1 and y0 > y1
         plt.close(fig)
+
+
+class TestGeneUrls:
+    """``gene_url=`` takes one ``{gene}`` template or any number of them.
+
+    A gene may have several plots -- a scatter and a ridgeline, say -- so every
+    template becomes its own image in the viewer's panel.  The templates travel
+    to the viewer as written and are expanded there, once per clicked gene.
+    """
+
+    class _Data:
+        """Just enough of a source for :func:`_resolve_gene_url`."""
+
+        def alternative_id_for(self, gene):
+            return f"{gene}_alt"
+
+    def resolve(self, gene_url):
+        from mbf_singlecell_plotter.interactive import _resolve_gene_url
+
+        return _resolve_gene_url(gene_url, self._Data())
+
+    def test_no_url_leaves_the_genes_as_plain_text(self):
+        templates, has_urls, _resolve = self.resolve(None)
+        assert templates == [] and has_urls is False
+
+    def test_an_empty_sequence_is_no_url_either(self):
+        assert self.resolve([])[1] is False
+
+    def test_a_single_template_is_passed_on_unexpanded(self):
+        templates, has_urls, resolve = self.resolve("s/{gene}_scatter.png")
+        assert templates == ["s/{gene}_scatter.png"] and has_urls is True
+        assert resolve("LYZ") is None  # expanded by the viewer, not here
+
+    def test_several_templates_keep_their_order(self):
+        templates, has_urls, resolve = self.resolve(
+            ["p/{gene}_scatter.png", "p/{gene}_ridgeline_leiden.png"]
+        )
+        assert templates == ["p/{gene}_scatter.png", "p/{gene}_ridgeline_leiden.png"]
+        assert has_urls is True and resolve("LYZ") is None
+
+    def test_a_callable_is_still_resolved_per_gene(self):
+        templates, has_urls, resolve = self.resolve(lambda g, alt: f"http://e/{alt}")
+        assert templates == [] and has_urls is True
+        assert resolve("LYZ") == "http://e/LYZ_alt"
+
+    def test_a_sequence_holds_templates_only(self):
+        """A callable produces one URL, so it cannot fill a slot among many."""
+        with pytest.raises(TypeError, match="gene_url"):
+            self.resolve(["p/{gene}.png", lambda g, alt: "http://e"])
+
+    def build(self, **kwargs):
+        from mbf_singlecell_plotter.interactive import _build_html
+
+        cells = [
+            {
+                "x": 0,
+                "y": 0,
+                "w": 10,
+                "h": 10,
+                "label": "A",
+                "n_cells": 5,
+                "genes": [{"name": "LYZ", "gene": "LYZ", "url": None, "mi": 0.5}],
+            }
+        ]
+        return _build_html("QQ==", 100, 100, cells, "leiden", **kwargs)
+
+    def test_the_viewer_gets_every_template(self):
+        html = self.build(
+            gene_url_templates=["p/{gene}_scatter.png", "p/{gene}_ridgeline.png"],
+            has_gene_urls=True,
+            gene_url_inline=True,
+        )
+        assert (
+            'const GENE_URLS = ["p/{gene}_scatter.png","p/{gene}_ridgeline.png"];'
+            in html
+        )
+        assert "const GENE_URL_INLINE = true;" in html
+
+    def test_without_urls_the_viewer_links_nowhere(self):
+        html = self.build(gene_url_inline=True)
+        assert "const GENE_URLS = [];" in html
+        # inline only means anything once there is something to show
+        assert "const GENE_URL_INLINE = false;" in html
