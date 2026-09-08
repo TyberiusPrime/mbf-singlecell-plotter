@@ -13,6 +13,7 @@ from natsort import natsorted
 from .data import EmbeddingData, _LETTERS
 from .theme import DEFAULT_COLORS_BORDERS, DEFAULT_COLORS_CATEGORIES, embedding_theme
 from .colorbar import sc_guide_colorbar
+from .italics import gene_pattern, is_ensembl_accession, promote_matching_text
 
 
 class _DoNotUpdateType:
@@ -745,6 +746,8 @@ class ScatterPlotter:
         self._facet_col_variable: Optional[str] = None
         self._facet_args: dict = {}
         self._title_override: str | Callable[[str], str] | _UnsetType = _UNSET
+        # None → auto (italicise var-index names that are not Ensembl ids)
+        self._italic_genes: Optional[bool] = None
 
         # embedding label
         self._embedding_label: bool = False
@@ -1669,6 +1672,80 @@ class ScatterPlotter:
         new._title_override = t
         return new
 
+    # ── gene name italics ────────────────────────────────────────────────────
+
+    def italic_genes(self, on: Optional[bool] = True) -> "ScatterPlotter":
+        """Set gene symbols in italics, as the nomenclature conventions want.
+
+        Applies wherever the plot names the column it is showing — the plot
+        title, the colour bar label, a legend title — and italicises only the
+        symbol inside them, so ``CD8A: log2 expression`` leans on ``CD8A``
+        alone.  A custom :meth:`title` is included: the symbol is matched
+        inside whatever string you supply.
+
+        Args:
+            on: ``True`` forces italics on, ``False`` off, ``None`` restores
+                the default: a name is a gene symbol when it resolves to the
+                ``var`` index and is not an Ensembl accession (``ENSG…``,
+                ``ENSMUSG…``, ``ENST…`` and the other per-species and
+                per-feature-type variants) — accessions are identifiers, not
+                symbols, and stay upright.
+
+        Note:
+            Forcing this on italicises the plotted column's name even when it
+            is an ``obs`` column or an Ensembl accession, which is the point of a
+            forcing flag; it does not make the library guess harder.
+        """
+        new = copy.copy(self)
+        new._italic_genes = on
+        return new
+
+    def _italic_symbols(self, data, *names: Optional[str]) -> list[str]:
+        """Which of *names* should be drawn in italics, under the current mode."""
+        candidates = [n for n in names if n]
+        if self._italic_genes is False:
+            return []
+        if self._italic_genes is True:
+            return candidates
+        if data is None:
+            return []
+        return [
+            n for n in candidates if not is_ensembl_accession(n) and data.is_gene(n)
+        ]
+
+    def _apply_title(self, p: p9.ggplot, data, expr_name: str) -> p9.ggplot:
+        """Set the plot title, italicising the gene symbol it names.
+
+        ``expr_name`` is in ``var`` index space (the bare symbol);
+        :meth:`_display_name` expands it to ``"alt_id (symbol)"`` when an
+        alternative id column is set, and the italics land on the symbol
+        inside that.
+        """
+        if callable(self._title_override):
+            title = self._title_override(self._display_name(data, expr_name))
+        elif self._title_override is not _UNSET:
+            title = self._title_override
+        else:
+            title = self._display_name(data, expr_name)
+        p = p + p9.labs(title=title)
+        return self._italicize(p, title, self._italic_symbols(data, expr_name))
+
+    def _italicize(self, p: p9.ggplot, text: Optional[str], symbols) -> p9.ggplot:
+        """Register a post-draw pass italicising *symbols* inside *text*.
+
+        Matching happens on the rendered string rather than on an index into
+        it, so it survives plotnine composing the label itself (line wrapping,
+        the two-line colour bar label) and finds the symbol in a custom title.
+        """
+        pattern = gene_pattern(symbols)
+        if pattern is None or not text or not pattern.search(text):
+            return p
+        p = _ensure_post_draw(p)
+        p._post_draw_fns.append(
+            lambda fig, _t=text, _pat=pattern: promote_matching_text(fig, _t, _pat)
+        )
+        return p
+
     # ── embedding label ───────────────────────────────────────────────────────
 
     def with_embedding_label(
@@ -1776,18 +1853,9 @@ class ScatterPlotter:
         # Facet
         p = self._apply_facet_layer(p)
 
-        # Title
-        if callable(self._title_override):
-            title = self._title_override(self._display_name(data, expr_name))
-        elif self._title_override is not _UNSET:
-            title = self._title_override
-        else:
-            # expr_name is in var.index space (the gene symbol); _display_name
-            # expands it to "alt_id (symbol)" when an alternative id column is
-            # set.  The colourbar name and is_gene detection keep using the bare
-            # symbol.
-            title = self._display_name(data, expr_name)
-        p = p + p9.labs(title=title)
+        # Title (the colour bar name and is_gene detection keep using the bare
+        # symbol; only the title gets the expanded display name)
+        p = self._apply_title(p, data, expr_name)
 
         # Theme (must come before grid axis ticks so theme_void doesn't override them)
         p = self._apply_embedding_theme(p)
@@ -2795,10 +2863,7 @@ class ScatterPlotter:
 
         p = self._apply_facet_layer(p)
 
-        if self._title_override is not _UNSET:
-            p = p + p9.labs(title=self._title_override)
-        else:
-            p = p + p9.labs(title=self._display_name(data, expr_name))
+        p = self._apply_title(p, data, expr_name)
 
         if self.fig_size is None:
             if self._is_faceted():
@@ -3095,10 +3160,7 @@ class ScatterPlotter:
 
         p = self._apply_facet_layer(p)
 
-        if self._title_override is not _UNSET:
-            p = p + p9.labs(title=self._title_override)
-        else:
-            p = p + p9.labs(title=self._display_name(data, expr_name))
+        p = self._apply_title(p, data, expr_name)
 
         if self.fig_size is None:
             if self._is_faceted():
@@ -3249,10 +3311,7 @@ class ScatterPlotter:
             )
         )
 
-        if self._title_override is not _UNSET:
-            p = p + p9.labs(title=self._title_override)
-        else:
-            p = p + p9.labs(title=self._display_name(data, expr_name))
+        p = self._apply_title(p, data, expr_name)
 
         if self.fig_size is None:
             n_col = len(facet_cats_str) if has_col_facet else 1
@@ -3483,7 +3542,9 @@ class ScatterPlotter:
 
     # ── internals ────────────────────────────────────────────────────────────
 
-    def _register_fixed_panel(self, p: p9.ggplot, *, stacked_rows: int = 1) -> p9.ggplot:
+    def _register_fixed_panel(
+        self, p: p9.ggplot, *, stacked_rows: int = 1
+    ) -> p9.ggplot:
         """Register a post-draw hook pinning the panel to ``_fixed_panel_size``.
 
         ``_apply_fixed_panel`` sizes *every* panel of a facet grid to the
@@ -3912,7 +3973,11 @@ class ScatterPlotter:
                 reverse=self._anti_overplot_ascending is False,
             ),
         )
-        return p
+        # The colour bar label carries the symbol plus what the numbers mean
+        # ("CD8A: log2 expression"); only the symbol leans.
+        return self._italicize(
+            p, cbar_name, self._italic_symbols(self._data, expr_name)
+        )
 
     def _build_categorical(
         self,
@@ -4004,11 +4069,12 @@ class ScatterPlotter:
             if n_cats > max_per_col:
                 ncol = -(-n_cats // max_per_col)  # ceiling division
 
+        legend_title = (
+            self._cat_colors_title if self._cat_colors_title is not None else expr_name
+        )
         p = p + p9.scale_color_manual(
             values=color_values,
-            name=self._cat_colors_title
-            if self._cat_colors_title is not None
-            else expr_name,
+            name=legend_title,
             guide=p9.guide_legend(
                 override_aes={
                     "size": self._legend_dot_size,
@@ -4019,7 +4085,9 @@ class ScatterPlotter:
             ),
         )
 
-        return p
+        return self._italicize(
+            p, legend_title, self._italic_symbols(self._data, expr_name)
+        )
 
     def _add_background_layer(self, p: p9.ggplot, df: pd.DataFrame) -> p9.ggplot:
         """Add a fixed-colour layer of all cells behind the data layers."""

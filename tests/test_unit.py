@@ -452,7 +452,6 @@ class TestPlotDensityParity:
     """plot_density honours focus_on and title like plot()."""
 
     def test_default_title_is_embedding_name(self, plotter_no_boundary):
-
         p = plotter_no_boundary.plot_density()
         assert isinstance(p, p9.ggplot)
         # "X_umap" → "umap", matching the embedding-label convention
@@ -1218,8 +1217,11 @@ class TestPanelSize:
         from mbf_singlecell_plotter.plots import _PlotWithPostDraw
 
         p = plotter_no_boundary.panel_size(2.0, 3.0).plot("S100A8")
+        # Other features register post-draw hooks too (gene-name italics), so
+        # count against the same plot without a fixed panel rather than absolutely.
+        baseline = plotter_no_boundary.plot("S100A8")
         assert isinstance(p, _PlotWithPostDraw)
-        assert len(p._post_draw_fns) == 1
+        assert len(p._post_draw_fns) == len(getattr(baseline, "_post_draw_fns", [])) + 1
 
     def test_larger_panel_produces_larger_image(self, plotter_no_boundary):
         """A bigger panel_size yields a bigger rendered figure."""
@@ -1349,9 +1351,9 @@ class TestPanelSize:
         assert abs(row_in - 4.0 / n_rows) < 0.05, (
             f"row is {row_in:.2f}in, expected {4.0 / n_rows:.2f}in"
         )
-        assert (
-            abs(ax.get_position().width * fig.get_size_inches()[0] - 5.0) < 0.05
-        ), "width is per-column and must stay at the requested 5in"
+        assert abs(ax.get_position().width * fig.get_size_inches()[0] - 5.0) < 0.05, (
+            "width is per-column and must stay at the requested 5in"
+        )
 
 
 class TestFacet2D:
@@ -1496,7 +1498,6 @@ class TestReplace:
         assert new.layer == "raw"
 
     def test_replace_all_private_fields(self, data):
-
         new = data._replace(
             embedding="new",
             embedding_cols=("col1", "col2"),
@@ -2038,7 +2039,6 @@ class TestLayerAndTransform:
         np.testing.assert_allclose(out.values, base.values * 10.0 + 1.0)
 
     def test_get_X_csr_respects_layer(self, ad):
-
         base = EmbeddingData(ad, "umap").get_X_csr().toarray()
         lad = _ad_with_layer(ad, factor=10.0)
         scaled = EmbeddingData(lad, "umap", layer="scaled").get_X_csr().toarray()
@@ -4327,3 +4327,170 @@ class TestSignaturePlotter:
     def test_the_report_needs_a_source(self):
         with pytest.raises(RuntimeError, match="set_source"):
             ScatterPlotter().signature_report("Sig")
+
+
+class TestGeneNameItalics:
+    """Gene symbols lean; the words around them do not."""
+
+    @staticmethod
+    def _draw(p):
+        """Draw *p* and run its post-draw hooks, the way ggplot.save does."""
+        fig = p.draw(show=False)
+        for fn in getattr(p, "_post_draw_fns", []):
+            fn(fig)
+        return fig
+
+    @classmethod
+    def _runs(cls, p, text):
+        """The ``(substring, italic)`` runs *text* is drawn as, or None.
+
+        None means no artist reading *text* was set up for italics at all.
+        """
+        from matplotlib.text import Text
+        from mbf_singlecell_plotter.italics import RunsText
+
+        for artist in cls._draw(p).findobj(Text):
+            if artist.get_text() == text and isinstance(artist, RunsText):
+                return [run for line in text.split("\n") for run in artist._runs(line)]
+        return None
+
+    def test_the_title_is_the_symbol_and_leans_whole(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot("S100A8")
+        assert self._runs(p, "S100A8") == [("S100A8", True)]
+
+    def test_only_the_symbol_leans_in_the_colorbar_label(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot("S100A8")
+        assert self._runs(p, "S100A8: log2 expression") == [
+            ("S100A8", True),
+            (": log2 expression", False),
+        ]
+
+    def test_a_categorical_column_stays_upright(self, plotter_no_boundary):
+        p = plotter_no_boundary.plot(CAT_COL)
+        assert self._runs(p, CAT_COL) is None
+
+    def test_it_can_be_forced_off(self, plotter_no_boundary):
+        p = plotter_no_boundary.italic_genes(False).plot("S100A8")
+        assert self._runs(p, "S100A8") is None
+        assert self._runs(p, "S100A8: log2 expression") is None
+
+    def test_it_can_be_forced_on_for_a_non_gene(self, plotter_no_boundary):
+        """Forcing it on reaches the categorical legend title as well as the
+        plot title — both name the same column."""
+        p = plotter_no_boundary.italic_genes(True).plot(CAT_COL)
+        assert self._runs(p, CAT_COL) == [(CAT_COL, True)]
+        fig = self._draw(p)
+        from matplotlib.text import Text
+        from mbf_singlecell_plotter.italics import RunsText
+
+        naming_the_column = [t for t in fig.findobj(Text) if t.get_text() == CAT_COL]
+        # at least the plot title and the legend title; plotnine keeps more than
+        # one artist per label while it measures the layout
+        assert len(naming_the_column) >= 2
+        assert all(isinstance(t, RunsText) for t in naming_the_column)
+
+    def test_none_restores_the_automatic_rule(self, plotter_no_boundary):
+        p = plotter_no_boundary.italic_genes(False).italic_genes(None).plot("S100A8")
+        assert self._runs(p, "S100A8") == [("S100A8", True)]
+
+    def test_the_plotter_stays_immutable(self, plotter_no_boundary):
+        assert plotter_no_boundary.italic_genes(False) is not plotter_no_boundary
+        assert plotter_no_boundary._italic_genes is None
+
+    def test_a_custom_title_gets_its_symbol_italicised(self, plotter_no_boundary):
+        p = plotter_no_boundary.title(lambda name: f"{name} in PBMCs").plot("S100A8")
+        assert self._runs(p, "S100A8 in PBMCs") == [
+            ("S100A8", True),
+            (" in PBMCs", False),
+        ]
+
+    def test_only_the_symbol_leans_beside_an_alternative_id(self, ad):
+        plotter = ScatterPlotter().set_source(
+            ad, embedding="umap", alternative_id_column="gene_ids"
+        )
+        ensg = ad.var.loc["S100A8", "gene_ids"]
+        assert self._runs(plotter.plot("S100A8"), f"{ensg} (S100A8)") == [
+            (f"{ensg} (", False),
+            ("S100A8", True),
+            (")", False),
+        ]
+
+    @pytest.mark.parametrize("species_code", ["", "MUS", "DAR"])
+    def test_an_ensembl_accession_stays_upright_in_a_plot(self, ad, species_code):
+        """The whole point of the accession rule: a dataset keyed by ids, in any
+        species, gets no italics at all."""
+        by_id = ad.copy()
+        ids = by_id.var["gene_ids"].str.replace("ENSG", f"ENS{species_code}G", n=1)
+        by_id.var.index = pd.Index(ids, name=None)
+        accession = ids.loc["S100A8"]
+        plotter = ScatterPlotter().set_source(by_id, embedding="umap")
+        assert self._runs(plotter.plot(accession), accession) is None
+        # …unless you insist.
+        assert self._runs(plotter.italic_genes(True).plot(accession), accession) == [
+            (accession, True)
+        ]
+
+    @pytest.mark.parametrize(
+        "accession",
+        [
+            "ENSG00000139618",  # human gene
+            "ENSMUSG00000017146",  # mouse gene
+            "ENSDARG00000019949",  # zebrafish gene
+            "ENSRNOG00000019822",  # rat gene
+            "ENSG00000139618.15",  # GENCODE version suffix
+            "ENST00000380152",  # human transcript
+            "ENSMUST00000012345",  # mouse transcript
+            "ENSP00000369497",  # human protein
+            "ENSE00001484009",  # human exon
+        ],
+    )
+    def test_an_ensembl_accession_is_an_identifier(self, accession):
+        from mbf_singlecell_plotter.italics import is_ensembl_accession
+
+        assert is_ensembl_accession(accession)
+
+    @pytest.mark.parametrize(
+        "symbol",
+        [
+            "ENSA",  # a real gene: endosulfine alpha
+            "ENSG",  # no number
+            "SENSG00000139618",  # accession-shaped, but not at the start
+            "S100A8",
+            "MT-CO1",
+        ],
+    )
+    def test_a_symbol_is_not_mistaken_for_an_accession(self, symbol):
+        from mbf_singlecell_plotter.italics import is_ensembl_accession
+
+        assert not is_ensembl_accession(symbol)
+
+    def test_a_symbol_is_matched_whole(self):
+        from mbf_singlecell_plotter.italics import gene_pattern
+
+        # \b would happily match the "MT" inside "MT-CO1" and lean half a symbol.
+        assert gene_pattern(["MT"]).search("MT-CO1") is None
+        assert gene_pattern(["MT"]).search("MT: log2 expression") is not None
+        assert gene_pattern(["RP11-34P13.7"]).search("RP11-34P13.7 (x)") is not None
+
+    def test_mathtext_is_left_alone(self):
+        """Slicing a mathtext string into runs would corrupt its parse."""
+        from matplotlib.text import Text
+        from mbf_singlecell_plotter.italics import RunsText
+
+        assert not RunsText.can_render(Text(0, 0, r"$\alpha$ CD8A"))
+        assert RunsText.can_render(Text(0, 0, "CD8A"))
+
+    def test_matplotlib_still_lays_text_out_the_way_we_split_it(self):
+        """Guard the private ``Text._get_layout`` contract :meth:`RunsText.draw`
+        rebuilds: per line, its text, its ``(width, height)``, and the offset of
+        its baseline start from the anchor."""
+        import matplotlib.pyplot as plt
+        from matplotlib.text import Text
+
+        fig = plt.figure(figsize=(2, 2), dpi=100)
+        text = Text(0, 0, "one\ntwo", figure=fig)
+        _bbox, info, _descent = text._get_layout(fig.canvas.get_renderer())
+        assert [line for line, _wh, _x, _y in info] == ["one", "two"]
+        (_l0, (w0, _h0), x0, y0), (_l1, _wh1, x1, y1) = info
+        assert w0 > 0 and x0 == x1 and y0 > y1
+        plt.close(fig)

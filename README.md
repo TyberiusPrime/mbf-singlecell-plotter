@@ -519,7 +519,38 @@ colour bar. They are rotated 90° automatically so they don't crowd that gap
 
 ```python
 plotter.title("My custom title")  # or None to suppress
+plotter.title(lambda name: f"{name} in PBMCs")  # or a callable on the column name
 ```
+
+---
+
+### Gene name italics
+
+Gene symbols are set in italics by convention, so they are — in the plot
+title, the colour bar label and legend titles alike. Only the symbol leans:
+
+```
+title:      S100A8                    colour bar:  S100A8: log2 expression
+            ENSG00000143546 (S100A8)               ^^^^^^
+                             ^^^^^^
+```
+
+A name counts as a symbol when it resolves to the `var` index and is not an
+Ensembl accession — matched as `ENS[A-Z]*[EGPT]\d+`, which covers every
+species (`ENSG…` human, `ENSMUSG…` mouse, `ENSDARG…` zebrafish, …), every
+feature type (gene, transcript, protein, exon) and any GENCODE version suffix.
+Accessions are identifiers, not symbols, so they stay upright. Override that
+guess per plotter:
+
+```python
+plotter.italic_genes(False)  # off, everything upright
+plotter.italic_genes()       # on, even for obs columns and Ensembl accessions
+plotter.italic_genes(None)   # back to the automatic rule (the default)
+```
+
+A custom `title()` is included — the symbol is matched inside whatever string
+you supply, so `.title(lambda name: f"{name} in PBMCs")` italicises just the
+gene. Titles containing mathtext (`$…$`) are left alone.
 
 ---
 
