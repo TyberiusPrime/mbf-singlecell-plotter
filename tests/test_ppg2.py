@@ -895,17 +895,11 @@ class TestExportStaging:
         for index in (1, 2):
             assert mtimes(*files.values())[index] != before[index]
 
-    def test_a_style_change_reaches_the_html_through_the_figure(self, h5ad, files):
-        """The HTML's own fingerprint no longer covers the plotter script, so a
-        styling change has to arrive through the figure cache instead -- and it
-        does.
-
-        It also rescores the genes, which it need not: both cache stages are
-        keyed on the *whole* recorded script, and nothing yet tells them that
-        ``dot_size`` cannot move a marker gene.  Splitting the config methods
-        into the ones that shape the data and the ones that only shape the
-        picture would fix it; until then this records what actually happens.
-        """
+    def test_a_style_change_redraws_but_does_not_rescore(self, h5ad, files):
+        """``style`` is marked ``@appearance``, so the analysis cache neither
+        replays nor hashes it -- and the HTML, whose own fingerprint no longer
+        covers the script at all, still rebuilds because the figure it embeds
+        did."""
 
         def graph(dot_size):
             def build():
@@ -924,7 +918,36 @@ class TestExportStaging:
         after = mtimes(*files.values())
         assert after[1] != before[1]  # figure redrawn ...
         assert after[0] != before[0]  # ... and the HTML embedding it rebuilt
-        assert after[2] != before[2]  # markers rescored too -- see the docstring
+        assert after[2] == before[2]  # ... but the genes were not rescored
+
+    def test_an_unmarked_config_method_still_rescores(self, h5ad, files):
+        """The conservative default: anything not marked keys both caches.
+
+        ``set_filter`` really does shape the data, but the point here is the
+        rule rather than this method -- an unmarked method costs a recomputation
+        that may turn out identical, never one that comes out stale.
+        """
+
+        def graph(keep):
+            def build():
+                builder = source(h5ad)
+                if keep is not None:
+                    builder = builder.set_filter(keep)
+                return builder.plot(CELL_TYPE_COLUMN).interactive_cluster_markers(
+                    **CLUSTER_MARKERS
+                )
+
+            return build
+
+        def keep_most(data):
+            keep = np.ones(data.coordinates().shape[0], dtype=bool)
+            keep[::7] = False
+            return keep
+
+        run(graph(None))
+        before = mtimes(*files.values())
+        run(graph(keep_most))
+        assert mtimes(*files.values())[2] != before[2]  # markers rescored
 
     def test_a_gene_url_callable_still_works(self, h5ad, workdir):
         """The callable used to be handed the EmbeddingData for a gene's
@@ -985,6 +1008,83 @@ class TestExportStaging:
         after = mtimes(html, figure, moran)
         assert after[0] != before[0]
         assert after[1:] == before[1:]
+
+
+class TestAppearanceMarking:
+    """``@appearance`` claims a config method cannot move the gene scoring.
+
+    The claim is checked, not trusted.  Each marked method is called with an
+    argument that actually changes something, both analysis caches are written
+    with and without it, and every byte has to match -- so a method that merely
+    *sounds* cosmetic fails here rather than silently serving a stale cache.
+
+    Mark a method in plots.py, add it below, and let this decide.
+    """
+
+    # One invocation per marked method, each passing a non-default value:
+    # a call that changes nothing would pass this test for the wrong reason.
+    CALLS = [
+        ("background", (), dict(enabled=True, dot_size=3)),
+        ("colormap", (), dict(cmap="viridis", max_quantile=0.9)),
+        ("colormap_discrete", (["#111111", "#222222"],), {}),
+        ("italic_genes", (True,), {}),
+        ("outlier", (), dict(quantile=0.9)),
+        ("panel_size", (4, 4), {}),
+        ("style", (), dict(dot_size=4, dot_alpha=0.5)),
+        ("theme", (), dict(figure_size=(3, 3))),
+        ("title", ("a title",), {}),
+        ("with_borders", (), dict(cell_type_column=CELL_TYPE_COLUMN)),
+        ("with_embedding_label", (), dict(show=True)),
+        ("without_borders", (), {}),
+        ("without_grid", (), {}),
+    ]
+    IDS = [name for name, _a, _k in CALLS]
+
+    def test_the_table_covers_every_marked_method(self):
+        """A method marked without an entry here would go unchecked."""
+        from mbf_singlecell_plotter import ppg2
+
+        assert {name for name, _a, _k in self.CALLS} == set(ppg2.APPEARANCE_METHODS)
+
+    @staticmethod
+    def _cache_bytes(plotter, tmp_path, label, writer, suffixes):
+        from mbf_singlecell_plotter import interactive
+
+        prefix = tmp_path / label
+        writer(plotter, CELL_TYPE_COLUMN, prefix)
+        return {
+            path.name.split(label)[-1]: path.read_bytes()
+            for path in interactive.cache_paths(prefix, suffixes)
+        }
+
+    @pytest.fixture(scope="class")
+    def writers(self):
+        from mbf_singlecell_plotter import interactive
+
+        return [
+            (
+                interactive.write_cluster_markers_cache,
+                interactive.CLUSTER_MARKERS_CACHE_FILES,
+            ),
+            (interactive.write_moran_grid_cache, interactive.MORAN_GRID_CACHE_FILES),
+        ]
+
+    @pytest.mark.parametrize("method,args,kwargs", CALLS, ids=IDS)
+    def test_a_marked_method_cannot_move_the_analysis_cache(
+        self, plotter_no_boundary, tmp_path, writers, method, args, kwargs
+    ):
+        restyled = getattr(plotter_no_boundary, method)(*args, **kwargs)
+        for writer, suffixes in writers:
+            plain = self._cache_bytes(
+                plotter_no_boundary, tmp_path, f"plain_{method}", writer, suffixes
+            )
+            marked = self._cache_bytes(
+                restyled, tmp_path, f"marked_{method}", writer, suffixes
+            )
+            assert marked == plain, (
+                f"{method}() changed what {writer.__name__} writes, so it shapes "
+                "the data and must not be marked @appearance"
+            )
 
 
 class TestPlotGenes:

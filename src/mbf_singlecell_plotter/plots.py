@@ -63,6 +63,37 @@ class _PlotWithPostDraw(p9.ggplot):
         return sv
 
 
+def appearance(fn):
+    """Mark a configuration method as shaping the picture, not the data.
+
+    ``mbf_singlecell_plotter.ppg2`` splits an interactive export into a figure
+    cache, an analysis cache and the HTML.  The analysis cache scores genes, and
+    a method marked here cannot change a single number it holds -- so the
+    analysis job neither replays such a call nor lets it into its fingerprint,
+    and a restyled plot reuses the scoring instead of recomputing it.
+
+    **Not marking a method is always safe.**  An unmarked method keys both
+    caches, exactly as everything did before this existed; the cost is a
+    recomputation that turns out identical, never a stale result.  So mark only
+    what you are sure of, and leave anything that reaches ``_data`` -- filters,
+    sources, layers, focus, anything touching coordinates -- alone.
+
+    Being sure is not a matter of taste:
+    ``TestAppearanceMarking::test_a_marked_method_cannot_move_the_analysis_cache``
+    scores the genes with and without each marked call and fails if a single
+    byte differs.  Add the method to that test's ``CALLS`` table when you mark
+    it, pass it an argument that really changes something, and let the test
+    decide rather than the name.
+
+    ``with_grid`` is why: it looks like pure decoration, and ``grid_size=``
+    re-bins the embedding under both the per-bin counts and
+    ``compute_grid_moran(n_bins=...)``.  The marking is per method, not per
+    argument, so one such argument disqualifies the whole method.
+    """
+    fn._msp_appearance = True
+    return fn
+
+
 def _ensure_post_draw(p: p9.ggplot) -> "_PlotWithPostDraw":
     """Promote *p* to _PlotWithPostDraw (idempotent); initialise _post_draw_fns."""
     if not isinstance(p, _PlotWithPostDraw):
@@ -1011,6 +1042,7 @@ class ScatterPlotter:
 
     # ── dot appearance ───────────────────────────────────────────────────────
 
+    @appearance
     def style(
         self,
         *,
@@ -1057,6 +1089,7 @@ class ScatterPlotter:
             new._bg_color = bg_color
         return new
 
+    @appearance
     def outlier(
         self,
         *,
@@ -1080,6 +1113,7 @@ class ScatterPlotter:
 
     # ── colormap (numerical) ─────────────────────────────────────────────────
 
+    @appearance
     def colormap(
         self,
         cmap=DoNotUpdate,
@@ -1107,6 +1141,7 @@ class ScatterPlotter:
 
     # ── categorical colors ───────────────────────────────────────────────────
 
+    @appearance
     def colormap_discrete(
         self,
         cmap_or_list_or_dict: None | List[str] | Dict[str, str] = DoNotUpdate,
@@ -1198,6 +1233,7 @@ class ScatterPlotter:
             new._zero_value = max_zero_value
         return new
 
+    @appearance
     def background(
         self,
         *,
@@ -1272,6 +1308,7 @@ class ScatterPlotter:
 
     # ── borders ──────────────────────────────────────────────────────────────
 
+    @appearance
     def with_borders(
         self,
         *,
@@ -1328,6 +1365,7 @@ class ScatterPlotter:
         # else: share the same cache dict (shallow copy) — only size/legend changed
         return new
 
+    @appearance
     def without_borders(self) -> "ScatterPlotter":
         new = copy.copy(self)
         new._border_config = None
@@ -1366,6 +1404,9 @@ class ScatterPlotter:
 
     # ── grid overlay ─────────────────────────────────────────────────────────
 
+    # deliberately NOT @appearance: `grid_size=` re-bins the embedding, and
+    # both the per-bin counts and compute_grid_moran(n_bins=...) are built on
+    # that binning.  The proof test catches it if anyone tries.
     def with_grid(
         self,
         *,
@@ -1420,6 +1461,7 @@ class ScatterPlotter:
             )
         return new
 
+    @appearance
     def without_grid(self) -> "ScatterPlotter":
         new = copy.copy(self)
         new._grid_config = None
@@ -1512,6 +1554,7 @@ class ScatterPlotter:
         new._boundary_cache = {"df": None}
         return new
 
+    @appearance
     def panel_size(self, width: float, height: float) -> "ScatterPlotter":
         """Fix the scatter-panel (data area) to *width* × *height* inches.
 
@@ -1667,6 +1710,7 @@ class ScatterPlotter:
 
     # ── title ────────────────────────────────────────────────────────────────
 
+    @appearance
     def title(self, t: str | Callable[[str], str]) -> "ScatterPlotter":
         new = copy.copy(self)
         new._title_override = t
@@ -1674,6 +1718,7 @@ class ScatterPlotter:
 
     # ── gene name italics ────────────────────────────────────────────────────
 
+    @appearance
     def italic_genes(self, on: Optional[bool] = True) -> "ScatterPlotter":
         """Set gene symbols in italics, as the nomenclature conventions want.
 
@@ -1748,6 +1793,7 @@ class ScatterPlotter:
 
     # ── embedding label ───────────────────────────────────────────────────────
 
+    @appearance
     def with_embedding_label(
         self, show: bool = True, size=DoNotUpdate
     ) -> "ScatterPlotter":
@@ -1766,6 +1812,7 @@ class ScatterPlotter:
 
     # changing apperance via plotnine theming
 
+    @appearance
     def theme(self, **theme_args) -> "ScatterPlotter":
         """Change plotnine theming args.
 

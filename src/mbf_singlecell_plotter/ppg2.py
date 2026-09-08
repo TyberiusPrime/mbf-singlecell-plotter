@@ -75,6 +75,14 @@ draws, ``layer`` and ``min_cells_per_group`` score, and ``k``, ``min_score``,
 they key the HTML alone.  Changing one of those rewrites the HTML; changing
 ``dpi`` redraws the figure without rescoring; changing the data re-runs both.
 
+The *script* is split the same way, by :data:`APPEARANCE_METHODS`: a
+configuration method marked :func:`~mbf_singlecell_plotter.plots.appearance`
+is neither replayed nor hashed by the analysis job, so restyling a plot reuses
+its scoring.  The marking is opt-in and an unmarked method keys everything, so
+the worst an omission costs is a recomputation that comes out identical -- and
+every marking is checked against the bytes it claims not to move, by
+``TestAppearanceMarking``.
+
 ``plot_genes`` additionally declares a :class:`pypipegraph2.JobGeneratingJob`
 that waits for the export, reads the marker genes back out of the TSV (which it
 turns on) and plots each of them with *this* plot's configuration -- builder
@@ -281,6 +289,17 @@ def _classify(cls) -> Tuple[dict, dict, dict, dict]:
 
 CONFIG_METHODS, TERMINAL_METHODS, EXPORT_METHODS, CACHE_METHODS = _classify(
     ScatterPlotter
+)
+
+
+#: Configuration methods marked :func:`~mbf_singlecell_plotter.plots.appearance`
+#: -- they shape the picture and cannot move a number the gene scoring reads,
+#: so the analysis cache neither replays nor hashes them and a restyled plot
+#: reuses its scoring.  Membership is opt-in and deliberately incomplete: an
+#: unmarked method keys every cache, which costs a recomputation that comes out
+#: identical rather than risking one that comes out stale.
+APPEARANCE_METHODS = frozenset(
+    name for name, fn in CONFIG_METHODS.items() if getattr(fn, "_msp_appearance", False)
 )
 
 
@@ -1534,6 +1553,7 @@ class Plot(_Recorder):
         *,
         defaults: Optional[dict] = None,
         include_script: bool = True,
+        drop_methods: frozenset = frozenset(),
     ):
         """Everything this file needs, and the fingerprint it hashes to.
 
@@ -1552,12 +1572,31 @@ class Plot(_Recorder):
         export reads its inputs from cache files, so the script reaches it
         through those files' jobs instead, and a script change that leaves both
         caches identical has genuinely not changed the HTML.
+
+        *drop_methods* leaves those configuration calls out of the script
+        entirely -- out of the fingerprint *and* out of what gets replayed,
+        which have to agree or the cache would go stale the moment they
+        disagreed.  That is how :data:`APPEARANCE_METHODS` reaches the analysis
+        cache: a job that scores genes neither hashes nor replays ``style()``.
         """
         builder = self._builder
         job_id = str(target)
 
         walker = _Walker(job_id, _resolver(ppg), ppg)
-        if include_script:
+        if include_script and drop_methods:
+            # the merged script minus the dropped calls, walked here rather
+            # than through builder._walk (whose cache holds the full script).
+            builder_encoded, builder_calls, builder_deps = None, (), []
+            plot_encoded, plot_calls = walker.walk_calls(
+                [
+                    call
+                    for call in builder._calls + self._calls
+                    if call.method not in drop_methods
+                ]
+            )
+            init_kwargs = {**builder.init_kwargs, **self.init_kwargs}
+            init_encoded, _ = walker.walk(init_kwargs, f"{job_id} ScatterPlotter()")
+        elif include_script:
             builder_encoded, builder_calls, builder_deps = builder._walk(ppg, graph)
             plot_encoded, plot_calls = walker.walk_calls(self._calls)
             init_kwargs = {**builder.init_kwargs, **self.init_kwargs}
@@ -1689,6 +1728,8 @@ class Plot(_Recorder):
             stages.figure_kwargs,
             interactive.FIGURE_CACHE_FILES,
             description,
+            # every configuration call shapes the figure, by definition.
+            drop_methods=frozenset(),
         )
         analysis_job = self._build_cache_stage(
             ppg,
@@ -1700,6 +1741,7 @@ class Plot(_Recorder):
             {},
             stages.analysis_files,
             description,
+            drop_methods=APPEARANCE_METHODS,
         )
 
         render_kwargs = {
@@ -1752,12 +1794,18 @@ class Plot(_Recorder):
         constants: dict,
         suffixes,
         description: str,
+        *,
+        drop_methods: frozenset,
     ):
         """One cache job: a ScatterPlotter ``cache_*`` method over a file set.
 
         *constants* are settings the export fixes rather than exposes (whether
         the legend keys are hotspots, say); they join the fingerprint like any
         other argument, so flipping one in a later version rebuilds the cache.
+
+        *drop_methods* is what makes the two stages key differently on the same
+        script: the analysis stage drops :data:`APPEARANCE_METHODS`, the figure
+        stage drops nothing.
         """
         outputs = interactive.cache_paths(prefix, suffixes)
         stage_kwargs = {**kwargs, **constants}
@@ -1772,6 +1820,7 @@ class Plot(_Recorder):
             defaults=_unsupplied_defaults(
                 CACHE_METHODS[method], (_SELF, column, _OUTPUT), stage_kwargs
             ),
+            drop_methods=drop_methods,
         )
         for output in outputs:
             _claim_output(graph, output, recipe.parameters, description)
