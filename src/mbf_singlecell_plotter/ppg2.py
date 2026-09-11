@@ -125,6 +125,12 @@ per-gene plots go into, so everything the signature is made of sits together::
     sig.scatter()                  # ... plus Myeloid_scatter.png
     sig.violin("leiden")           # ... and the very same TSV
 
+Moving the plot afterwards leaves that TSV behind, since a declared output
+cannot move -- so one signature plot can fork into as many variants as it needs
+without forking the gene list::
+
+    sig.into("by_type").facet("type").scatter()   # by_type/Myeloid_scatter.png
+
 ``plot_genes`` is a property of the plot, not of one output: it fans *every*
 terminal of that plot out over the genes behind its column, into a
 sub-directory named after the plot -- so the score stays visible next to the
@@ -1195,14 +1201,21 @@ class Plot(_Recorder):
         )
 
     def into(self, sub_directory: Union[str, Path]) -> "Plot":
-        """Append a sub-directory below the builder's output directory."""
-        if self._tsv_job is not None:
-            raise RuntimeError(
-                f"{self._describe()}.into({str(sub_directory)!r}): this plot has "
-                f"already declared {self._tsv_job.job_id}, and a declared output "
-                "cannot move. Name the directory when the plot is made - "
-                f"plot({self.column!r}, into=...) - or on the builder."
-            )
+        """Append a sub-directory below the builder's output directory.
+
+        Everything the returned plot writes from here on goes there, per-gene
+        plots included -- but a genes TSV this plot has *already* declared
+        stays where it is: a declared output cannot move, and which genes a
+        signature is made of does not change by drawing it somewhere else.
+        That is what lets one signature plot fork into variants::
+
+            p = builder.plot("Myeloid", plot_genes=True)   # Myeloid/genes.tsv
+            p.scatter()                                    # Myeloid_scatter.png
+            p.into("by_type").facet("type").scatter()      # by_type/Myeloid_scatter.png
+
+        A signature registered on the plot itself has no TSV yet when ``into``
+        is called, so there it follows the move like any other output.
+        """
         new = self._copy()
         new._into = self._into + Path(sub_directory).parts
         return new

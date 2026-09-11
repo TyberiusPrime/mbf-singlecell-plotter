@@ -1345,11 +1345,56 @@ class TestSignatures:
             f"{RESULTS}/sub/Myeloid/genes.tsv"
         ]
 
-    def test_into_after_the_fact_is_refused(self, h5ad, graph):
-        """A declared output cannot move, so this has to be said out loud."""
+    def test_into_after_the_fact_leaves_the_tsv_behind(self, h5ad, graph):
+        """A declared output cannot move, so only the figures go to *sub*."""
         plot = signature(h5ad).plot("Myeloid")
-        with pytest.raises(RuntimeError, match="cannot move"):
-            plot.into("sub")
+        moved = plot.into("sub").scatter()
+        assert [str(Path(job.job_id)) for job in moved.jobs_] == [
+            f"{RESULTS}/Myeloid/genes.tsv",
+            f"{RESULTS}/sub/Myeloid_scatter.png",
+        ]
+
+    def test_a_moved_plot_declares_no_second_tsv(self, h5ad, workdir):
+        """One signature, one gene list -- however many variants draw it."""
+        run(
+            lambda: signature(h5ad)
+            .plot("Myeloid")
+            .into("sub")
+            .facet(CELL_TYPE_COLUMN)
+            .scatter()
+        )
+        out = workdir / RESULTS
+        assert (out / "Myeloid" / "genes.tsv").exists()
+        assert not (out / "sub" / "Myeloid" / "genes.tsv").exists()
+        assert (out / "sub" / "Myeloid_scatter.png").exists()
+
+    def test_a_faceted_variant_lives_next_to_the_plain_one(self, h5ad, workdir):
+        """The case into() exists for: one plot, two directories, one TSV."""
+
+        def build():
+            plot = signature(h5ad).plot("Myeloid", plot_genes=True)
+            plot.scatter()
+            return plot.into("by_type").facet(CELL_TYPE_COLUMN).scatter()
+
+        run(build)
+        out = workdir / RESULTS
+        assert sorted(p.name for p in (out / "Myeloid").iterdir()) == sorted(
+            ["genes.tsv"] + [f"{gene}_scatter.png" for gene in SIG_GENES]
+        )
+        assert sorted(p.name for p in (out / "by_type").iterdir()) == sorted(
+            ["Myeloid", "Myeloid_scatter.png"]
+        )
+        for gene in SIG_GENES:
+            assert (out / "by_type" / "Myeloid" / f"{gene}_scatter.png").exists(), gene
+
+    def test_a_signature_on_the_plot_still_follows_into(self, h5ad, graph):
+        """Nothing was declared yet, so the TSV goes where the plot goes."""
+        plot = source(h5ad).plot("Myeloid").add_signature("Myeloid", SIG_GENES)
+        moved = plot.into("sub").scatter()
+        assert [str(Path(job.job_id)) for job in moved.jobs_] == [
+            f"{RESULTS}/sub/Myeloid/genes.tsv",
+            f"{RESULTS}/sub/Myeloid_scatter.png",
+        ]
 
     def test_a_signature_registered_on_the_plot_still_gets_its_tsv(self, h5ad, workdir):
         """Recorded after the Plot exists, so only the terminal can see it."""
