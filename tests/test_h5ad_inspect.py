@@ -16,6 +16,12 @@ from mbf_singlecell_plotter import (
     is_h5ad_inspect_available,
 )
 from mbf_singlecell_plotter import H5adFacade
+from mbf_singlecell_plotter.h5ad_source import (
+    MIN_H5AD_INSPECT_VERSION,
+    _h5ad_inspect_version,
+    _parse_version,
+    _require_h5ad_inspect,
+)
 
 EXAMPLE_H5AD = (
     Path(__file__).parent.parent / "example_data" / "scanpy-pbmc3k_stripped.h5ad"
@@ -356,3 +362,227 @@ class TestAlternativeIdLabel:
         p = sp.plot("S100A8")
         assert p.labels.get("title", None) == "ENSG00000143546 (S100A8)"
         assert self._colorbar_name(p) == "my cbar"
+
+
+# ── named layers (--layer flag) ───────────────────────────────────────────────
+
+
+class TestLayers:
+    """The ``--layer`` flag paths — ``matrix(key)`` and ``get_X_csr(key)``.
+
+    Built from the example file so the expected values are known exactly:
+    ``layers['raw'] == X * 3 + 1``.  AnnData stores the layer at ``X``'s own
+    float32, so :meth:`_expected` redoes the arithmetic in float32 to keep the
+    comparisons exact rather than approximate.
+    """
+
+    @staticmethod
+    def _expected(x_values):
+        return (np.asarray(x_values, dtype=np.float32) * 3.0 + 1.0).astype(np.float64)
+
+    @pytest.fixture(scope="class")
+    def layered_path(self, tmp_path_factory):
+        import anndata
+
+        ad = anndata.read_h5ad(EXAMPLE_H5AD)
+        ad.layers["raw"] = np.asarray(ad.X) * 3.0 + 1.0
+        path = tmp_path_factory.mktemp("layered") / "layered.h5ad"
+        ad.write_h5ad(path)
+        return path
+
+    @pytest.fixture(scope="class")
+    def layered(self, layered_path):
+        return H5adFacade(layered_path)
+
+    def test_layer_column_by_name(self, layered):
+        gene = str(layered.var_names[0])
+        np.testing.assert_array_equal(
+            layered.matrix("raw")[:, gene], self._expected(layered.X[:, gene])
+        )
+
+    def test_layer_column_by_position(self, layered):
+        np.testing.assert_array_equal(
+            layered.matrix("raw")[:, 3], self._expected(layered.X[:, 3])
+        )
+
+    def test_layer_csr_matches_x(self, layered):
+        np.testing.assert_array_equal(
+            layered.get_X_csr("raw").toarray(),
+            self._expected(layered.get_X_csr("X").toarray()),
+        )
+
+    def test_layer_x_sentinel_reads_x(self, layered):
+        # 'X' (and None) must mean .X, not .layers['X'] — no --layer flag
+        gene = str(layered.var_names[0])
+        np.testing.assert_array_equal(
+            layered.matrix("X")[:, gene], layered.matrix(None)[:, gene]
+        )
+
+    def test_layer_proxies_cached_per_layer(self, layered):
+        assert layered.matrix("raw") is layered.matrix("raw")
+        assert layered.matrix("raw") is not layered.matrix("X")
+
+    def test_unknown_layer_raises(self, layered):
+        with pytest.raises(RuntimeError):
+            layered.matrix("__no_such_layer__")[:, 0]
+
+
+# ── names that look like CLI flags ───────────────────────────────────────────
+
+
+class TestFlagLookalikeNames:
+    """Column names starting with ``-`` must still be reachable.
+
+    The wrapper passes positionals after a ``--`` separator precisely so these
+    are not mistaken for flags by h5ad-inspect.
+    """
+
+    @pytest.fixture(scope="class")
+    def odd(self, tmp_path_factory):
+        import anndata
+
+        ad = anndata.read_h5ad(EXAMPLE_H5AD)
+        ad.obs["--flagged"] = ad.obs["n_genes"] > 800
+        path = tmp_path_factory.mktemp("odd") / "odd.h5ad"
+        ad.write_h5ad(path)
+        return H5adFacade(path)
+
+    def test_column_is_listed(self, odd):
+        assert "--flagged" in odd.obs
+
+    def test_column_is_readable(self, odd):
+        s = odd.obs["--flagged"]
+        assert len(s) == len(odd.obs_names)
+
+    def test_bool_column_dtype(self, odd):
+        # bool encoding round-trips through `describe column` -> _parse_series
+        assert odd.obs["--flagged"].dtype == bool
+
+    def test_bool_column_values(self, odd):
+        np.testing.assert_array_equal(
+            odd.obs["--flagged"].values, (odd.obs["n_genes"] > 800).values
+        )
+
+
+# ── version guard ─────────────────────────────────────────────────────────────
+
+
+def _fake_binary(directory, script):
+    """Drop an executable ``h5ad-inspect`` running *script* into *directory*."""
+    path = directory / "h5ad-inspect"
+    path.write_text("#!/bin/sh\n" + script)
+    path.chmod(0o755)
+    return path
+
+
+class TestVersionParsing:
+    def test_parses_three_part_version(self):
+        assert _parse_version("h5ad-inspect 0.2.0") == (0, 2, 0)
+
+    def test_parses_two_part_version(self):
+        assert _parse_version("h5ad-inspect 1.3") == (1, 3)
+
+    def test_returns_none_without_a_version(self):
+        assert _parse_version("Usage: h5ad-inspect <filename> export obs") is None
+
+    def test_returns_none_on_empty_output(self):
+        assert _parse_version("") is None
+
+    def test_ordering_against_minimum(self):
+        # the comparison the guard relies on, across part counts
+        assert _parse_version("0.1.0") < MIN_H5AD_INSPECT_VERSION
+        assert _parse_version("0.2.0") >= MIN_H5AD_INSPECT_VERSION
+        assert _parse_version("1.0.0") >= MIN_H5AD_INSPECT_VERSION
+
+
+class TestInstalledVersion:
+    def test_real_binary_is_supported(self):
+        # the module skips entirely unless this holds, but state it outright
+        assert _h5ad_inspect_version() >= MIN_H5AD_INSPECT_VERSION
+
+
+class TestVersionGuard:
+    """Each fake stands in for a way the binary can be unusable.
+
+    ``old_style`` reproduces 0.1.x exactly: no ``--version``, usage on stderr,
+    exit 1.  The guard must reject it without reading that text, since 0.1.x
+    error messages vary too much to match on.
+    """
+
+    FAKES = {
+        "old_style": "echo 'Usage: h5ad-inspect <filename> export obs' >&2\nexit 1\n",
+        "reports_old_version": "echo 'h5ad-inspect 0.1.9'\n",
+        "unparseable_output": "echo 'h5ad-inspect (unknown build)'\n",
+        "silent_success": "exit 0\n",
+    }
+
+    @pytest.fixture(params=sorted(FAKES))
+    def unusable_path(self, request, tmp_path, monkeypatch):
+        directory = tmp_path / request.param
+        directory.mkdir()
+        _fake_binary(directory, self.FAKES[request.param])
+        monkeypatch.setenv("PATH", str(directory))
+        return directory
+
+    def test_reports_unavailable(self, unusable_path):
+        assert is_h5ad_inspect_available() is False
+
+    def test_require_raises(self, unusable_path):
+        with pytest.raises(RuntimeError):
+            _require_h5ad_inspect()
+
+    def test_error_names_the_binary_and_the_requirement(self, unusable_path):
+        with pytest.raises(RuntimeError) as excinfo:
+            _require_h5ad_inspect()
+        message = str(excinfo.value)
+        assert str(unusable_path / "h5ad-inspect") in message
+        assert "0.2" in message
+        # the actionable part: it must not read as "not installed"
+        assert "not available on PATH" not in message
+
+    def test_facade_construction_raises(self, unusable_path):
+        # the guard covers direct H5adFacade use, not just set_source(path)
+        with pytest.raises(RuntimeError):
+            H5adFacade(EXAMPLE_H5AD)
+
+    def test_set_source_with_path_raises(self, unusable_path):
+        with pytest.raises(RuntimeError):
+            ScatterPlotter().set_source(EXAMPLE_H5AD, embedding="umap")
+
+
+class TestVersionGuardAcceptsNewer:
+    def test_future_version_accepted(self, tmp_path, monkeypatch):
+        directory = tmp_path / "future"
+        directory.mkdir()
+        _fake_binary(directory, "echo 'h5ad-inspect 1.4.2'\n")
+        monkeypatch.setenv("PATH", str(directory))
+        assert is_h5ad_inspect_available() is True
+        _require_h5ad_inspect()  # must not raise
+
+
+class TestMissingBinary:
+    @pytest.fixture
+    def empty_path(self, tmp_path, monkeypatch):
+        directory = tmp_path / "empty"
+        directory.mkdir()
+        monkeypatch.setenv("PATH", str(directory))
+        return directory
+
+    def test_reports_unavailable(self, empty_path):
+        assert is_h5ad_inspect_available() is False
+
+    def test_error_says_not_on_path(self, empty_path):
+        with pytest.raises(RuntimeError, match="not available on PATH"):
+            _require_h5ad_inspect()
+
+
+class TestVersionCaching:
+    def test_probe_runs_once_per_binary(self, tmp_path, monkeypatch):
+        directory = tmp_path / "counted"
+        directory.mkdir()
+        counter = tmp_path / "calls"
+        _fake_binary(directory, f"echo x >> {counter}\necho 'h5ad-inspect 0.2.0'\n")
+        monkeypatch.setenv("PATH", str(directory))
+        for _ in range(3):
+            assert is_h5ad_inspect_available() is True
+        assert counter.read_text().count("x") == 1

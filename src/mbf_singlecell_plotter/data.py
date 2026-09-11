@@ -1658,7 +1658,7 @@ class EmbeddingData:
         ``X[row_array]`` slicing is cheap.
 
         For :class:`H5adFacade` sources the whole matrix is loaded in one
-        ``h5ad-inspect`` call (``export [--layer <key>] matrix_csr``) and
+        ``h5ad-inspect`` call (``write npz_csr [--layer <key>]``) and
         cached.  For real ``AnnData`` (or anything exposing a ``get_X_csr``
         method) it forwards directly, converting dense/sparse matrices to CSR
         as needed.  Reads the primary source's configured :attr:`layer`; the

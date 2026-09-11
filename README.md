@@ -653,10 +653,14 @@ plotter.plot("S100A8").save("s100a8.png")
 
 Only the data actually needed for each plot is read from disk — obs columns
 and gene-expression vectors are fetched on demand, and embedding arrays are
-read via `h5ad-inspect`'s `--binary` mode.  This is useful for large datasets
-where loading the full AnnData into RAM is slow or impractical.
+read via `h5ad-inspect`'s `--format binary` mode.  This is useful for large
+datasets where loading the full AnnData into RAM is slow or impractical.
 
 ### Installation
+
+**h5ad-inspect 0.2.0 or newer is required.**  0.2.0 replaced the flat
+`export <thing>` commands with verbs (`list` / `describe` / `get` / `write`),
+and this library only speaks the newer interface.
 
 ```bash
 # Cargo (Rust toolchain required)
@@ -666,7 +670,14 @@ cargo install --git https://github.com/TyberiusPrime/h5ad_inspect
 # h5ad_inspect.packages.${system}.h5ad-inspect
 ```
 
+An older binary on `PATH` is rejected up front, with an error naming the
+binary and the required version, rather than failing part-way through a plot.
+
 ### Feature detection
+
+`is_h5ad_inspect_available()` is a feature test: it reports `False` both when
+no binary is on `PATH` and when the one that is there is too old to use, so
+the fallback branch covers both cases.
 
 ```python
 from mbf_singlecell_plotter import is_h5ad_inspect_available
@@ -719,7 +730,7 @@ data = EmbeddingData(ad, embedding="umap")
 
 Columns are cached after the first access, so repeated `get_column` calls for
 the same gene or annotation do not re-invoke `h5ad-inspect`. `get_X_csr()`
-loads the whole matrix in one `export matrix_csr` call and is the fast path
+loads the whole matrix in one `write npz_csr` call and is the fast path
 for analyses that touch every gene at once; `X[:, i]` stays cheap for the
 common single-gene plotting case.
 

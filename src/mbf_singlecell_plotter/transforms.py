@@ -323,7 +323,7 @@ def compute_grid_moran(
     # ── aggregate per occupied bin ────────────────────────────────────────────
     ad = data.ad
     # Bulk-load X once as CSR (row-major) so per-bin row slicing is cheap.
-    # For H5adFacade this is a single ``export matrix_csr`` call; for AnnData it
+    # For H5adFacade this is a single ``write npz_csr`` call; for AnnData it
     # just forwards/converts the in-memory X.
     X = data.get_X_csr()  # (n_cells, n_genes) sparse CSR
 
