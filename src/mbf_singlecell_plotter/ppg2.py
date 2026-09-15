@@ -1200,8 +1200,9 @@ class Plot(_Recorder):
             "(pass builder.plot(name='...'))."
         )
 
-    def into(self, sub_directory: Union[str, Path]) -> "Plot":
+    def into(self, sub_directory: Union[str, Path], reset: bool=False) -> "Plot":
         """Append a sub-directory below the builder's output directory.
+        Or set the complete output directory if reset = true
 
         Everything the returned plot writes from here on goes there, per-gene
         plots included -- but a genes TSV this plot has *already* declared
@@ -1217,7 +1218,10 @@ class Plot(_Recorder):
         is called, so there it follows the move like any other output.
         """
         new = self._copy()
-        new._into = self._into + Path(sub_directory).parts
+        if reset:
+            new._into = self._into + Path(sub_directory).parts
+        else:
+            new._into = Path(sub_directory).parts
         return new
 
     def dpi(self, value: int) -> "Plot":
@@ -1961,10 +1965,13 @@ class PlotBuilder(_Recorder):
 
     # -- layout ------------------------------------------------------------
 
-    def into(self, sub_directory: Union[str, Path]) -> "PlotBuilder":
+    def into(self, sub_directory: Union[str, Path], reset: bool = False) -> "PlotBuilder":
         """Append a sub-directory below the output folder."""
         new = self._copy()
-        new._into = self._into + Path(sub_directory).parts
+        if reset:
+            new._into = Path(sub_directory).parts
+        else:
+            new._into = self._into + Path(sub_directory).parts
         return new
 
     def dpi(self, value: int) -> "PlotBuilder":
